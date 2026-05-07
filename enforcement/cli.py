@@ -18,7 +18,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="JSON scanner configuration file.")
     parser.add_argument("--notes-root", action="append", default=[], help="Filesystem root containing staging notes.")
     parser.add_argument("--playbook-root", action="append", default=[], help="Filesystem root containing canonical playbook guidance.")
-    parser.add_argument("--ignore", action="append", default=[], help="Additional ignore glob relative to each configured root.")
+    parser.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        help="Additional root-relative ignore glob, e.g. archive/** for directory contents.",
+    )
     parser.add_argument("--similarity-threshold", type=float, help="Token similarity threshold from 0 to 1.")
     parser.add_argument("--min-heading-matches", type=int, help="Minimum repeated headings needed for a heading candidate.")
     parser.add_argument("--min-phrase-words", type=int, help="Words per normalized phrase.")
