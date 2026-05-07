@@ -83,6 +83,23 @@ count, candidate evidence, and suggested reviewer questions while explicitly
 preserving human-reviewed classification. See `docs/review-packet.md` for the
 intended local handoff workflow.
 
+## Workflow Contracts
+
+Phase 2 introduces the first minimal structured workflow contract: a
+`drift_review` task envelope. The envelope describes workflow intent, inputs,
+constraints, expected outputs, and validation expectations for the existing
+local drift-review loop. It is descriptive, not executable automation.
+
+Validate the example envelope:
+
+```sh
+python3 -m enforcement.task_envelope examples/drift-review-envelope.json
+```
+
+See `docs/workflow-contracts.md`,
+`schemas/drift-review-task-envelope.schema.json`, and
+`examples/drift-review-envelope.json`.
+
 Paths in a config file are resolved relative to that config file.
 Config `ignore` entries are additive: built-in safety ignores such as `.git/**`,
 `.worktrees/**`, `__pycache__/**`, and `.venv/**` always remain active, and
@@ -125,5 +142,6 @@ phrasing is intentional. Treat its output as a review prompt, not a verdict.
 
 See `docs/philosophy.md`,
 `docs/phase-1-advisory-drift-reinforcement.md`, and
-`docs/future-directions.md` for the operating posture, Phase 1 closure note,
-and deferred experiment areas.
+`docs/workflow-contracts.md`, and `docs/future-directions.md` for the
+operating posture, Phase 1 closure note, first workflow contract, and deferred
+experiment areas.

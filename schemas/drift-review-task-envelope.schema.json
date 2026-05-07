@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ctrl-alt-keith/ai-workflow-enforcement/schemas/drift-review-task-envelope.schema.json",
+  "title": "Drift Review Task Envelope",
+  "description": "Minimal contract for expressing human-reviewed drift-review intent without automating execution.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_type",
+    "schema_version",
+    "inputs",
+    "constraints",
+    "expected_outputs",
+    "validation_expectations"
+  ],
+  "properties": {
+    "task_type": {
+      "const": "drift_review",
+      "description": "The only task type supported by this first contract."
+    },
+    "schema_version": {
+      "const": 1,
+      "description": "Envelope schema version supported by the lightweight validator."
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Declared local inputs for a human-reviewed drift-review workflow."
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Operational boundaries that preserve advisory, human-reviewed use."
+    },
+    "expected_outputs": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Artifacts or decisions expected from the review workflow."
+    },
+    "validation_expectations": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Validation expectations for consumers that load this envelope."
+    }
+  }
+}
