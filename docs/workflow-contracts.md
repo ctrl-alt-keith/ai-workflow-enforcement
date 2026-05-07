@@ -85,15 +85,15 @@ Validate the example attestation:
 python3 -m enforcement.review_result_attestation examples/drift-review-result-attestation.json
 ```
 
-## Future Skill Packaging
+## Skill Packaging
 
-The contract gives future prompts, local tooling, AI adapters, or skill
-packaging a stable object to inspect. That future packaging is deliberately not
-implemented here. A later phase can decide whether the envelope should become
-part of a reusable skill after repeated human-reviewed drift-review use proves
-the need.
+The contract gives prompts, local tooling, AI adapters, or skill packages a
+stable object to inspect. Phase 3 adds the first minimal package at
+`skills/drift_review/`. That package references this contract spine without
+turning it into executable automation.
 
 See `docs/phase-2-contract-closure.md` for the concise Phase 2 closure note.
+See `docs/skill-packaging.md` for the Phase 3 package boundary.
 
 Deferred directions remain explicit:
 
@@ -103,4 +103,4 @@ Deferred directions remain explicit:
 - no persistent workflow state
 - no policy engine
 - no GitHub or CI integration
-- no skill packaging in this phase
+- no generalized skill or plugin architecture

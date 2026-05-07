@@ -114,6 +114,18 @@ See `docs/workflow-contracts.md`,
 `examples/drift-review-envelope.json`, and
 `examples/drift-review-result-attestation.json`.
 
+## Skill Packaging
+
+Phase 3 introduces the first minimal reusable skill package:
+`skills/drift_review/`. The package is a non-executable capability description
+for the existing `drift_review` workflow. Its manifest references the current
+task envelope, result attestation, examples, validators, scanner, and
+review-packet renderer without adding orchestration, automatic remediation,
+workflow state, GitHub/CI integration, scheduling, marketplace discovery, or
+agent coordination behavior.
+
+See `docs/skill-packaging.md` and `skills/drift_review/manifest.json`.
+
 Paths in a config file are resolved relative to that config file.
 Config `ignore` entries are additive: built-in safety ignores such as `.git/**`,
 `.worktrees/**`, `__pycache__/**`, and `.venv/**` always remain active, and
@@ -156,9 +168,9 @@ phrasing is intentional. Treat its output as a review prompt, not a verdict.
 
 See `docs/philosophy.md`,
 `docs/phase-1-advisory-drift-reinforcement.md`,
-`docs/workflow-contracts.md`, `docs/phase-2-contract-closure.md`, and
-`docs/future-directions.md` for the operating posture, Phase 1 closure note,
-first workflow contract, Phase 2 contract closure note, and deferred experiment
-areas.
+`docs/workflow-contracts.md`, `docs/phase-2-contract-closure.md`,
+`docs/skill-packaging.md`, and `docs/future-directions.md` for the operating
+posture, Phase 1 closure note, first workflow contract, Phase 2 contract
+closure note, first skill package, and deferred experiment areas.
 
 > AI-generated. Human-verified. Occasionally argued about.
