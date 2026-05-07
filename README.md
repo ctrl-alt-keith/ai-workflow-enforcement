@@ -90,15 +90,29 @@ Phase 2 introduces the first minimal structured workflow contract: a
 constraints, expected outputs, and validation expectations for the existing
 local drift-review loop. It is descriptive, not executable automation.
 
+Phase 2 also includes a small `drift_review_result` attestation for completed
+review outcomes. The attestation records human-reviewed classification,
+cleanup-required status, reviewer type, and evidence summary as portable
+operational evidence. It does not persist workflow state, trigger remediation,
+or enforce classification policy.
+
 Validate the example envelope:
 
 ```sh
 python3 -m enforcement.task_envelope examples/drift-review-envelope.json
 ```
 
+Validate the example review-result attestation:
+
+```sh
+python3 -m enforcement.review_result_attestation examples/drift-review-result-attestation.json
+```
+
 See `docs/workflow-contracts.md`,
 `schemas/drift-review-task-envelope.schema.json`, and
-`examples/drift-review-envelope.json`.
+`schemas/drift-review-result-attestation.schema.json`,
+`examples/drift-review-envelope.json`, and
+`examples/drift-review-result-attestation.json`.
 
 Paths in a config file are resolved relative to that config file.
 Config `ignore` entries are additive: built-in safety ignores such as `.git/**`,

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ctrl-alt-keith/ai-workflow-enforcement/schemas/drift-review-result-attestation.schema.json",
+  "title": "Drift Review Result Attestation",
+  "description": "Minimal descriptive record for a completed human-reviewed drift-review outcome.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attestation_type",
+    "schema_version",
+    "source_task_type",
+    "classification",
+    "cleanup_required",
+    "reviewer_type",
+    "evidence_summary"
+  ],
+  "properties": {
+    "attestation_type": {
+      "const": "drift_review_result",
+      "description": "The only review-result attestation type supported by this contract."
+    },
+    "schema_version": {
+      "const": 1,
+      "description": "Attestation schema version supported by the lightweight validator."
+    },
+    "source_task_type": {
+      "const": "drift_review",
+      "description": "Task-envelope type that produced the reviewed outcome."
+    },
+    "classification": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-reviewed outcome classification, recorded descriptively rather than inferred."
+    },
+    "cleanup_required": {
+      "type": "boolean",
+      "description": "Whether the completed review determined that cleanup work remains."
+    },
+    "reviewer_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Descriptive reviewer source, such as human or human_assisted."
+    },
+    "evidence_summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Concise reviewed evidence or notes supporting the recorded classification."
+    }
+  }
+}

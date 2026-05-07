@@ -34,19 +34,55 @@ fields, known task type, schema version, and object-shaped sections. It does
 not run scans, render packets, remediate drift, persist decisions, call GitHub,
 enforce policy, or coordinate agents.
 
+## Review Result Attestations
+
+An attestation complements the task envelope after the review loop is complete.
+The envelope says what work is being requested and what boundaries apply. The
+attestation records the reviewed outcome that a human chose to preserve as
+portable operational evidence.
+
+The first attestation is a `drift_review_result` record with schema version `1`:
+
+- `attestation_type`
+- `schema_version`
+- `source_task_type`
+- `classification`
+- `cleanup_required`
+- `reviewer_type`
+- `evidence_summary`
+
+The attestation remains descriptive. It does not become workflow state, does
+not track lifecycle transitions, does not trigger cleanup, and does not encode
+policy. Classification remains human-reviewed: the validator checks that the
+field is present and non-empty, but it does not infer, normalize, or enforce a
+classification taxonomy.
+
 ## Files
 
 - `schemas/drift-review-task-envelope.schema.json` defines the inspectable
   envelope shape.
+- `schemas/drift-review-result-attestation.schema.json` defines the completed
+  review-result attestation shape.
 - `examples/drift-review-envelope.json` shows the current local drift-review
   workflow as a concrete envelope.
+- `examples/drift-review-result-attestation.json` records the completed Phase 1
+  outcome where the remaining candidate was acceptable duplication / false
+  positive and no cleanup was required.
 - `enforcement/task_envelope.py` provides deterministic lightweight loading and
   validation.
+- `enforcement/review_result_attestation.py` provides deterministic lightweight
+  loading and validation for completed review-result attestations.
 
 Validate the example envelope:
 
 ```sh
 python3 -m enforcement.task_envelope examples/drift-review-envelope.json
+```
+
+Validate the example attestation:
+
+```sh
+python3 -m enforcement.review_result_attestation examples/drift-review-result-attestation.json
 ```
 
 ## Future Skill Packaging
