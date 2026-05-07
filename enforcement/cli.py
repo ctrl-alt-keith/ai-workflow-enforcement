@@ -1,0 +1,62 @@
+"""Command line entrypoint for the drift scanner."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import sys
+
+from .config import load_config, merge_cli_config
+from .drift_scanner import scan
+from .reporting import render_report
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Surface likely overlap between staging notes and canonical playbook guidance.",
+    )
+    parser.add_argument("--config", type=Path, help="JSON scanner configuration file.")
+    parser.add_argument("--notes-root", action="append", default=[], help="Filesystem root containing staging notes.")
+    parser.add_argument("--playbook-root", action="append", default=[], help="Filesystem root containing canonical playbook guidance.")
+    parser.add_argument("--ignore", action="append", default=[], help="Ignore glob relative to each configured root.")
+    parser.add_argument("--similarity-threshold", type=float, help="Token similarity threshold from 0 to 1.")
+    parser.add_argument("--min-heading-matches", type=int, help="Minimum repeated headings needed for a heading candidate.")
+    parser.add_argument("--min-phrase-words", type=int, help="Words per normalized phrase.")
+    parser.add_argument("--min-phrase-matches", type=int, help="Minimum repeated phrases needed for a phrase candidate.")
+    parser.add_argument("--max-candidates", type=int, help="Maximum candidates to report.")
+    parser.add_argument(
+        "--fail-on-candidates",
+        action="store_true",
+        help="Exit 1 when overlap candidates are found. Default is advisory exit 0.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        base_config = load_config(args.config) if args.config else None
+        config = merge_cli_config(
+            base_config,
+            notes_roots=args.notes_root,
+            playbook_roots=args.playbook_root,
+            ignore_patterns=args.ignore,
+            similarity_threshold=args.similarity_threshold,
+            min_heading_matches=args.min_heading_matches,
+            min_phrase_words=args.min_phrase_words,
+            min_phrase_matches=args.min_phrase_matches,
+            max_candidates=args.max_candidates,
+        )
+        result = scan(config)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    print(render_report(result))
+    if args.fail_on_candidates and result.candidates:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
