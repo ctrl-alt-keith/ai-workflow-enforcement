@@ -23,6 +23,11 @@ modify files, resolve drift, or claim that one source is authoritative for a
 specific local decision. Use `--fail-on-candidates` only when a caller wants the
 optional non-zero exit for detected candidates.
 
+Use `docs/drift-review-calibration.md` to interpret candidates as operational
+review prompts. It describes lightweight human review categories such as
+confirmed drift, acceptable duplication, intentional staging overlap,
+historical residue, and false positives without changing scanner behavior.
+
 ## Quick Start
 
 Run validation:
