@@ -45,6 +45,25 @@ Token similarity is a closeness signal, not a severity score. High similarity
 can indicate copied guidance, but it can also reflect intentional staging work
 or examples that need to remain readable near the evidence.
 
+## First Real Review Loop
+
+The first real drift-review loop started after an archive-ignore correction and
+reported 2 candidates. Human review classified `context-refresh.txt` as
+historical residue with confirmed drift cleanup needed. That cleanup was
+completed in `cross-repo-threads`, preserving the scanner's role as an advisory
+signal rather than an authority.
+
+A rerun reported 1 remaining candidate. The candidate was heading-only, had
+token similarity of 0.20, and already included a canonical playbook reference.
+It was accepted as acceptable duplication / false positive noise rather than a
+cleanup target.
+
+This loop is useful calibration evidence: the scanner surfaced a small,
+reviewable set; one candidate led to scoped cleanup; and the remaining noise was
+explainable from the reported evidence. The observed signal quality supports
+continued advisory use with human classification, not threshold changes,
+automated enforcement, or new process requirements.
+
 ## Deferred Areas
 
 This calibration model remains operational and human-reviewed. It does not add
