@@ -42,7 +42,7 @@ Run the scanner against explicit roots:
 python3 -m enforcement.cli \
   --notes-root ../cross-repo-threads \
   --playbook-root ../ai-workflow-playbook/docs \
-  --ignore archive/**
+  --ignore 'archive/**'
 ```
 
 Or use a JSON config:
@@ -56,6 +56,12 @@ Config `ignore` entries are additive: built-in safety ignores such as `.git/**`,
 `.worktrees/**`, `__pycache__/**`, and `.venv/**` always remain active, and
 configured ignores add to that set. CLI `--ignore` entries add to the combined
 config/default set.
+
+Ignore values are glob patterns matched against paths relative to each
+configured root. Quote CLI glob values so shells such as zsh pass them to the
+scanner unchanged. To ignore a directory's contents, use a glob such as
+`archive/**`; a plain directory path such as `archive/` does not skip files
+under that directory. The example config uses `archive/**` for this reason.
 
 ## Repository Model
 
