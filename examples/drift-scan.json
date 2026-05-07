@@ -2,9 +2,7 @@
   "notes_roots": ["../../cross-repo-threads"],
   "playbook_roots": ["../../ai-workflow-playbook/docs"],
   "ignore": [
-    ".git/**",
-    ".worktrees/**",
-    "**/__pycache__/**"
+    "archive/**"
   ],
   "similarity_threshold": 0.55,
   "min_heading_matches": 2,

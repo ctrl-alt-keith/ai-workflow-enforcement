@@ -41,12 +41,13 @@ class ScannerConfig:
 
 
 def load_config(path: Path) -> ScannerConfig:
+    """Load JSON config, resolving roots near the file and adding ignores to defaults."""
     data = json.loads(path.read_text(encoding="utf-8"))
     base_dir = path.parent
     config = ScannerConfig(
         notes_roots=_as_paths(data.get("notes_roots", ())),
         playbook_roots=_as_paths(data.get("playbook_roots", ())),
-        ignore_patterns=tuple(data.get("ignore", DEFAULT_IGNORE_PATTERNS)),
+        ignore_patterns=_combined_ignore_patterns(data.get("ignore", ())),
         similarity_threshold=float(data.get("similarity_threshold", 0.55)),
         min_heading_matches=int(data.get("min_heading_matches", 2)),
         min_phrase_words=int(data.get("min_phrase_words", 8)),
@@ -76,7 +77,7 @@ def merge_cli_config(
     if ignore_patterns:
         config = replace(
             config,
-            ignore_patterns=tuple(config.ignore_patterns) + tuple(ignore_patterns),
+            ignore_patterns=_combined_ignore_patterns(ignore_patterns, config.ignore_patterns),
         )
     if similarity_threshold is not None:
         config = replace(config, similarity_threshold=similarity_threshold)
@@ -100,3 +101,14 @@ def _resolve_roots(paths: Iterable[Path], base_dir: Path) -> tuple[Path, ...]:
         (base_dir / path).resolve() if not path.is_absolute() else path.resolve()
         for path in paths
     )
+
+
+def _combined_ignore_patterns(
+    extra_patterns: Iterable[str],
+    base_patterns: Iterable[str] = DEFAULT_IGNORE_PATTERNS,
+) -> tuple[str, ...]:
+    patterns: list[str] = []
+    for pattern in tuple(base_patterns) + tuple(extra_patterns):
+        if pattern not in patterns:
+            patterns.append(pattern)
+    return tuple(patterns)
