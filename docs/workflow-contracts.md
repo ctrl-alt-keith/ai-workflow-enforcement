@@ -93,6 +93,8 @@ implemented here. A later phase can decide whether the envelope should become
 part of a reusable skill after repeated human-reviewed drift-review use proves
 the need.
 
+See `docs/phase-2-contract-closure.md` for the concise Phase 2 closure note.
+
 Deferred directions remain explicit:
 
 - no generalized workflow engine
