@@ -155,9 +155,10 @@ that uses different wording, and it can surface benign overlap when repeated
 phrasing is intentional. Treat its output as a review prompt, not a verdict.
 
 See `docs/philosophy.md`,
-`docs/phase-1-advisory-drift-reinforcement.md`, and
-`docs/workflow-contracts.md`, and `docs/future-directions.md` for the
-operating posture, Phase 1 closure note, first workflow contract, and deferred
-experiment areas.
+`docs/phase-1-advisory-drift-reinforcement.md`,
+`docs/workflow-contracts.md`, `docs/phase-2-contract-closure.md`, and
+`docs/future-directions.md` for the operating posture, Phase 1 closure note,
+first workflow contract, Phase 2 contract closure note, and deferred experiment
+areas.
 
 > AI-generated. Human-verified. Occasionally argued about.
