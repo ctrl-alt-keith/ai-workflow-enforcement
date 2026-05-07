@@ -145,3 +145,5 @@ See `docs/philosophy.md`,
 `docs/workflow-contracts.md`, and `docs/future-directions.md` for the
 operating posture, Phase 1 closure note, first workflow contract, and deferred
 experiment areas.
+
+> AI-generated. Human-verified. Occasionally argued about.
