@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fail-on-candidates",
         action="store_true",
-        help="Opt-in advisory enforcement: exit 1 when overlap candidates are found. Default is exit 0.",
+        help="Optional non-zero exit when overlap candidates are found. Default is exit 0.",
     )
     return parser
 

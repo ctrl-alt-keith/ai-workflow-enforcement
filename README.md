@@ -21,7 +21,7 @@ The scanner reports possible drift for human review. Its default exit behavior
 is advisory and non-blocking: overlap candidates still exit 0. It does not
 modify files, resolve drift, or claim that one source is authoritative for a
 specific local decision. Use `--fail-on-candidates` only when a caller wants the
-optional advisory signal to return exit 1 for detected candidates.
+optional non-zero exit for detected candidates.
 
 ## Quick Start
 
