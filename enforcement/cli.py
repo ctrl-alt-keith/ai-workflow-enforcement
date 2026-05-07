@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="JSON scanner configuration file.")
     parser.add_argument("--notes-root", action="append", default=[], help="Filesystem root containing staging notes.")
     parser.add_argument("--playbook-root", action="append", default=[], help="Filesystem root containing canonical playbook guidance.")
-    parser.add_argument("--ignore", action="append", default=[], help="Ignore glob relative to each configured root.")
+    parser.add_argument("--ignore", action="append", default=[], help="Additional ignore glob relative to each configured root.")
     parser.add_argument("--similarity-threshold", type=float, help="Token similarity threshold from 0 to 1.")
     parser.add_argument("--min-heading-matches", type=int, help="Minimum repeated headings needed for a heading candidate.")
     parser.add_argument("--min-phrase-words", type=int, help="Words per normalized phrase.")
@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fail-on-candidates",
         action="store_true",
-        help="Exit 1 when overlap candidates are found. Default is advisory exit 0.",
+        help="Opt-in advisory enforcement: exit 1 when overlap candidates are found. Default is exit 0.",
     )
     return parser
 

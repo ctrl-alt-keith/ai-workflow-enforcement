@@ -17,8 +17,11 @@ reports possible overlap candidates using deterministic heuristics:
 - configurable token similarity
 - whether the note appears to reference canonical playbook guidance
 
-The scanner reports possible drift. It does not modify files, resolve drift, or
-claim that one source is authoritative for a specific local decision.
+The scanner reports possible drift for human review. Its default exit behavior
+is advisory and non-blocking: overlap candidates still exit 0. It does not
+modify files, resolve drift, or claim that one source is authoritative for a
+specific local decision. Use `--fail-on-candidates` only when a caller wants the
+optional advisory signal to return exit 1 for detected candidates.
 
 ## Quick Start
 
@@ -44,6 +47,10 @@ python3 -m enforcement.cli --config examples/drift-scan.json
 ```
 
 Paths in a config file are resolved relative to that config file.
+Config `ignore` entries are additive: built-in safety ignores such as `.git/**`,
+`.worktrees/**`, `__pycache__/**`, and `.venv/**` always remain active, and
+configured ignores add to that set. CLI `--ignore` entries add to the combined
+config/default set.
 
 ## Repository Model
 
