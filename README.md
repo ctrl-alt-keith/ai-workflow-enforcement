@@ -72,6 +72,17 @@ presence, scanner reasons, and suggested direction. It does not record workflow
 state, persist classifications, escalate findings, or describe remediation
 steps.
 
+Render that JSON into a concise local review packet:
+
+```sh
+python3 -m enforcement.review_packet --input scan.json
+```
+
+The packet is a markdown handoff artifact. It summarizes the scan, candidate
+count, candidate evidence, and suggested reviewer questions while explicitly
+preserving human-reviewed classification. See `docs/review-packet.md` for the
+intended local handoff workflow.
+
 Paths in a config file are resolved relative to that config file.
 Config `ignore` entries are additive: built-in safety ignores such as `.git/**`,
 `.worktrees/**`, `__pycache__/**`, and `.venv/**` always remain active, and
