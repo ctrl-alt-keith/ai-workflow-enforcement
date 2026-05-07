@@ -1,0 +1,74 @@
+{
+  "manifest_type": "portable_skill_capability",
+  "manifest_version": 1,
+  "name": "drift_review",
+  "summary": "Reusable descriptive package for the existing human-reviewed drift-review workflow.",
+  "path_reference_base": "repository_root",
+  "supported_task_envelope": {
+    "task_type": "drift_review",
+    "schema_version": 1,
+    "schema": "schemas/drift-review-task-envelope.schema.json",
+    "example": "examples/drift-review-envelope.json",
+    "validator_command": "python3 -m enforcement.task_envelope examples/drift-review-envelope.json"
+  },
+  "supported_attestation": {
+    "attestation_type": "drift_review_result",
+    "schema_version": 1,
+    "source_task_type": "drift_review",
+    "schema": "schemas/drift-review-result-attestation.schema.json",
+    "example": "examples/drift-review-result-attestation.json",
+    "validator_command": "python3 -m enforcement.review_result_attestation examples/drift-review-result-attestation.json"
+  },
+  "expected_inputs": {
+    "scan_config": "A local scanner config such as examples/drift-scan.json.",
+    "scan_roots": "Explicit notes and playbook roots chosen by a reviewer.",
+    "advisory_scan_json": "Optional transported JSON from enforcement.cli when a packet is rendered from a saved scan.",
+    "review_context": "Human or human-assisted review context for classification decisions."
+  },
+  "expected_outputs": {
+    "drift_scan_json": "Advisory JSON signal payload from the existing drift scanner.",
+    "review_packet_markdown": "Markdown packet rendered from scanner JSON for human review.",
+    "drift_review_result_attestation": "Optional completed review-result attestation recorded after human-reviewed classification."
+  },
+  "referenced_tooling": [
+    {
+      "name": "advisory drift scanner",
+      "path": "enforcement/cli.py",
+      "command": "python3 -m enforcement.cli --config examples/drift-scan.json --output-format json"
+    },
+    {
+      "name": "markdown review-packet renderer",
+      "path": "enforcement/review_packet.py",
+      "command": "python3 -m enforcement.review_packet --input scan.json"
+    },
+    {
+      "name": "task-envelope validator",
+      "path": "enforcement/task_envelope.py",
+      "command": "python3 -m enforcement.task_envelope examples/drift-review-envelope.json"
+    },
+    {
+      "name": "review-result attestation validator",
+      "path": "enforcement/review_result_attestation.py",
+      "command": "python3 -m enforcement.review_result_attestation examples/drift-review-result-attestation.json"
+    }
+  ],
+  "operational_boundaries": [
+    "advisory_only",
+    "human_reviewed_classification",
+    "non_executable_manifest",
+    "no_orchestration_runtime",
+    "no_automatic_execution",
+    "no_automatic_remediation",
+    "no_workflow_state_machine",
+    "no_persistent_workflow_state",
+    "no_github_or_ci_integration",
+    "no_agent_coordination",
+    "no_skill_marketplace_or_discovery"
+  ],
+  "validation_expectations": [
+    "Run make check from the repository root.",
+    "Validate the task envelope with enforcement.task_envelope before relying on it.",
+    "Validate completed attestations with enforcement.review_result_attestation before preserving them.",
+    "Treat scanner output and rendered packets as advisory review inputs, not classifications."
+  ]
+}
