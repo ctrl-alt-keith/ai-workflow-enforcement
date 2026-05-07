@@ -123,5 +123,7 @@ The scanner uses simple text heuristics. It can miss semantically similar text
 that uses different wording, and it can surface benign overlap when repeated
 phrasing is intentional. Treat its output as a review prompt, not a verdict.
 
-See `docs/philosophy.md` and `docs/future-directions.md` for the operating
-posture and deferred experiment areas.
+See `docs/philosophy.md`,
+`docs/phase-1-advisory-drift-reinforcement.md`, and
+`docs/future-directions.md` for the operating posture, Phase 1 closure note,
+and deferred experiment areas.
