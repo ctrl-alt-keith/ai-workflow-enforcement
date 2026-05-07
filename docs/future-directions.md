@@ -1,0 +1,18 @@
+# Future Directions
+
+These areas are intentionally deferred until real workflow pressure justifies
+them:
+
+- GitHub pull request or issue integration
+- scheduled or CI-based advisory scans
+- richer section-level comparison
+- repository-specific scanner profiles
+- machine-readable report output
+- stronger markdown parsing
+- configurable canonical-reference patterns
+- promotion and cleanup checklists
+
+The current experiment should remain useful without becoming a platform. Prefer
+small, reviewable improvements backed by observed drift in the workflow
+ecosystem.
+
