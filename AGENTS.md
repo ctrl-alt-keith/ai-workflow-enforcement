@@ -35,6 +35,13 @@ repository-specific behavior.
 - `make check` runs the repository's focused Python unit tests.
 - Do not substitute alternate validation commands for readiness reporting.
 
+## Branches
+
+- Branch from current `origin/main`.
+- Use focused, purpose-based names such as `docs/<short-name>` or
+  `chore/<short-name>`.
+- Keep branch scope limited to this repository.
+
 ## Pull Requests
 
 - Target `main`.
@@ -47,4 +54,3 @@ repository-specific behavior.
 - Start with `ai-workflow-playbook/docs/start-here.md`.
 - Use the playbook for reusable workflow rules instead of duplicating them
   here.
-
