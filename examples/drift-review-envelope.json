@@ -1,0 +1,49 @@
+{
+  "task_type": "drift_review",
+  "schema_version": 1,
+  "inputs": {
+    "scan_config_path": "examples/drift-scan.json",
+    "scan_output_format": "json",
+    "review_packet_renderer": "enforcement.review_packet",
+    "notes_roots": [
+      "../../cross-repo-threads"
+    ],
+    "playbook_roots": [
+      "../../ai-workflow-playbook/docs"
+    ],
+    "ignore": [
+      "archive/**"
+    ]
+  },
+  "constraints": {
+    "advisory_only": true,
+    "human_review_required": true,
+    "no_auto_remediation": true,
+    "no_orchestration_runtime": true,
+    "no_persistent_workflow_state": true,
+    "no_policy_engine": true,
+    "canonical_validation": "make check"
+  },
+  "expected_outputs": {
+    "drift_scan_json": "advisory notes_playbook_drift_scan signal payload",
+    "review_packet_markdown": "local markdown packet for human or AI-assisted review",
+    "reviewer_classification": "human-reviewed classification outside this envelope"
+  },
+  "validation_expectations": {
+    "required_fields": [
+      "task_type",
+      "schema_version",
+      "inputs",
+      "constraints",
+      "expected_outputs",
+      "validation_expectations"
+    ],
+    "known_task_types": [
+      "drift_review"
+    ],
+    "supported_schema_versions": [
+      1
+    ],
+    "schema_version_required": true
+  }
+}
