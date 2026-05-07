@@ -125,6 +125,7 @@ workflow state, GitHub/CI integration, scheduling, marketplace discovery, or
 agent coordination behavior.
 
 See `docs/skill-packaging.md` and `skills/drift_review/manifest.json`.
+The Phase 3 closure note is in `docs/phase-3-skill-closure.md`.
 
 Paths in a config file are resolved relative to that config file.
 Config `ignore` entries are additive: built-in safety ignores such as `.git/**`,
@@ -169,8 +170,9 @@ phrasing is intentional. Treat its output as a review prompt, not a verdict.
 See `docs/philosophy.md`,
 `docs/phase-1-advisory-drift-reinforcement.md`,
 `docs/workflow-contracts.md`, `docs/phase-2-contract-closure.md`,
-`docs/skill-packaging.md`, and `docs/future-directions.md` for the operating
-posture, Phase 1 closure note, first workflow contract, Phase 2 contract
-closure note, first skill package, and deferred experiment areas.
+`docs/skill-packaging.md`, `docs/phase-3-skill-closure.md`, and
+`docs/future-directions.md` for the operating posture, Phase 1 closure note,
+first workflow contract, Phase 2 contract closure note, first skill package,
+Phase 3 closure note, and deferred experiment areas.
 
 > AI-generated. Human-verified. Occasionally argued about.

@@ -26,6 +26,9 @@ capability description. The package describes what the workflow supports and
 what remains outside its boundary. It does not replace the contracts and does
 not duplicate their schema rules.
 
+The Phase 3 closure note records the completed reinforcement -> contract ->
+skill progression in `docs/phase-3-skill-closure.md`.
+
 ## Why Non-Executable
 
 The skill remains non-executable to preserve the workflow posture already
