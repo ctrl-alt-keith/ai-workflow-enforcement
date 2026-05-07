@@ -1,7 +1,8 @@
-"""Human-readable drift scan reports."""
+"""Drift scan report rendering."""
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -47,6 +48,36 @@ def _render_candidate(index: int, candidate: OverlapCandidate, base: Path) -> li
         for phrase in candidate.repeated_phrases:
             lines.append(f"     - {phrase}")
     return lines
+
+
+def render_json_report(result: ScanResult, *, base_dir: Path | None = None) -> str:
+    base = base_dir or Path.cwd()
+    report = {
+        "schema_version": 1,
+        "report_type": "notes_playbook_drift_scan",
+        "advisory": True,
+        "summary": {
+            "notes_files_scanned": result.notes_files_scanned,
+            "playbook_files_scanned": result.playbook_files_scanned,
+            "ignored_path_count": len(result.ignored_paths),
+            "candidate_count": len(result.candidates),
+        },
+        "candidates": [_candidate_to_json(candidate, base) for candidate in result.candidates],
+    }
+    return json.dumps(report, indent=2, sort_keys=True)
+
+
+def _candidate_to_json(candidate: OverlapCandidate, base: Path) -> dict[str, object]:
+    return {
+        "note_path": _rel(candidate.note_path, base),
+        "playbook_path": _rel(candidate.playbook_path, base),
+        "repeated_headings": list(candidate.repeated_headings),
+        "repeated_phrases": list(candidate.repeated_phrases),
+        "similarity": round(candidate.similarity, 4),
+        "canonical_reference_present": candidate.has_canonical_reference,
+        "reasons": list(candidate.reasons),
+        "suggested_direction": candidate.suggested_direction,
+    }
 
 
 def _rel(path: Path, base: Path) -> str:
