@@ -18,8 +18,15 @@ The intended behavior is modest:
 - point at possible canonical targets
 - suggest cleanup direction
 - leave judgment and remediation to maintainers
+- optionally serialize the same advisory evidence as machine-readable signal
+  transport
 
 The scanner should stay scoped to configured filesystem roots. It should not
 read broadly from the workspace, mutate files, call hosted services, or infer
 authority beyond the configured comparison.
 
+Machine-readable output does not change that posture. It exists so reinforcement
+signals can be composed, archived with review notes, or inspected by local tools
+without scraping terminal text. It should not become a governance interface,
+classification store, escalation path, remediation plan, or workflow state
+machine.

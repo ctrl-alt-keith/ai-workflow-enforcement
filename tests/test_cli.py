@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -74,6 +75,50 @@ class CliTests(unittest.TestCase):
         self.assertIn("Overlap candidates: 1", failing_stdout)
         self.assertEqual("", advisory_stderr)
         self.assertEqual("", failing_stderr)
+
+    def test_output_format_json_emits_machine_readable_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes, playbook = _make_roots(root)
+            text = "small scoped changes use the canonical make check validation path"
+            (notes / "thread.md").write_text(f"# Validation Path\n\n{text}\n\n{text}\n", encoding="utf-8")
+            (playbook / "baseline.md").write_text(f"# Validation Path\n\n{text}\n\n{text}\n", encoding="utf-8")
+
+            code, stdout, stderr = _run_cli(
+                "--notes-root",
+                str(notes),
+                "--playbook-root",
+                str(playbook),
+                "--min-heading-matches",
+                "1",
+                "--min-phrase-words",
+                "5",
+                "--min-phrase-matches",
+                "1",
+                "--output-format",
+                "json",
+            )
+
+        self.assertEqual(0, code)
+        self.assertEqual("", stderr)
+        self.assertNotIn("Notes vs playbook drift scan", stdout)
+        data = json.loads(stdout)
+        self.assertEqual("notes_playbook_drift_scan", data["report_type"])
+        self.assertIs(True, data["advisory"])
+        self.assertEqual(1, data["summary"]["candidate_count"])
+        self.assertEqual(
+            {
+                "canonical_reference_present",
+                "note_path",
+                "playbook_path",
+                "reasons",
+                "repeated_headings",
+                "repeated_phrases",
+                "similarity",
+                "suggested_direction",
+            },
+            set(data["candidates"][0]),
+        )
 
 
 def _make_roots(root: Path) -> tuple[Path, Path]:

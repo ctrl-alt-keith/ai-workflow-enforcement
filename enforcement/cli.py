@@ -8,7 +8,7 @@ import sys
 
 from .config import load_config, merge_cli_config
 from .drift_scanner import scan
-from .reporting import render_report
+from .reporting import render_json_report, render_report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-phrase-words", type=int, help="Words per normalized phrase.")
     parser.add_argument("--min-phrase-matches", type=int, help="Minimum repeated phrases needed for a phrase candidate.")
     parser.add_argument("--max-candidates", type=int, help="Maximum candidates to report.")
+    parser.add_argument(
+        "--output-format",
+        choices=("text", "json"),
+        default="text",
+        help="Report format. Default is human-readable text.",
+    )
     parser.add_argument(
         "--fail-on-candidates",
         action="store_true",
@@ -57,7 +63,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    print(render_report(result))
+    if args.output_format == "json":
+        print(render_json_report(result))
+    else:
+        print(render_report(result))
     if args.fail_on_candidates and result.candidates:
         return 1
     return 0

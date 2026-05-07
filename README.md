@@ -51,6 +51,27 @@ Or use a JSON config:
 python3 -m enforcement.cli --config examples/drift-scan.json
 ```
 
+The default output is human-readable text:
+
+```sh
+python3 -m enforcement.cli --config examples/drift-scan.json --output-format text
+```
+
+Machine-readable JSON output is available for callers that want to transport
+the same advisory signals into another human-reviewed workflow:
+
+```sh
+python3 -m enforcement.cli --config examples/drift-scan.json --output-format json
+```
+
+The JSON report is intentionally modest and deterministic. It contains a schema
+version, report type, advisory marker, scan summary, candidate count, and the
+same candidate evidence shown in text output: note path, possible playbook
+target, repeated headings and phrases, token similarity, canonical-reference
+presence, scanner reasons, and suggested direction. It does not record workflow
+state, persist classifications, escalate findings, or describe remediation
+steps.
+
 Paths in a config file are resolved relative to that config file.
 Config `ignore` entries are additive: built-in safety ignores such as `.git/**`,
 `.worktrees/**`, `__pycache__/**`, and `.venv/**` always remain active, and
