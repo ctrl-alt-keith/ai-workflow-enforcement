@@ -168,7 +168,7 @@ def _int_field(data: dict[str, Any], name: str) -> int:
 
 def _number_field(data: dict[str, Any], name: str) -> float:
     value = data.get(name)
-    if not isinstance(value, int | float):
+    if not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a number")
     return float(value)
 
