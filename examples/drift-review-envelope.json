@@ -6,7 +6,7 @@
     "scan_output_format": "json",
     "review_packet_renderer": "enforcement.review_packet",
     "notes_roots": [
-      "../../cross-repo-threads"
+      "../../ai-workflow-incubator"
     ],
     "playbook_roots": [
       "../../ai-workflow-playbook/docs"
