@@ -1,5 +1,5 @@
 {
-  "notes_roots": ["../../cross-repo-threads"],
+  "notes_roots": ["../../ai-workflow-incubator"],
   "playbook_roots": ["../../ai-workflow-playbook/docs"],
   "ignore": [
     "archive/**"

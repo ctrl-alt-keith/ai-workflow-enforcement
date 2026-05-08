@@ -40,7 +40,7 @@ Run the scanner against explicit roots:
 
 ```sh
 python3 -m enforcement.cli \
-  --notes-root ../cross-repo-threads \
+  --notes-root ../ai-workflow-incubator \
   --playbook-root ../ai-workflow-playbook/docs \
   --ignore 'archive/**'
 ```
@@ -143,8 +143,8 @@ under that directory. The example config uses `archive/**` for this reason.
 
 - `ai-workflow-playbook` remains the canonical source of reusable workflow
   guidance.
-- `cross-repo-threads` and similar notes repositories remain staging layers for
-  ideas, pressure, and experiments.
+- `ai-workflow-incubator` remains the private staging/incubation repo for ideas,
+  pressure, and experiments.
 - This repository provides reinforcement signals that help keep those layers
   aligned.
 - Repo-local execution guidance belongs in this repository's `AGENTS.md`.
