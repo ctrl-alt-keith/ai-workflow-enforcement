@@ -178,6 +178,22 @@ NEGATIVE_WORKTREE_GUIDANCE_RE = re.compile(
     r"fail(?:s|ed|ing)?\s+to|missing|without|ignore(?:s|d)?\s+existing|no\s+new\s+worktree)\b",
     re.IGNORECASE,
 )
+WRITABLE_ROOTS_EXHAUSTIVE_RE = re.compile(
+    r"\bwritable_roots\b[^.\n]{0,120}\b(?:all|complete|exhaustive|only|sole|solely|entire)\b"
+    r"|"
+    r"\b(?:all|complete|exhaustive|only|sole|solely|entire)\b[^.\n]{0,120}\bwritable_roots\b",
+    re.IGNORECASE,
+)
+WRITABLE_ROOTS_CORRECTIVE_RE = re.compile(
+    r"\bwritable\s+roots\b.{0,100}\b(?:not\s+exhaustive|not\s+solely|not\s+just|not\s+the\s+complete|not\s+the\s+full)\b"
+    r"|"
+    r"\bdo\s+not\s+assume\b.{0,80}\bwritable\s+roots\b"
+    r"|"
+    r"\bwritable\s+roots\b.{0,100}\b(?:may|can)\s+also\s+include\b"
+    r"|"
+    r"\beffective\s+writable\s+roots?\b.{0,80}\b(?:may|can)\s+also\s+include\b",
+    re.IGNORECASE,
+)
 
 RUNTIME_SURFACE_PARTS = {
     "generated",
@@ -495,6 +511,7 @@ def _scan_advisory_findings(
 
     for document in scanned_documents:
         findings.extend(_scan_weak_command_form_wording(document))
+        findings.extend(_scan_sandbox_writable_roots_claims(document))
         if _is_noncanonical_surface(document, config):
             findings.extend(_scan_authority_language(document))
             findings.extend(_scan_staged_rule_mismatches(document, playbook_text))
@@ -833,6 +850,34 @@ def _scan_worktree_creation_guidance(document: Document) -> list[AdvisoryFinding
             )
         )
     return findings
+
+
+def _scan_sandbox_writable_roots_claims(document: Document) -> list[AdvisoryFinding]:
+    findings: list[AdvisoryFinding] = []
+    lines = _iter_lines(document.text)
+    for line_number, line in lines:
+        if not WRITABLE_ROOTS_EXHAUSTIVE_RE.search(line):
+            continue
+        if _has_writable_roots_exhaustive_exception(line):
+            continue
+        findings.append(
+            AdvisoryFinding(
+                kind="sandbox_writable_roots_exhaustive_claim",
+                path=document.path,
+                line=line_number,
+                snippet=line.strip(),
+                reasons=("Codex effective writable roots can include implicit project and temp roots",),
+                suggested_direction=(
+                    "Describe `writable_roots` as explicit config roots and mention effective-policy inspection plus implicit root exclusions."
+                ),
+            )
+        )
+    return findings
+
+
+def _has_writable_roots_exhaustive_exception(context: str) -> bool:
+    normalized = normalize_text(context)
+    return bool(WRITABLE_ROOTS_CORRECTIVE_RE.search(normalized))
 
 
 def _encourages_worktree_creation(line: str) -> bool:

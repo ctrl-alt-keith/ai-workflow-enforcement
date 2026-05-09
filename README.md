@@ -27,6 +27,8 @@ first workflow transmission checks:
 - staged/runtime rules that look stronger than matching playbook guidance
 - ordinary repo commands shown through `zsh -lc`, `bash -lc`, or `sh -c`
 - cross-repo scope gaps when an explicit workspace inventory is provided
+- Codex sandbox docs/examples that imply `writable_roots` is the exhaustive
+  effective writable root set
 
 The scanner reports possible drift for human review. Its default exit behavior
 is advisory and non-blocking: overlap candidates and workflow-policy findings
