@@ -293,6 +293,30 @@ class DriftScannerTests(unittest.TestCase):
         ]
         self.assertEqual(0, len(authority_findings))
 
+    def test_authority_language_flags_current_line_claim_next_to_disclaimer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "staging.md").write_text(
+                "This is not a canonical source for reusable guidance.\n"
+                "This runtime prompt is canonical.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        authority_findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "noncanonical_authority_language"
+        ]
+        self.assertEqual(1, len(authority_findings))
+        self.assertEqual(2, authority_findings[0].line)
+        self.assertEqual("This runtime prompt is canonical.", authority_findings[0].snippet)
+
     def test_shell_wrapper_examples_skip_negative_examples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
