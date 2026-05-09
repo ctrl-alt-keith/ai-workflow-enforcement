@@ -18,6 +18,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="JSON scanner configuration file.")
     parser.add_argument("--notes-root", action="append", default=[], help="Filesystem root containing staging notes.")
     parser.add_argument("--playbook-root", action="append", default=[], help="Filesystem root containing canonical playbook guidance.")
+    parser.add_argument("--workspace-root", type=str, help="Workspace root used with an explicit repository inventory.")
+    parser.add_argument("--workspace-manifest", type=str, help="Workspace repository manifest, such as config/workspace-repos.txt.")
+    parser.add_argument(
+        "--organization-repository",
+        action="append",
+        default=[],
+        help="Repository name from organization inventory, e.g. ctrl-alt-keith/ai-workflow-playbook.",
+    )
     parser.add_argument(
         "--ignore",
         action="append",
@@ -52,6 +60,9 @@ def main(argv: list[str] | None = None) -> int:
             notes_roots=args.notes_root,
             playbook_roots=args.playbook_root,
             ignore_patterns=args.ignore,
+            workspace_root=args.workspace_root,
+            workspace_manifest=args.workspace_manifest,
+            organization_repositories=args.organization_repository,
             similarity_threshold=args.similarity_threshold,
             min_heading_matches=args.min_heading_matches,
             min_phrase_words=args.min_phrase_words,

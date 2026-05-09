@@ -17,11 +17,23 @@ reports possible overlap candidates using deterministic heuristics:
 - configurable token similarity
 - whether the note appears to reference canonical playbook guidance
 
+The scanner also emits a small advisory workflow-policy finding stream for the
+first workflow transmission checks:
+
+- `AGENTS.md` files missing interaction-mode, command-form, or playbook pointers
+- weak command-form wording that names only `git` and `gh`
+- noncanonical runtime, generated, copied-instruction, or staging surfaces using
+  authority language
+- staged/runtime rules that look stronger than matching playbook guidance
+- ordinary repo commands shown through `zsh -lc`, `bash -lc`, or `sh -c`
+- cross-repo scope gaps when an explicit workspace inventory is provided
+
 The scanner reports possible drift for human review. Its default exit behavior
-is advisory and non-blocking: overlap candidates still exit 0. It does not
-modify files, resolve drift, or claim that one source is authoritative for a
-specific local decision. Use `--fail-on-candidates` only when a caller wants the
-optional non-zero exit for detected candidates.
+is advisory and non-blocking: overlap candidates and workflow-policy findings
+still exit 0. It does not modify files, resolve drift, create policy, or claim
+that one source is authoritative for a specific local decision. Use
+`--fail-on-candidates` only when a caller wants the optional non-zero exit for
+overlap candidates.
 
 Use `docs/drift-review-calibration.md` to interpret candidates as operational
 review prompts. It describes lightweight human review categories such as
@@ -68,9 +80,17 @@ The JSON report is intentionally modest and deterministic. It contains a schema
 version, report type, advisory marker, scan summary, candidate count, and the
 same candidate evidence shown in text output: note path, possible playbook
 target, repeated headings and phrases, token similarity, canonical-reference
-presence, scanner reasons, and suggested direction. It does not record workflow
-state, persist classifications, escalate findings, or describe remediation
-steps.
+presence, scanner reasons, and suggested direction. It also includes advisory
+workflow-policy findings with kind, path, line, snippet, reasons, and suggested
+direction. It does not record workflow state, persist classifications, escalate
+findings, or describe remediation steps.
+
+For cross-repo advisory scans, provide an explicit workspace root and manifest.
+When organization repository inventory is available, pass it as
+`organization_repositories` in config or repeated `--organization-repository`
+CLI values. The scanner reconciles those inputs and scans only the active
+intersection. It does not treat raw local checkout layout as authoritative
+workspace scope.
 
 Render that JSON into a concise local review packet:
 

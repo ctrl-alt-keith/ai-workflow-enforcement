@@ -118,6 +118,220 @@ class DriftScannerTests(unittest.TestCase):
 
         self.assertEqual(0, len(result.candidates))
 
+    def test_agents_alignment_finds_missing_pointers_without_flagging_thin_reinforcement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            playbook_root = workspace / "ai-workflow-playbook"
+            playbook = playbook_root / "docs"
+            config_dir = playbook_root / "config"
+            repo = workspace / "demo"
+            notes = root / "notes"
+            notes.mkdir()
+            playbook.mkdir(parents=True)
+            config_dir.mkdir()
+            repo.mkdir()
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (config_dir / "workspace-repos.txt").write_text("ctrl-alt-keith/demo\n", encoding="utf-8")
+            (playbook / "repo-readiness.md").write_text(
+                "Before acting determine the interaction mode. Use implementation mode, "
+                "review/audit mode, or orchestration mode. For ordinary repository operations, "
+                "use direct git, gh, make, python, and repo-local scripts. Before choosing "
+                "wrapper shells such as zsh -lc, bash -lc, or sh -c, check whether a direct "
+                "form exists.",
+                encoding="utf-8",
+            )
+            (repo / "AGENTS.md").write_text(
+                "# AGENTS.md\n\n"
+                "This repo uses ai-workflow-playbook as canonical guidance.\n\n"
+                "## Startup And Interaction Mode\n\n"
+                "- Before acting, select the interaction mode: implementation, review/audit, "
+                "or orchestration/prompt-authoring.\n\n"
+                "## Local Execution\n\n"
+                "- Use direct command execution for ordinary repo commands such as git, gh, "
+                "make, python, and repo-local scripts.\n"
+                "- Before using zsh, bash, sh, zsh -lc, bash -lc, or sh -c, check whether "
+                "the command has a direct form and use that direct form when it does.\n",
+                encoding="utf-8",
+            )
+
+            result = scan(
+                ScannerConfig(
+                    notes_roots=(notes,),
+                    playbook_roots=(playbook,),
+                    workspace_root=workspace,
+                    workspace_manifest=config_dir / "workspace-repos.txt",
+                    organization_repositories=("ctrl-alt-keith/demo",),
+                )
+            )
+
+        self.assertEqual(0, len(result.advisory_findings))
+
+    def test_agents_alignment_finds_missing_command_and_interaction_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            playbook_root = workspace / "ai-workflow-playbook"
+            playbook = playbook_root / "docs"
+            config_dir = playbook_root / "config"
+            repo = workspace / "demo"
+            notes = root / "notes"
+            notes.mkdir()
+            playbook.mkdir(parents=True)
+            config_dir.mkdir()
+            repo.mkdir()
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (config_dir / "workspace-repos.txt").write_text("ctrl-alt-keith/demo\n", encoding="utf-8")
+            (playbook / "start-here.md").write_text("ai-workflow-playbook guidance", encoding="utf-8")
+            (repo / "AGENTS.md").write_text(
+                "# AGENTS.md\n\nPrefer direct git and gh commands.\n",
+                encoding="utf-8",
+            )
+
+            result = scan(
+                ScannerConfig(
+                    notes_roots=(notes,),
+                    playbook_roots=(playbook,),
+                    workspace_root=workspace,
+                    workspace_manifest=config_dir / "workspace-repos.txt",
+                )
+            )
+
+        kinds = {finding.kind for finding in result.advisory_findings}
+        self.assertIn("agents_missing_interaction_mode_pointer", kinds)
+        self.assertIn("agents_missing_command_form_guidance", kinds)
+        self.assertIn("agents_missing_canonical_playbook_reference", kinds)
+        self.assertIn("weak_command_form_wording", kinds)
+
+    def test_agents_alignment_flags_large_canonical_duplication(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            playbook_root = workspace / "ai-workflow-playbook"
+            playbook = playbook_root / "docs"
+            config_dir = playbook_root / "config"
+            repo = workspace / "demo"
+            notes = root / "notes"
+            notes.mkdir()
+            playbook.mkdir(parents=True)
+            config_dir.mkdir()
+            repo.mkdir()
+            repeated_policy = (
+                "Before acting determine the interaction mode and preserve implementation "
+                "review audit orchestration boundaries with direct command execution for "
+                "git gh make python and repo-local scripts before choosing wrapper shells. "
+            ) * 50
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (config_dir / "workspace-repos.txt").write_text("ctrl-alt-keith/demo\n", encoding="utf-8")
+            (playbook / "repo-readiness.md").write_text(repeated_policy, encoding="utf-8")
+            (repo / "AGENTS.md").write_text(
+                "# AGENTS.md\n\n"
+                "This repo uses ai-workflow-playbook as canonical guidance.\n"
+                "Select the interaction mode: implementation, review/audit, or orchestration.\n"
+                "Use direct command execution for git, gh, make, python, and repo-local scripts.\n"
+                "Before using wrapper shells such as zsh -lc, bash -lc, or sh -c, check whether direct form exists.\n\n"
+                f"{repeated_policy}",
+                encoding="utf-8",
+            )
+
+            result = scan(
+                ScannerConfig(
+                    notes_roots=(notes,),
+                    playbook_roots=(playbook,),
+                    workspace_root=workspace,
+                    workspace_manifest=config_dir / "workspace-repos.txt",
+                )
+            )
+
+        kinds = {finding.kind for finding in result.advisory_findings}
+        self.assertIn("agents_large_canonical_duplication", kinds)
+
+    def test_noncanonical_authority_and_stronger_rules_are_advisory_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "runtime.md").write_text(
+                "This runtime artifact is the source of truth.\n"
+                "Agents must provide complete self-contained output.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        kinds = [finding.kind for finding in result.advisory_findings]
+        self.assertIn("noncanonical_authority_language", kinds)
+        self.assertIn("staged_rule_stronger_than_playbook", kinds)
+
+    def test_shell_wrapper_examples_skip_negative_examples(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "prompt.md").write_text(
+                "Run `bash -lc 'make check'` before review.\n"
+                "Incorrect: `zsh -lc 'git status'`.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        wrapper_findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "ordinary_repo_command_shell_wrapper_example"
+        ]
+        self.assertEqual(1, len(wrapper_findings))
+        self.assertIn("make check", wrapper_findings[0].reasons[0])
+
+    def test_workspace_scope_uses_manifest_and_organization_intersection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            playbook_root = workspace / "ai-workflow-playbook"
+            playbook = playbook_root / "docs"
+            config_dir = playbook_root / "config"
+            included = workspace / "included"
+            local_only = workspace / "local-only"
+            notes = root / "notes"
+            notes.mkdir()
+            playbook.mkdir(parents=True)
+            config_dir.mkdir()
+            included.mkdir()
+            local_only.mkdir()
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (playbook / "baseline.md").write_text("workflow guidance", encoding="utf-8")
+            (config_dir / "workspace-repos.txt").write_text(
+                "ctrl-alt-keith/included\nctrl-alt-keith/manifest-only\n",
+                encoding="utf-8",
+            )
+            (included / "AGENTS.md").write_text("# AGENTS.md\n\nThin file.\n", encoding="utf-8")
+            (local_only / "AGENTS.md").write_text(
+                "# AGENTS.md\n\nPrefer direct git and gh commands.\n",
+                encoding="utf-8",
+            )
+
+            result = scan(
+                ScannerConfig(
+                    notes_roots=(notes,),
+                    playbook_roots=(playbook,),
+                    workspace_root=workspace,
+                    workspace_manifest=config_dir / "workspace-repos.txt",
+                    organization_repositories=("ctrl-alt-keith/included", "ctrl-alt-keith/org-only"),
+                )
+            )
+
+        finding_paths = {finding.path.name for finding in result.advisory_findings}
+        snippets = {finding.snippet for finding in result.advisory_findings}
+        self.assertIn("org-only", snippets)
+        self.assertIn("AGENTS.md", finding_paths)
+        self.assertNotIn("local-only", {finding.path.parent.name for finding in result.advisory_findings})
+
 
 if __name__ == "__main__":
     unittest.main()

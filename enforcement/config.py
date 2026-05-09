@@ -24,6 +24,9 @@ DEFAULT_IGNORE_PATTERNS = (
 class ScannerConfig:
     notes_roots: tuple[Path, ...]
     playbook_roots: tuple[Path, ...]
+    workspace_root: Path | None = None
+    workspace_manifest: Path | None = None
+    organization_repositories: tuple[str, ...] = ()
     ignore_patterns: tuple[str, ...] = DEFAULT_IGNORE_PATTERNS
     similarity_threshold: float = 0.55
     min_heading_matches: int = 2
@@ -37,6 +40,8 @@ class ScannerConfig:
             self,
             notes_roots=_resolve_roots(self.notes_roots, base),
             playbook_roots=_resolve_roots(self.playbook_roots, base),
+            workspace_root=_resolve_optional_path(self.workspace_root, base),
+            workspace_manifest=_resolve_optional_path(self.workspace_manifest, base),
         )
 
 
@@ -47,6 +52,9 @@ def load_config(path: Path) -> ScannerConfig:
     config = ScannerConfig(
         notes_roots=_as_paths(data.get("notes_roots", ())),
         playbook_roots=_as_paths(data.get("playbook_roots", ())),
+        workspace_root=_as_optional_path(data.get("workspace_root")),
+        workspace_manifest=_as_optional_path(data.get("workspace_manifest")),
+        organization_repositories=tuple(data.get("organization_repositories", ())),
         ignore_patterns=_combined_ignore_patterns(data.get("ignore", ())),
         similarity_threshold=float(data.get("similarity_threshold", 0.55)),
         min_heading_matches=int(data.get("min_heading_matches", 2)),
@@ -68,6 +76,9 @@ def merge_cli_config(
     min_phrase_words: int | None,
     min_phrase_matches: int | None,
     max_candidates: int | None,
+    workspace_root: str | None = None,
+    workspace_manifest: str | None = None,
+    organization_repositories: Iterable[str] = (),
 ) -> ScannerConfig:
     config = base or ScannerConfig(notes_roots=(), playbook_roots=())
     if notes_roots:
@@ -79,6 +90,12 @@ def merge_cli_config(
             config,
             ignore_patterns=_combined_ignore_patterns(ignore_patterns, config.ignore_patterns),
         )
+    if workspace_root is not None:
+        config = replace(config, workspace_root=Path(workspace_root))
+    if workspace_manifest is not None:
+        config = replace(config, workspace_manifest=Path(workspace_manifest))
+    if organization_repositories:
+        config = replace(config, organization_repositories=tuple(organization_repositories))
     if similarity_threshold is not None:
         config = replace(config, similarity_threshold=similarity_threshold)
     if min_heading_matches is not None:
@@ -96,11 +113,23 @@ def _as_paths(values: Iterable[str | Path]) -> tuple[Path, ...]:
     return tuple(Path(value) for value in values)
 
 
+def _as_optional_path(value: str | None) -> Path | None:
+    if value is None:
+        return None
+    return Path(value)
+
+
 def _resolve_roots(paths: Iterable[Path], base_dir: Path) -> tuple[Path, ...]:
     return tuple(
         (base_dir / path).resolve() if not path.is_absolute() else path.resolve()
         for path in paths
     )
+
+
+def _resolve_optional_path(path: Path | None, base_dir: Path) -> Path | None:
+    if path is None:
+        return None
+    return (base_dir / path).resolve() if not path.is_absolute() else path.resolve()
 
 
 def _combined_ignore_patterns(

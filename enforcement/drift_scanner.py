@@ -5,17 +5,58 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
+import re
 
 from .config import ScannerConfig
 from .heuristics import (
     has_canonical_reference,
     normalized_headings,
     normalized_phrases,
+    normalized_words,
+    normalize_text,
     token_similarity,
 )
 
 
 SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".rst"}
+AUTHORITY_TERMS_RE = re.compile(r"\b(source of truth|canonical|authoritative)\b", re.IGNORECASE)
+STRONG_RULE_RE = re.compile(r"\b(must|never|do not|required|prohibit(?:ed|s)?|only)\b", re.IGNORECASE)
+WRAPPER_EXAMPLE_RE = re.compile(
+    r"\b(?:zsh|bash)\s+-lc\s+[`'\"]([^`'\"]+)[`'\"]|\bsh\s+-c\s+[`'\"]([^`'\"]+)[`'\"]",
+    re.IGNORECASE,
+)
+ORDINARY_REPO_COMMAND_RE = re.compile(r"^(?:git|gh|make|python|python3|\./[\w.-]+)\b")
+
+RUNTIME_SURFACE_PARTS = {
+    "generated",
+    "runtime",
+    "runtime-artifacts",
+    "snapshots",
+    "snapshot",
+    "staging",
+    "staged",
+    "custom-instructions",
+    "copied-custom-instructions",
+}
+
+RULE_TOPICS = (
+    (
+        "complete output",
+        re.compile(r"\b(complete|self-contained|directly usable|partial edits?)\b", re.IGNORECASE),
+    ),
+    (
+        "shell wrapper restrictions",
+        re.compile(r"\b(zsh -lc|bash -lc|sh -c|wrapper shells?|shell wrappers?)\b", re.IGNORECASE),
+    ),
+    (
+        "partial prompt prohibitions",
+        re.compile(r"\b(partial prompts?|continuation fragments?|change x to y|diff-style)\b", re.IGNORECASE),
+    ),
+    (
+        "role boundary rules",
+        re.compile(r"\b(interaction mode|implementation mode|review/audit|orchestration|role boundaries?)\b", re.IGNORECASE),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -50,17 +91,29 @@ class OverlapCandidate:
 
 
 @dataclass(frozen=True)
+class AdvisoryFinding:
+    kind: str
+    path: Path
+    line: int
+    snippet: str
+    reasons: tuple[str, ...]
+    suggested_direction: str
+
+
+@dataclass(frozen=True)
 class ScanResult:
     candidates: tuple[OverlapCandidate, ...]
     notes_files_scanned: int
     playbook_files_scanned: int
     ignored_paths: tuple[Path, ...]
+    advisory_findings: tuple[AdvisoryFinding, ...] = ()
 
 
 def scan(config: ScannerConfig) -> ScanResult:
     _validate_config(config)
     notes = _load_documents(config.notes_roots, config.ignore_patterns)
     playbook = _load_documents(config.playbook_roots, config.ignore_patterns)
+    workspace = _load_workspace_documents(config)
 
     candidates: list[OverlapCandidate] = []
     for note in notes.documents:
@@ -98,11 +151,13 @@ def scan(config: ScannerConfig) -> ScanResult:
             )
 
     candidates.sort(key=_candidate_sort_key)
+    advisory_findings = _scan_advisory_findings(config, notes.documents, playbook.documents, workspace)
     return ScanResult(
         candidates=tuple(candidates[: config.max_candidates]),
         notes_files_scanned=len(notes.documents),
         playbook_files_scanned=len(playbook.documents),
-        ignored_paths=tuple(notes.ignored_paths + playbook.ignored_paths),
+        ignored_paths=tuple(notes.ignored_paths + playbook.ignored_paths + workspace.ignored_paths),
+        advisory_findings=tuple(advisory_findings[: config.max_candidates]),
     )
 
 
@@ -110,6 +165,14 @@ def scan(config: ScannerConfig) -> ScanResult:
 class _DocumentLoad:
     documents: tuple[Document, ...]
     ignored_paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class _WorkspaceLoad:
+    documents: tuple[Document, ...]
+    agents_documents: tuple[Document, ...]
+    ignored_paths: tuple[Path, ...]
+    findings: tuple[AdvisoryFinding, ...]
 
 
 def _load_documents(roots: tuple[Path, ...], ignore_patterns: tuple[str, ...]) -> _DocumentLoad:
@@ -125,6 +188,97 @@ def _load_documents(roots: tuple[Path, ...], ignore_patterns: tuple[str, ...]) -
                 continue
             documents.append(Document(root=root, path=path, text=path.read_text(encoding="utf-8")))
     return _DocumentLoad(tuple(documents), tuple(ignored_paths))
+
+
+def _load_workspace_documents(config: ScannerConfig) -> _WorkspaceLoad:
+    if config.workspace_root is None:
+        return _WorkspaceLoad((), (), (), ())
+    if config.workspace_manifest is None:
+        return _WorkspaceLoad(
+            (),
+            (),
+            (),
+            (
+                AdvisoryFinding(
+                    kind="workspace_scope_missing_inventory",
+                    path=config.workspace_root,
+                    line=1,
+                    snippet="workspace root configured without workspace manifest",
+                    reasons=("raw local filesystem traversal is not authoritative workspace scope",),
+                    suggested_direction=(
+                        "Configure the playbook workspace manifest and, when available, organization repository inventory."
+                    ),
+                ),
+            ),
+        )
+
+    manifest_repositories = _read_workspace_manifest(config.workspace_manifest)
+    organization_repositories = _normalized_repository_names(config.organization_repositories)
+    if organization_repositories:
+        active_repositories = tuple(
+            repo for repo in manifest_repositories if _repo_name(repo) in organization_repositories
+        )
+        out_of_manifest = sorted(organization_repositories - {_repo_name(repo) for repo in manifest_repositories})
+    else:
+        active_repositories = manifest_repositories
+        out_of_manifest = []
+
+    documents: list[Document] = []
+    agents_documents: list[Document] = []
+    ignored_paths: list[Path] = []
+    findings: list[AdvisoryFinding] = []
+    for repo in out_of_manifest:
+        findings.append(
+            AdvisoryFinding(
+                kind="workspace_scope_inventory_mismatch",
+                path=config.workspace_manifest,
+                line=1,
+                snippet=repo,
+                reasons=("organization repository inventory is not present in workspace manifest",),
+                suggested_direction="Reconcile organization inventory with ai-workflow-playbook/config/workspace-repos.txt.",
+            )
+        )
+
+    for repo in active_repositories:
+        repo_root = config.workspace_root / _repo_name(repo)
+        if not repo_root.exists():
+            findings.append(
+                AdvisoryFinding(
+                    kind="workspace_scope_missing_checkout",
+                    path=repo_root,
+                    line=1,
+                    snippet=repo,
+                    reasons=("repository is in active inventory but no local checkout was found",),
+                    suggested_direction="Review whether the local workspace is complete before relying on cross-repo scan coverage.",
+                )
+            )
+            continue
+        loaded = _load_documents((repo_root,), config.ignore_patterns)
+        documents.extend(loaded.documents)
+        ignored_paths.extend(loaded.ignored_paths)
+        agents_path = repo_root / "AGENTS.md"
+        if agents_path.exists():
+            agents_documents.append(Document(root=repo_root, path=agents_path, text=agents_path.read_text(encoding="utf-8")))
+
+    return _WorkspaceLoad(tuple(documents), tuple(agents_documents), tuple(ignored_paths), tuple(findings))
+
+
+def _read_workspace_manifest(path: Path) -> tuple[str, ...]:
+    repositories: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        cleaned = line.strip()
+        if not cleaned or cleaned.startswith("#"):
+            continue
+        repositories.append(cleaned)
+    return tuple(repositories)
+
+
+def _normalized_repository_names(repositories: tuple[str, ...]) -> set[str]:
+    return {_repo_name(repo) for repo in repositories}
+
+
+def _repo_name(repository: str) -> str:
+    return repository.rstrip("/").split("/")[-1]
 
 
 def _iter_files(root: Path) -> tuple[Path, ...]:
@@ -174,6 +328,321 @@ def _candidate_sort_key(candidate: OverlapCandidate) -> tuple[float, int, int, s
     )
 
 
+def _scan_advisory_findings(
+    config: ScannerConfig,
+    notes: tuple[Document, ...],
+    playbook: tuple[Document, ...],
+    workspace: _WorkspaceLoad,
+) -> list[AdvisoryFinding]:
+    playbook_text = "\n".join(document.text for document in playbook)
+    findings: list[AdvisoryFinding] = list(workspace.findings)
+    scanned_documents = _unique_documents(notes + workspace.documents)
+
+    for document in workspace.agents_documents:
+        findings.extend(_scan_agents_alignment(document, playbook))
+
+    for document in scanned_documents:
+        findings.extend(_scan_weak_command_form_wording(document))
+        if _is_noncanonical_surface(document, config):
+            findings.extend(_scan_authority_language(document))
+            findings.extend(_scan_staged_rule_mismatches(document, playbook_text))
+        findings.extend(_scan_shell_wrapper_examples(document))
+
+    findings.sort(key=lambda finding: (finding.path.as_posix(), finding.line, finding.kind))
+    return findings
+
+
+def _unique_documents(documents: tuple[Document, ...]) -> tuple[Document, ...]:
+    seen: set[Path] = set()
+    unique: list[Document] = []
+    for document in documents:
+        if document.path in seen:
+            continue
+        seen.add(document.path)
+        unique.append(document)
+    return tuple(unique)
+
+
+def _scan_agents_alignment(document: Document, playbook: tuple[Document, ...]) -> list[AdvisoryFinding]:
+    normalized = normalize_text(document.text)
+    findings: list[AdvisoryFinding] = []
+    if not (
+        "interaction mode" in normalized
+        and "implementation" in normalized
+        and "review audit" in normalized
+        and "orchestration" in normalized
+    ):
+        findings.append(
+            _finding(
+                "agents_missing_interaction_mode_pointer",
+                document,
+                "Interaction mode pointer not found",
+                ("AGENTS.md does not point clearly at implementation, review/audit, and orchestration modes",),
+                "Add a concise repo-local pointer to the playbook interaction-mode guidance.",
+            )
+        )
+    if not _has_full_command_form_guidance(normalized):
+        findings.append(
+            _finding(
+                "agents_missing_command_form_guidance",
+                document,
+                "Command-form guidance appears incomplete",
+                tuple(_command_form_gaps(normalized)),
+                "Reinforce direct command form and wrapper-shell preflight without duplicating broad playbook policy.",
+            )
+        )
+    if not has_canonical_reference(document.text):
+        findings.append(
+            _finding(
+                "agents_missing_canonical_playbook_reference",
+                document,
+                "Canonical playbook reference not found",
+                ("AGENTS.md should identify the playbook as the reusable workflow source",),
+                "Add a short reference to ai-workflow-playbook or docs/start-here.md.",
+            )
+        )
+
+    playbook_phrases = _playbook_phrase_set(playbook)
+    agents_phrases = set(normalized_phrases(document.text, 8))
+    repeated_phrases = agents_phrases & playbook_phrases
+    if len(repeated_phrases) >= 12 and len(normalized_words(document.text)) >= 800:
+        findings.append(
+            _finding(
+                "agents_large_canonical_duplication",
+                document,
+                "Large playbook overlap in AGENTS.md",
+                ("AGENTS.md repeats many canonical playbook phrases",),
+                "Keep thin operational reinforcement, but move broad reusable workflow text back to the playbook.",
+            )
+        )
+    return findings
+
+
+def _playbook_phrase_set(playbook: tuple[Document, ...]) -> set[str]:
+    phrases: set[str] = set()
+    for document in playbook:
+        phrases.update(normalized_phrases(document.text, 8))
+    return phrases
+
+
+def _has_full_command_form_guidance(normalized: str) -> bool:
+    return not _command_form_gaps(normalized)
+
+
+def _command_form_gaps(normalized: str) -> list[str]:
+    required = (
+        ("direct command execution", ("direct command", "direct git", "direct gh")),
+        ("make command mention", ("make",)),
+        ("python command mention", ("python",)),
+        ("repo-local script or tool mention", ("repo local", "repo-local")),
+        ("wrapper shell restriction", ("wrapper shell", "shell wrapper", "zsh lc", "bash lc", "sh c")),
+        ("wrapper-shell preflight", ("preflight", "before using", "before choosing", "check whether")),
+    )
+    gaps: list[str] = []
+    for label, options in required:
+        if not any(option in normalized for option in options):
+            gaps.append(label)
+    return gaps
+
+
+def _scan_weak_command_form_wording(document: Document) -> list[AdvisoryFinding]:
+    normalized = normalize_text(document.text)
+    if not _mentions_weak_git_gh_only_wording(normalized):
+        return []
+    gaps = _command_form_gaps(normalized)
+    if not gaps:
+        return []
+    line_number, line = _first_matching_line(document.text, re.compile(r"direct.*git.*gh|git.*gh.*commands?", re.IGNORECASE))
+    return [
+        AdvisoryFinding(
+            kind="weak_command_form_wording",
+            path=document.path,
+            line=line_number,
+            snippet=line,
+            reasons=tuple(gaps),
+            suggested_direction=(
+                "Strengthen local wording to include make, python, repo-local scripts, wrapper-shell preflight, and explicit shell-wrapper restrictions."
+            ),
+        )
+    ]
+
+
+def _mentions_weak_git_gh_only_wording(normalized: str) -> bool:
+    return (
+        "prefer direct git and gh commands" in normalized
+        or "direct git and gh commands" in normalized
+    )
+
+
+def _scan_authority_language(document: Document) -> list[AdvisoryFinding]:
+    findings: list[AdvisoryFinding] = []
+    for line_number, line in _iter_lines(document.text):
+        if not AUTHORITY_TERMS_RE.search(line):
+            continue
+        normalized_line = normalize_text(line)
+        if not _has_noncanonical_authority_claim(normalized_line):
+            continue
+        findings.append(
+            AdvisoryFinding(
+                kind="noncanonical_authority_language",
+                path=document.path,
+                line=line_number,
+                snippet=line.strip(),
+                reasons=("noncanonical surface uses authority-language wording",),
+                suggested_direction="Replace authority language with a playbook reference or label the surface as noncanonical evidence.",
+            )
+        )
+    return findings
+
+
+def _has_noncanonical_authority_claim(normalized_line: str) -> bool:
+    if "source of truth" in normalized_line:
+        source_contexts = (
+            "do not treat",
+            "implementation repositories",
+            "repository state",
+            "implemented behavior",
+        )
+        return not any(term in normalized_line for term in source_contexts)
+    if "authoritative" in normalized_line:
+        authoritative_contexts = (
+            "non authoritative",
+            "not authoritative",
+            "does not make",
+            "do not treat",
+        )
+        return not any(term in normalized_line for term in authoritative_contexts)
+    if "canonical" in normalized_line:
+        canonical_contexts = (
+            "noncanonical",
+            "non canonical",
+            "canonical false",
+            "canonical elsewhere",
+            "not become an implicit authority",
+            "not canonical",
+            "not treat as canonical",
+            "do not make content canonical",
+            "canonical playbook",
+            "playbook",
+            "canonical local validation",
+            "canonical validation",
+            "not be treated",
+        )
+        if any(term in normalized_line for term in canonical_contexts):
+            return False
+        canonical_claims = (
+            "is canonical",
+            "are canonical",
+            "as canonical",
+            "canonical source",
+            "canonical true",
+            "source is canonical",
+            "surface is canonical",
+            "artifact is canonical",
+            "note is canonical",
+            "file is canonical",
+        )
+        return any(term in normalized_line for term in canonical_claims)
+    return False
+
+
+def _scan_staged_rule_mismatches(document: Document, playbook_text: str) -> list[AdvisoryFinding]:
+    findings: list[AdvisoryFinding] = []
+    for line_number, line in _iter_lines(document.text):
+        if not STRONG_RULE_RE.search(line):
+            continue
+        for topic, pattern in RULE_TOPICS:
+            if not pattern.search(line):
+                continue
+            if _playbook_has_strong_topic(playbook_text, pattern):
+                continue
+            findings.append(
+                AdvisoryFinding(
+                    kind="staged_rule_stronger_than_playbook",
+                    path=document.path,
+                    line=line_number,
+                    snippet=line.strip(),
+                    reasons=(f"strong noncanonical {topic} wording lacks matching playbook representation",),
+                    suggested_direction="Review whether the rule should be promoted to the playbook or softened as noncanonical evidence.",
+                )
+            )
+    return findings
+
+
+def _playbook_has_strong_topic(playbook_text: str, pattern: re.Pattern[str]) -> bool:
+    return any(
+        pattern.search(line) and STRONG_RULE_RE.search(line)
+        for _, line in _iter_lines(playbook_text)
+    )
+
+
+def _scan_shell_wrapper_examples(document: Document) -> list[AdvisoryFinding]:
+    findings: list[AdvisoryFinding] = []
+    lines = _iter_lines(document.text)
+    for index, (line_number, line) in enumerate(lines):
+        match = WRAPPER_EXAMPLE_RE.search(line)
+        if not match:
+            continue
+        command = (match.group(1) or match.group(2) or "").strip()
+        if not ORDINARY_REPO_COMMAND_RE.search(command):
+            continue
+        previous_line = lines[index - 1][1] if index else ""
+        if _is_negative_shell_wrapper_example(f"{previous_line} {line}"):
+            continue
+        findings.append(
+            AdvisoryFinding(
+                kind="ordinary_repo_command_shell_wrapper_example",
+                path=document.path,
+                line=line_number,
+                snippet=line.strip(),
+                reasons=(f"wrapper shell example contains ordinary repo command: {command}",),
+                suggested_direction="Use direct argv form in examples unless shell syntax is actually required.",
+            )
+        )
+    return findings
+
+
+def _is_negative_shell_wrapper_example(line: str) -> bool:
+    normalized = normalize_text(line)
+    negative_markers = ("incorrect", "do not", "not normal", "avoid", "rather than")
+    return any(marker in normalized for marker in negative_markers) or "not" in normalized.split()
+
+
+def _is_noncanonical_surface(document: Document, config: ScannerConfig) -> bool:
+    if any(_is_within(document.path, root.resolve()) for root in config.notes_roots):
+        return True
+    parts = {part.lower() for part in document.path.parts}
+    return bool(parts & RUNTIME_SURFACE_PARTS)
+
+
+def _finding(
+    kind: str,
+    document: Document,
+    snippet: str,
+    reasons: tuple[str, ...],
+    suggested_direction: str,
+) -> AdvisoryFinding:
+    return AdvisoryFinding(
+        kind=kind,
+        path=document.path,
+        line=1,
+        snippet=snippet,
+        reasons=reasons,
+        suggested_direction=suggested_direction,
+    )
+
+
+def _first_matching_line(text: str, pattern: re.Pattern[str]) -> tuple[int, str]:
+    for line_number, line in _iter_lines(text):
+        if pattern.search(line):
+            return line_number, line.strip()
+    return 1, ""
+
+
+def _iter_lines(text: str) -> tuple[tuple[int, str], ...]:
+    return tuple(enumerate(text.splitlines(), start=1))
+
+
 def _validate_config(config: ScannerConfig) -> None:
     if not config.notes_roots:
         raise ValueError("at least one notes root is required")
@@ -182,6 +651,10 @@ def _validate_config(config: ScannerConfig) -> None:
     for root in config.notes_roots + config.playbook_roots:
         if not root.exists():
             raise ValueError(f"configured root does not exist: {root}")
+    if config.workspace_root is not None and not config.workspace_root.exists():
+        raise ValueError(f"configured workspace root does not exist: {config.workspace_root}")
+    if config.workspace_manifest is not None and not config.workspace_manifest.exists():
+        raise ValueError(f"configured workspace manifest does not exist: {config.workspace_manifest}")
     if config.min_phrase_words < 3:
         raise ValueError("min_phrase_words must be at least 3")
     if config.min_phrase_matches < 1:
