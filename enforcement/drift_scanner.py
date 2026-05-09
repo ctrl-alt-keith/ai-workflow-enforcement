@@ -19,7 +19,96 @@ from .heuristics import (
 
 
 SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".rst"}
-AUTHORITY_TERMS_RE = re.compile(r"\b(source of truth|canonical|authoritative)\b", re.IGNORECASE)
+AUTHORITY_TERMS_RE = re.compile(
+    r"\b(source of truth|canonical|authoritative|definitive|primary operational reference|official workflow definition|governs?|defines?)\b",
+    re.IGNORECASE,
+)
+AUTHORITY_SEGMENT_SPLIT_RE = re.compile(r"[.;:!?]|\b(?:but|however|though|although|while)\b", re.IGNORECASE)
+AUTHORITY_DISCLAIMER_PHRASES = (
+    "noncanonical",
+    "non canonical",
+    "not a canonical",
+    "not canonical",
+    "not authoritative",
+    "not the authoritative source",
+    "not an authoritative source",
+    "not become an implicit authority",
+    "not as canonical repository readiness guidance",
+    "not be treated",
+    "not treat as canonical",
+    "not treated as canonical",
+    "do not make content canonical",
+    "do not treat",
+    "does not make",
+    "rather than an independent canonical source",
+)
+AUTHORITY_EXTERNAL_SOURCE_PHRASES = (
+    "authoritative docs",
+    "authoritative official",
+    "can be authoritative for behavior claims",
+    "canonical local validation",
+    "canonical playbook",
+    "canonical validation",
+    "github issues and prs remain authoritative",
+    "implemented behavior",
+    "official documentation",
+    "release notes and changelogs",
+    "remain authoritative for implementation work",
+    "repository source of truth",
+    "repository state",
+    "risks acting like a second source of truth",
+)
+AUTHORITY_DISCUSSION_PHRASES = (
+    "appear authoritative",
+    "authoritative source scanner",
+    "authoritative source rollout",
+    "authoritative source work",
+    "can look",
+    "canonical false",
+    "canonical elsewhere",
+    "canonical source checked",
+    "canonical source confusion",
+    "canonical source evidence",
+    "canonical source use",
+    "canonical sources",
+    "feel authoritative",
+    "hardened authoritative source",
+    "manifest fields authoritative",
+    "phrase source of truth",
+    "scratch artifacts are disposable",
+    "shadow canonical risk",
+    "source of truth language",
+    "source of truth wording",
+    "treating ai workflow incubator as canonical",
+    "using canonical or source of truth language",
+)
+AUTHORITY_CLAIM_PHRASES = (
+    "authoritative guidance",
+    "canonical true",
+    "definitive guidance",
+    "definitive instruction",
+    "definitive instructions",
+    "official workflow definition",
+    "primary operational reference",
+    "source of truth",
+    "source is canonical",
+    "surface is canonical",
+    "artifact is canonical",
+    "note is canonical",
+    "file is canonical",
+)
+AUTHORITY_CLAIM_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\b(?:is|are|as|becomes?|serves as|acts as)\s+(?:the\s+)?(?:canonical|authoritative|definitive)\b",
+        r"\b(?:canonical|authoritative|definitive)\s+(?:source|guidance|instruction|instructions|reference|definition)\b",
+        r"\b(?:primary|official)\s+(?:operational\s+)?(?:reference|workflow definition)\b",
+        r"\b(?:this|the|current|runtime)\s+(?:document|prompt|file|note|artifact|surface)\s+governs\b",
+        r"\b(?:governs|defines)\s+(?:the\s+)?(?:workflow|operational workflow|instructions)\b",
+        r"\btreat\s+this\s+as\s+(?:the\s+)?source\s+of\s+truth\b",
+        r"\buse\s+this\s+as\s+(?:the\s+)?canonical\s+workflow\b",
+    )
+)
 STRONG_RULE_RE = re.compile(r"\b(must|never|do not|required|prohibit(?:ed|s)?|only)\b", re.IGNORECASE)
 WRAPPER_EXAMPLE_RE = re.compile(
     r"(?<![\w.-])(?:/(?:usr/)?bin/)?(?:(?:zsh|bash)\s+-lc|sh\s+-c)\s+"
@@ -547,6 +636,7 @@ def _scan_authority_language(document: Document) -> list[AdvisoryFinding]:
         normalized_line = normalize_text(line)
         context = _line_context(lines, index)
         if not _has_noncanonical_authority_claim(
+            line,
             normalized_line,
             context,
             is_heading=line.lstrip().startswith("#"),
@@ -566,170 +656,94 @@ def _scan_authority_language(document: Document) -> list[AdvisoryFinding]:
 
 
 def _has_noncanonical_authority_claim(
+    line: str,
     normalized_line: str,
     normalized_context: str,
     *,
     is_heading: bool,
 ) -> bool:
-    if _is_direct_authority_claim(normalized_line, is_heading=is_heading):
+    if _is_direct_authority_claim(line, normalized_line, is_heading=is_heading):
         return True
     if _is_authority_context_exception(normalized_context):
         return False
     return _has_ambiguous_authority_reference(normalized_line, normalized_context)
 
 
-def _is_direct_authority_claim(normalized_line: str, *, is_heading: bool) -> bool:
-    if "source of truth" in normalized_line and not is_heading:
-        source_contexts = (
-            "do not treat",
-            "github issues and prs remain authoritative",
-            "implementation repositories",
-            "repository state",
-            "repository source of truth",
-            "implemented behavior",
-            "scratch artifacts are disposable",
-            "source of truth language",
-        )
-        return not any(term in normalized_line for term in source_contexts)
-    if "authoritative" in normalized_line:
-        authoritative_contexts = (
-            "can be authoritative for behavior claims",
-            "can look",
-            "feel authoritative",
-            "non authoritative",
-            "not authoritative",
-            "not the authoritative source",
-            "not an authoritative source",
-            "does not make",
-            "do not treat",
-            "official documentation",
-            "authoritative docs",
-            "authoritative official",
-            "appear authoritative",
-            "release notes and changelogs",
-            "remain authoritative for implementation work",
-        )
-        return not any(term in normalized_line for term in authoritative_contexts)
-    if "canonical" in normalized_line:
-        canonical_contexts = (
-            "noncanonical",
-            "non canonical",
-            "canonical false",
-            "canonical elsewhere",
-            "canonical source use",
-            "canonical source checked",
-            "canonical source evidence",
-            "canonical sources",
-            "canonical source confusion",
-            "not become an implicit authority",
-            "not a canonical",
-            "not canonical",
-            "not treat as canonical",
-            "not treated as canonical",
-            "do not make content canonical",
-            "canonical playbook",
-            "playbook",
-            "canonical local validation",
-            "canonical validation",
-            "treating ai workflow incubator as canonical",
-            "not be treated",
-            "using canonical or source of truth language",
-        )
-        if any(term in normalized_line for term in canonical_contexts):
-            return False
-        canonical_claims = (
-            "is canonical",
-            "are canonical",
-            "as canonical",
-            "canonical true",
-            "source is canonical",
-            "surface is canonical",
-            "artifact is canonical",
-            "note is canonical",
-            "file is canonical",
-        )
-        return any(term in normalized_line for term in canonical_claims)
-    return False
+def _is_direct_authority_claim(line: str, normalized_line: str, *, is_heading: bool) -> bool:
+    if is_heading and "source of truth" in normalized_line:
+        return False
+    segments = _authority_segments(line)
+    return any(_segment_has_authority_claim(segment) for segment in segments)
+
+
+def _authority_segments(line: str) -> tuple[str, ...]:
+    segments = tuple(
+        normalize_text(segment)
+        for segment in AUTHORITY_SEGMENT_SPLIT_RE.split(line)
+        if normalize_text(segment)
+    )
+    return segments or (normalize_text(line),)
+
+
+def _segment_has_authority_claim(normalized_segment: str) -> bool:
+    if _has_authority_exception(normalized_segment):
+        return False
+    if any(phrase in normalized_segment for phrase in AUTHORITY_CLAIM_PHRASES):
+        return True
+    return any(pattern.search(normalized_segment) for pattern in AUTHORITY_CLAIM_PATTERNS)
+
+
+def _has_authority_exception(normalized_text: str) -> bool:
+    exception_phrases = (
+        AUTHORITY_DISCLAIMER_PHRASES
+        + AUTHORITY_EXTERNAL_SOURCE_PHRASES
+        + AUTHORITY_DISCUSSION_PHRASES
+        + ("implementation repositories", "non authoritative", "not enforcement tooling")
+    )
+    return any(term in normalized_text for term in exception_phrases)
+
+
+def _has_authority_disclaimer(normalized_text: str) -> bool:
+    return any(term in normalized_text for term in AUTHORITY_DISCLAIMER_PHRASES)
+
+
+def _has_authority_discussion_context(normalized_text: str) -> bool:
+    context_phrases = AUTHORITY_EXTERNAL_SOURCE_PHRASES + AUTHORITY_DISCUSSION_PHRASES
+    return any(term in normalized_text for term in context_phrases)
+
+
+def _has_authority_claim_language(normalized_text: str) -> bool:
+    if any(phrase in normalized_text for phrase in AUTHORITY_CLAIM_PHRASES):
+        return True
+    return any(pattern.search(normalized_text) for pattern in AUTHORITY_CLAIM_PATTERNS)
+
+
+def _has_context_suppressed_authority_language(normalized_context: str) -> bool:
+    if _has_authority_disclaimer(normalized_context):
+        return True
+    return _has_authority_discussion_context(normalized_context)
 
 
 def _has_ambiguous_authority_reference(normalized_line: str, normalized_context: str) -> bool:
+    if _has_context_suppressed_authority_language(normalized_context):
+        return False
     if "source of truth" in normalized_line:
-        source_contexts = (
-            "do not treat",
-            "github issues and prs remain authoritative",
-            "implementation repositories",
-            "repository state",
-            "repository source of truth",
-            "implemented behavior",
-            "scratch artifacts are disposable",
-            "source of truth language",
-        )
-        return not any(term in normalized_context for term in source_contexts)
+        return True
     if "authoritative" in normalized_line:
-        authoritative_contexts = (
-            "can be authoritative for behavior claims",
-            "can look",
-            "feel authoritative",
-            "non authoritative",
-            "not authoritative",
-            "not the authoritative source",
-            "not an authoritative source",
-            "does not make",
-            "do not treat",
-            "official documentation",
-            "authoritative docs",
-            "authoritative official",
-            "appear authoritative",
-            "release notes and changelogs",
-            "remain authoritative for implementation work",
-        )
-        return not any(term in normalized_context for term in authoritative_contexts)
+        return True
     if "canonical" in normalized_line:
-        canonical_contexts = (
-            "noncanonical",
-            "non canonical",
-            "canonical false",
-            "canonical elsewhere",
-            "canonical source use",
-            "canonical source checked",
-            "canonical source evidence",
-            "canonical sources",
-            "canonical source confusion",
-            "not become an implicit authority",
-            "not a canonical",
-            "not canonical",
-            "not treat as canonical",
-            "not treated as canonical",
-            "do not make content canonical",
-            "canonical playbook",
-            "playbook",
-            "canonical local validation",
-            "canonical validation",
-            "treating ai workflow incubator as canonical",
-            "not be treated",
-            "using canonical or source of truth language",
-        )
-        if any(term in normalized_context for term in canonical_contexts):
-            return False
+        return False
+    if _has_authority_claim_language(normalized_line):
+        return True
     return False
 
 
 def _is_authority_context_exception(normalized_context: str) -> bool:
     exception_terms = (
-        "authoritative source scanner",
-        "authoritative source rollout",
-        "authoritative source work",
-        "hardened authoritative source",
-        "manifest fields authoritative",
         "not a canonical source",
         "not canonical playbook guidance",
-        "not enforcement tooling",
-        "not the authoritative source",
         "not authoritative live operational state",
-        "not as canonical repository readiness guidance",
-        "rather than an independent canonical source",
         "risks acting like a second source of truth",
-        "shadow canonical risk",
     )
     return any(term in normalized_context for term in exception_terms)
 
