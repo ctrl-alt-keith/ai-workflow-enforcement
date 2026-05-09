@@ -124,6 +124,22 @@ fetches/prunes first, so action lists may differ if remote refs changed.
 Conservative repositories are skipped by explicit config or `.github` repo/path
 naming. See `docs/branch-cleanup.md`.
 
+## Org PR And Issue Scan
+
+The org PR and issue scan is a report-only maintenance automation helper for
+listing current open pull requests and open issues across dynamically
+enumerated repositories in the `ctrl-alt-keith` GitHub organization.
+
+```sh
+python3 -m enforcement.org_pr_issue_scan
+```
+
+It uses the local `gh` CLI authentication/runtime, handles paginated repository
+and work-item responses, excludes pull requests from issue results, groups
+findings by repository, and reports skipped or inaccessible repository scopes
+with reasons. Machine-readable JSON is available with `--output-format json`.
+See `docs/org-pr-issue-scan.md`.
+
 ## Workflow Contracts
 
 Phase 2 introduces the first minimal structured workflow contract: a
@@ -193,7 +209,7 @@ under that directory. The example config uses `archive/**` for this reason.
 ## Non-Goals
 
 - automatic remediation
-- GitHub API integration beyond consuming explicit evidence supplied in config
+- mutating GitHub API integration
 - CI enforcement
 - embeddings or vector databases
 - LLM-backed semantic search
