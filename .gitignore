@@ -1,4 +1,5 @@
 .DS_Store
+.worktrees/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -8,4 +9,3 @@ htmlcov/
 dist/
 build/
 *.egg-info/
-

@@ -26,6 +26,62 @@ WRAPPER_EXAMPLE_RE = re.compile(
     re.IGNORECASE,
 )
 ORDINARY_REPO_COMMAND_RE = re.compile(r"^(?:git|gh|make|python|python3|\./[\w.-]+)\b")
+WORKTREE_CREATION_RE = re.compile(
+    r"\bgit\s+worktree\s+add\b"
+    r"|"
+    r"\b(?:create|creating|add|adding|set\s+up|setting\s+up|spin\s+up|spinning\s+up|make|making)\s+"
+    r"(?:a\s+|an\s+|the\s+)?(?:new\s+|fresh\s+|repo-local\s+|isolated\s+|clean\s+){0,3}worktrees?\b"
+    r"|"
+    r"\bworktree\s+creation\b"
+    r"|"
+    r"\b(?:use|using)\s+worktrees?\s+for\s+(?:parallel\s+)?(?:same[-\s]+repo|same\s+repository|parallel)\b"
+    r"|"
+    r"\b(?:one\s+)?worktrees?\s+per\s+(?:issue|task|lane|arc)\b",
+    re.IGNORECASE,
+)
+ISOLATED_SURFACE_CREATION_RE = re.compile(
+    r"\b(?:create|creating|add|adding|set\s+up|setting\s+up|spin\s+up|spinning\s+up|make|making)\b"
+    r"[^.\n]{0,100}\b(?:isolated|isolation)\b"
+    r"[^.\n]{0,80}\b(?:execution\s+)?(?:surfaces?|workspaces?|checkouts?|containers?)\b",
+    re.IGNORECASE,
+)
+WORKTREE_SELECTION_SIGNAL_RE = re.compile(
+    r"\bgit\s+worktree\s+list\b"
+    r"|"
+    r"\b(?:inspect|check|list|review)\w*\b[^.\n]{0,100}\b\.worktrees/?\b"
+    r"|"
+    r"\b\.worktrees/?\b[^.\n]{0,100}\b(?:inspect|check|list|review|existing)\w*\b"
+    r"|"
+    r"\breuse\w*\b[^.\n]{0,100}\b(?:existing\s+)?(?:clean\s+)?(?:worktree|checkout|surface)\b"
+    r"|"
+    r"\bexisting\s+(?:clean\s+)?(?:worktree|checkout|surface)\b"
+    r"|"
+    r"\bactive\s+checkout\b"
+    r"|"
+    r"\bchoose\w*\b[^.\n]{0,160}\b(?:active\s+checkout|existing\s+worktree|new\s+worktree)\b"
+    r"|"
+    r"\b(?:active\s+checkout|existing\s+worktree)\b[^.\n]{0,160}\bnew\s+worktree\b"
+    r"|"
+    r"\bnew\s+worktree\b[^.\n]{0,160}\b(?:active\s+checkout|existing\s+worktree)\b"
+    r"|"
+    r"\bonly\s+when\b[^.\n]{0,100}\bisolation\b"
+    r"|"
+    r"\bisolation\b[^.\n]{0,100}\bonly\s+when\b"
+    r"|"
+    r"\bisolation\s+is\s+needed\b"
+    r"|"
+    r"\bneeds\s+isolation\b"
+    r"|"
+    r"\bnormal\s+branches?\b[^.\n]{0,120}\b(?:single|sequential|single[-\s]+task)\b"
+    r"|"
+    r"\b(?:single|sequential|single[-\s]+task)\b[^.\n]{0,120}\bnormal\s+branches?\b",
+    re.IGNORECASE,
+)
+NEGATIVE_WORKTREE_GUIDANCE_RE = re.compile(
+    r"\b(?:do\s+not|don't|avoid|warning|warns?|unnecessary|churn|overweight|underweight|"
+    r"fail(?:s|ed|ing)?\s+to|missing|without|ignore(?:s|d)?\s+existing|no\s+new\s+worktree)\b",
+    re.IGNORECASE,
+)
 
 RUNTIME_SURFACE_PARTS = {
     "generated",
@@ -347,6 +403,7 @@ def _scan_advisory_findings(
             findings.extend(_scan_authority_language(document))
             findings.extend(_scan_staged_rule_mismatches(document, playbook_text))
         findings.extend(_scan_shell_wrapper_examples(document))
+        findings.extend(_scan_worktree_creation_guidance(document))
 
     findings.sort(key=lambda finding: (finding.path.as_posix(), finding.line, finding.kind))
     return findings
@@ -726,6 +783,54 @@ def _scan_shell_wrapper_examples(document: Document) -> list[AdvisoryFinding]:
     return findings
 
 
+def _scan_worktree_creation_guidance(document: Document) -> list[AdvisoryFinding]:
+    findings: list[AdvisoryFinding] = []
+    lines = _iter_lines(document.text)
+    for index, (line_number, line) in enumerate(lines):
+        if not _encourages_worktree_creation(line):
+            continue
+        context = _nearby_context(lines, index, radius=5)
+        if _is_descriptive_worktree_record(line, context):
+            continue
+        if WORKTREE_SELECTION_SIGNAL_RE.search(context):
+            continue
+        if NEGATIVE_WORKTREE_GUIDANCE_RE.search(context):
+            continue
+        findings.append(
+            AdvisoryFinding(
+                kind="worktree_creation_without_inspection_signal",
+                path=document.path,
+                line=line_number,
+                snippet=line.strip(),
+                reasons=("worktree or isolated-surface creation appears without nearby inspection, reuse, or selection-order guidance",),
+                suggested_direction=(
+                    "Add nearby guidance to inspect `git worktree list` and repo-local `.worktrees/`, then choose the active checkout, an existing clean worktree, or a new worktree based on task isolation needs."
+                ),
+            )
+        )
+    return findings
+
+
+def _encourages_worktree_creation(line: str) -> bool:
+    return bool(WORKTREE_CREATION_RE.search(line) or ISOLATED_SURFACE_CREATION_RE.search(line))
+
+
+def _is_descriptive_worktree_record(line: str, context: str) -> bool:
+    normalized_line = normalize_text(line)
+    normalized_context = normalize_text(context)
+    if (
+        "run shape" in normalized_context
+        and "source repository" in normalized_context
+        and "base at setup" in normalized_context
+    ):
+        return True
+    if "repository ran git worktree add in parallel" in normalized_line:
+        return True
+    if re.match(r"^\s*\d+\.\s+[\w/-]*worktree creation\s*$", line):
+        return True
+    return False
+
+
 def _is_negative_shell_wrapper_example(line: str) -> bool:
     normalized = normalize_text(line)
     negative_markers = ("incorrect", "do not", "not normal", "avoid", "rather than")
@@ -776,6 +881,12 @@ def _line_context(lines: tuple[tuple[int, str], ...], index: int) -> str:
     if next_line:
         context.append(next_line)
     return normalize_text(" ".join(context))
+
+
+def _nearby_context(lines: tuple[tuple[int, str], ...], index: int, *, radius: int) -> str:
+    start = max(0, index - radius)
+    end = min(len(lines), index + radius + 1)
+    return "\n".join(line for _, line in lines[start:end])
 
 
 def _nearest_nonblank_line(lines: tuple[tuple[int, str], ...], indexes: range) -> str:
