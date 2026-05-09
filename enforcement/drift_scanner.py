@@ -194,7 +194,13 @@ RUNTIME_SURFACE_PARTS = {
 RULE_TOPICS = (
     (
         "complete output",
-        re.compile(r"\b(complete|self-contained|directly usable|partial edits?)\b", re.IGNORECASE),
+        re.compile(
+            r"\b("
+            r"complete|self-contained|directly usable|drop-in|full updated artifact|ready to paste|"
+            r"copy/paste-safe|copy-paste-safe|copyable|partial edits?"
+            r")\b",
+            re.IGNORECASE,
+        ),
     ),
     (
         "shell wrapper restrictions",
@@ -202,7 +208,13 @@ RULE_TOPICS = (
     ),
     (
         "partial prompt prohibitions",
-        re.compile(r"\b(partial prompts?|continuation fragments?|change x to y|diff-style)\b", re.IGNORECASE),
+        re.compile(
+            r"\b("
+            r"partial prompts?|continuation fragments?|change x to y|diff-style|delta-only|"
+            r"targeted edits?"
+            r")\b",
+            re.IGNORECASE,
+        ),
     ),
     (
         "role boundary rules",
