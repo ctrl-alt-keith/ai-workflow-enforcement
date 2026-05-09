@@ -340,6 +340,91 @@ class DriftScannerTests(unittest.TestCase):
         self.assertEqual(1, len(wrapper_findings))
         self.assertIn("make check", wrapper_findings[0].reasons[0])
 
+    def test_worktree_creation_without_inspection_signal_is_advisory_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "prompt.md").write_text(
+                "For same-repo implementation work, create a new worktree under `.worktrees/` "
+                "and make the change there.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "worktree_creation_without_inspection_signal"
+        ]
+        self.assertEqual(1, len(findings))
+        self.assertIn("create a new worktree", findings[0].snippet)
+
+    def test_worktree_selection_order_guidance_is_not_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "guidance.md").write_text(
+                "Before creating a worktree, inspect `git worktree list` and inspect repo-local `.worktrees/`.\n"
+                "Choose between the active checkout, an existing clean worktree, or a new worktree based on task isolation needs.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "worktree_creation_without_inspection_signal",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
+    def test_parallel_worktree_guidance_with_normal_branch_scope_is_not_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "guidance.md").write_text(
+                "Use worktrees for parallel same-repo work. "
+                "Normal branches are fine for single-task sequential work when safe.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "worktree_creation_without_inspection_signal",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
+    def test_worktree_cleanup_and_ignore_guidance_is_not_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "cleanup.md").write_text(
+                "Ignore repo-local `.worktrees/` directories and remove stale worktree metadata during cleanup.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "worktree_creation_without_inspection_signal",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
     def test_workspace_scope_uses_manifest_and_organization_intersection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
