@@ -1,0 +1,185 @@
+from __future__ import annotations
+
+import json
+import unittest
+
+from enforcement.org_pr_issue_scan import GhCommand, render_json_report, render_text_report, scan_org_work
+
+
+class OrgPrIssueScanTests(unittest.TestCase):
+    def test_scans_multiple_repositories_with_open_prs_and_issues(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [
+                    [_repo("alpha")],
+                    [_repo("beta")],
+                ],
+                "/repos/ctrl-alt-keith/alpha/pulls?state=open&per_page=100": [
+                    [_item(7, "Alpha PR", labels=("workflow",), assignees=("keith",))]
+                ],
+                "/repos/ctrl-alt-keith/alpha/issues?state=open&per_page=100": [
+                    [_item(11, "Alpha issue", author="octocat")]
+                ],
+                "/repos/ctrl-alt-keith/beta/pulls?state=open&per_page=100": [
+                    [_item(3, "Beta PR")]
+                ],
+                "/repos/ctrl-alt-keith/beta/issues?state=open&per_page=100": [
+                    [_item(4, "Beta issue", labels=("bug", "docs"))]
+                ],
+            }
+        )
+
+        report = scan_org_work(runner=gh)
+
+        self.assertEqual(("alpha", "beta"), tuple(repo.name for repo in report.repositories))
+        self.assertEqual(2, sum(len(repo.pull_requests) for repo in report.repositories))
+        self.assertEqual(2, sum(len(repo.issues) for repo in report.repositories))
+        self.assertEqual(("workflow",), report.repositories[0].pull_requests[0].labels)
+        self.assertEqual(("keith",), report.repositories[0].pull_requests[0].assignees)
+        self.assertEqual("octocat", report.repositories[0].issues[0].author)
+
+    def test_issue_results_exclude_pull_requests(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("sample")]],
+                "/repos/ctrl-alt-keith/sample/pulls?state=open&per_page=100": [[]],
+                "/repos/ctrl-alt-keith/sample/issues?state=open&per_page=100": [
+                    [
+                        _item(1, "Real issue"),
+                        {
+                            **_item(2, "PR surfaced by issues endpoint"),
+                            "pull_request": {"url": "https://api.github.com/pr/2"},
+                        },
+                    ]
+                ],
+            }
+        )
+
+        report = scan_org_work(runner=gh)
+
+        self.assertEqual([1], [issue.number for issue in report.repositories[0].issues])
+
+    def test_paginated_repository_pr_and_issue_responses_are_flattened(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [
+                    [_repo("first")],
+                    [_repo("second")],
+                ],
+                "/repos/ctrl-alt-keith/first/pulls?state=open&per_page=100": [
+                    [_item(1, "First PR page one")],
+                    [_item(2, "First PR page two")],
+                ],
+                "/repos/ctrl-alt-keith/first/issues?state=open&per_page=100": [
+                    [_item(3, "First issue page one")],
+                    [_item(4, "First issue page two")],
+                ],
+                "/repos/ctrl-alt-keith/second/pulls?state=open&per_page=100": [[]],
+                "/repos/ctrl-alt-keith/second/issues?state=open&per_page=100": [[]],
+            }
+        )
+
+        report = scan_org_work(runner=gh)
+
+        first = report.repositories[0]
+        self.assertEqual([1, 2], [pr.number for pr in first.pull_requests])
+        self.assertEqual([3, 4], [issue.number for issue in first.issues])
+        for command in gh.commands:
+            self.assertIn("--paginate", command)
+            self.assertIn("--slurp", command)
+
+    def test_empty_no_open_work_report_is_explicit(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("quiet")]],
+                "/repos/ctrl-alt-keith/quiet/pulls?state=open&per_page=100": [[]],
+                "/repos/ctrl-alt-keith/quiet/issues?state=open&per_page=100": [[]],
+            }
+        )
+
+        report = scan_org_work(runner=gh)
+        text = render_text_report(report)
+        data = json.loads(render_json_report(report))
+
+        self.assertIn("Open pull requests: 0", text)
+        self.assertIn("Open issues: 0", text)
+        self.assertEqual(0, data["summary"]["open_pull_request_count"])
+        self.assertEqual(0, data["summary"]["open_issue_count"])
+
+    def test_inaccessible_repository_is_reported(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("blocked")]],
+                "/repos/ctrl-alt-keith/blocked/pulls?state=open&per_page=100": GhCommand(
+                    argv=(),
+                    returncode=1,
+                    stdout="",
+                    stderr="HTTP 403: Forbidden",
+                ),
+                "/repos/ctrl-alt-keith/blocked/issues?state=open&per_page=100": GhCommand(
+                    argv=(),
+                    returncode=1,
+                    stdout="",
+                    stderr="HTTP 404: Not Found",
+                ),
+            }
+        )
+
+        report = scan_org_work(runner=gh)
+        text = render_text_report(report)
+
+        self.assertEqual(1, len(report.repositories))
+        self.assertEqual(
+            [
+                "pull requests inaccessible: HTTP 403: Forbidden",
+                "issues inaccessible: HTTP 404: Not Found",
+            ],
+            report.repositories[0].skipped,
+        )
+        self.assertIn("skipped: pull requests inaccessible: HTTP 403: Forbidden", text)
+        self.assertIn("skipped: issues inaccessible: HTTP 404: Not Found", text)
+
+
+class FakeGh:
+    def __init__(self, responses: dict[str, object]) -> None:
+        self.responses = responses
+        self.commands: list[tuple[str, ...]] = []
+
+    def __call__(self, argv: tuple[str, ...]) -> GhCommand:
+        self.commands.append(argv)
+        endpoint = argv[-1]
+        response = self.responses[endpoint]
+        if isinstance(response, GhCommand):
+            return response
+        return GhCommand(argv=argv, returncode=0, stdout=json.dumps(response), stderr="")
+
+
+def _repo(name: str) -> dict[str, object]:
+    return {
+        "name": name,
+        "full_name": f"ctrl-alt-keith/{name}",
+        "html_url": f"https://github.com/ctrl-alt-keith/{name}",
+    }
+
+
+def _item(
+    number: int,
+    title: str,
+    *,
+    author: str = "keith",
+    labels: tuple[str, ...] = (),
+    assignees: tuple[str, ...] = (),
+) -> dict[str, object]:
+    return {
+        "number": number,
+        "title": title,
+        "html_url": f"https://github.com/ctrl-alt-keith/sample/{number}",
+        "user": {"login": author},
+        "labels": [{"name": label} for label in labels],
+        "assignees": [{"login": assignee} for assignee in assignees],
+        "updated_at": "2026-05-08T12:00:00Z",
+    }
+
+
+if __name__ == "__main__":
+    unittest.main()

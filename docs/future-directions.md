@@ -3,7 +3,7 @@
 These areas are intentionally deferred until real workflow pressure justifies
 them:
 
-- GitHub pull request or issue integration
+- mutating GitHub pull request or issue integration
 - scheduled or CI-based advisory scans
 - richer section-level comparison
 - repository-specific scanner profiles
