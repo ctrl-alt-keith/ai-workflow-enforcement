@@ -6,7 +6,7 @@ This repository is not a workflow orchestrator. It holds small operational
 checks that help humans notice when staging notes, canonical playbook guidance,
 and repo-local execution guidance may be drifting out of alignment.
 
-## Current Tool
+## Current Tools
 
 The first experiment is a filesystem-scoped notes vs playbook drift scanner.
 It compares configured staging-note roots with configured playbook roots and
@@ -103,6 +103,25 @@ count, candidate evidence, and suggested reviewer questions while explicitly
 preserving human-reviewed classification. See `docs/review-packet.md` for the
 intended local handoff workflow.
 
+## Branch Cleanup Reinforcement
+
+The branch cleanup tool is a dry-run-first operational reinforcement helper for
+configured Git repositories. It reports normal Git-proven merged branch cleanup
+separately from human-approved stale non-ancestor cleanup, and it only mutates
+refs with explicit `--apply`.
+
+```sh
+python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json
+```
+
+Stale cleanup requires config-supplied approval and evidence, such as merged PR
+metadata with a matching branch-tip OID. The tool does not call the GitHub API,
+write automation memory, schedule follow-up work, or broaden this repository
+into a remediation platform. Dry-run mode does not fetch or prune; apply mode
+fetches/prunes first, so action lists may differ if remote refs changed.
+Conservative repositories are skipped by explicit config or `.github` repo/path
+naming. See `docs/branch-cleanup.md`.
+
 ## Workflow Contracts
 
 Phase 2 introduces the first minimal structured workflow contract: a
@@ -172,7 +191,7 @@ under that directory. The example config uses `archive/**` for this reason.
 ## Non-Goals
 
 - automatic remediation
-- GitHub API integration
+- GitHub API integration beyond consuming explicit evidence supplied in config
 - CI enforcement
 - embeddings or vector databases
 - LLM-backed semantic search

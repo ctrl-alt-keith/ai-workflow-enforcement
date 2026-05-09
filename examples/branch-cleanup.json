@@ -1,0 +1,32 @@
+{
+  "repositories": [
+    {
+      "name": "ai-workflow-enforcement",
+      "path": "..",
+      "remote": "origin",
+      "default_branch": "main"
+    }
+  ],
+  "protected_branches": [
+    "main",
+    "master",
+    "trunk",
+    "develop"
+  ],
+  "stale_approvals": [
+    {
+      "repo": "ai-workflow-enforcement",
+      "scope": "remote",
+      "branch": "example/stale-merged-pr",
+      "approved_by": "human reviewer",
+      "reason": "Merged PR evidence reviewed; remote ref is stale.",
+      "evidence": {
+        "kind": "github_merged_pr",
+        "pr_number": 123,
+        "state": "MERGED",
+        "merged_at": "2026-05-08T00:00:00Z",
+        "head_oid": "replace-with-branch-tip-oid"
+      }
+    }
+  ]
+}
