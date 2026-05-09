@@ -266,6 +266,29 @@ class DriftScannerTests(unittest.TestCase):
         self.assertIn("noncanonical_authority_language", kinds)
         self.assertIn("staged_rule_stronger_than_playbook", kinds)
 
+    def test_sandbox_writable_roots_exhaustive_claim_is_advisory_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "codex.md").write_text(
+                "The sandbox_workspace_write.writable_roots list is the only writable root set.\n"
+                "Configured writable_roots are not exhaustive; implicit writable roots may also exist.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
+        ]
+        self.assertEqual(1, len(findings))
+        self.assertEqual(1, findings[0].line)
+
     def test_authority_language_skips_noncanonical_disclaimers_and_external_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
