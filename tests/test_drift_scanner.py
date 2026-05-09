@@ -340,6 +340,95 @@ class DriftScannerTests(unittest.TestCase):
         self.assertEqual(1, len(wrapper_findings))
         self.assertIn("make check", wrapper_findings[0].reasons[0])
 
+    def test_shell_wrapper_prompt_examples_flag_ordinary_repo_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "prompt.md").write_text(
+                "Prompt: run `zsh -lc 'git status'` and then `bash -lc 'make check'` before review.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        wrapper_reasons = [
+            finding.reasons[0] for finding in result.advisory_findings
+            if finding.kind == "ordinary_repo_command_shell_wrapper_example"
+        ]
+        self.assertEqual(
+            [
+                "wrapper shell example contains ordinary repo command: git status",
+                "wrapper shell example contains ordinary repo command: make check",
+            ],
+            wrapper_reasons,
+        )
+
+    def test_shell_wrapper_negative_example_is_not_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "guidance.md").write_text(
+                "Incorrect: `zsh -lc 'git status'`. Use `git status` instead.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "ordinary_repo_command_shell_wrapper_example",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
+    def test_shell_wrapper_real_shell_syntax_is_not_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "example.md").write_text(
+                "Use `bash -lc 'make check > scratch/check.log'` when redirecting output.\n"
+                "Use `sh -c 'git status | tee scratch/status.txt'` when piping output.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "ordinary_repo_command_shell_wrapper_example",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
+    def test_shell_wrapper_explanatory_drift_discussion_is_not_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "evidence.md").write_text(
+                "This note discusses shell-wrapper drift evidence, not guidance.\n"
+                "Observed example: `zsh -lc 'git status'` appeared in a transcript.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "ordinary_repo_command_shell_wrapper_example",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
     def test_worktree_creation_without_inspection_signal_is_advisory_finding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
