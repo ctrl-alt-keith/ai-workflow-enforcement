@@ -319,13 +319,19 @@ def _audit_normal_cleanup(
             branch,
             default_branch,
             config.protected_branches,
-            worktree_branches,
         )
         if reason:
             actions.append(_preserved(target.name, "normal_cleanup", "local", branch, reason))
             continue
         if _is_ancestor(path, ref.refname, default_ref):
+            worktree_reason = _worktree_delete_skip_reason(path, branch, worktree_branches)
+            if worktree_reason:
+                actions.append(_preserved(target.name, "normal_cleanup", "local", branch, worktree_reason))
+                continue
             delete_keys.add(("local", branch))
+            evidence = [f"tip={ref.oid}"]
+            if branch in worktree_branches:
+                evidence.append(f"worktree={worktree_branches[branch]} clean")
             actions.append(
                 BranchAction(
                     target.name,
@@ -334,7 +340,7 @@ def _audit_normal_cleanup(
                     branch,
                     "would_delete",
                     f"Git proves branch is ancestor of {default_ref}",
-                    (f"tip={ref.oid}",),
+                    tuple(evidence),
                 )
             )
 
@@ -348,8 +354,9 @@ def _audit_normal_cleanup(
             branch,
             default_branch,
             config.protected_branches,
-            worktree_branches,
         )
+        if not reason:
+            reason = _worktree_branch_skip_reason(branch, worktree_branches)
         if reason:
             actions.append(_preserved(target.name, "normal_cleanup", "remote", branch, reason))
             continue
@@ -394,8 +401,9 @@ def _audit_stale_cleanup(
             branch,
             default_branch,
             config.protected_branches,
-            worktree_branches,
         )
+        if not reason:
+            reason = _worktree_branch_skip_reason(branch, worktree_branches)
         if reason:
             actions.append(_preserved(target.name, "stale_cleanup", "local", branch, reason))
             continue
@@ -410,8 +418,9 @@ def _audit_stale_cleanup(
             branch,
             default_branch,
             config.protected_branches,
-            worktree_branches,
         )
+        if not reason:
+            reason = _worktree_branch_skip_reason(branch, worktree_branches)
         if reason:
             actions.append(_preserved(target.name, "stale_cleanup", "remote", branch, reason))
             continue
@@ -460,6 +469,9 @@ def _apply_action(path: Path, remote: str, action: BranchAction) -> BranchAction
     if action.action != "would_delete":
         return action
     if action.scope == "local" and action.phase == "normal_cleanup":
+        worktree_error = _remove_worktree_for_branch(path, action.branch)
+        if worktree_error:
+            return _replace_action(action, "failed", worktree_error)
         result = _git(path, "branch", "-d", "--", action.branch)
     elif action.scope == "local" and action.phase == "stale_cleanup":
         result = _git(path, "branch", "-D", "--", action.branch)
@@ -509,15 +521,57 @@ def _branch_skip_reason(
     branch: str,
     default_branch: str,
     protected_branches: Iterable[str],
-    worktree_branches: dict[str, str],
 ) -> str:
     if branch == default_branch or branch in set(protected_branches):
         return "protected branch"
-    if branch in worktree_branches:
-        return f"branch is checked out in worktree {worktree_branches[branch]}"
     if _has_ambiguous_name(path, branch):
         return "ambiguous ref name"
     return ""
+
+
+def _worktree_branch_skip_reason(branch: str, worktree_branches: dict[str, str]) -> str:
+    if branch in worktree_branches:
+        return f"branch is checked out in worktree {worktree_branches[branch]}"
+    return ""
+
+
+def _worktree_delete_skip_reason(path: Path, branch: str, worktree_branches: dict[str, str]) -> str:
+    raw_worktree_path = worktree_branches.get(branch)
+    if not raw_worktree_path:
+        return ""
+    worktree_path = Path(raw_worktree_path)
+    if worktree_path.resolve() == path.resolve():
+        return f"branch is checked out in target worktree {raw_worktree_path}"
+    clean, reason = _worktree_is_clean(worktree_path)
+    if clean:
+        return ""
+    return f"{reason}: {raw_worktree_path}"
+
+
+def _worktree_is_clean(worktree_path: Path) -> tuple[bool, str]:
+    status = _git(worktree_path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    if status.returncode != 0:
+        return False, "could not inspect worktree state"
+    entries = [entry for entry in status.stdout.split("\0") if entry]
+    if not entries:
+        return True, ""
+    if any(entry.startswith("??") for entry in entries):
+        return False, "worktree has untracked files"
+    return False, "worktree has uncommitted changes"
+
+
+def _remove_worktree_for_branch(path: Path, branch: str) -> str:
+    worktree_branches = _worktree_branches(path)
+    raw_worktree_path = worktree_branches.get(branch)
+    if not raw_worktree_path:
+        return ""
+    reason = _worktree_delete_skip_reason(path, branch, worktree_branches)
+    if reason:
+        return reason
+    result = _git(path, "worktree", "remove", raw_worktree_path)
+    if result.returncode == 0:
+        return ""
+    return (result.stderr or result.stdout or "git worktree remove failed").splitlines()[0]
 
 
 def _has_ambiguous_name(path: Path, branch: str) -> bool:

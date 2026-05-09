@@ -31,8 +31,15 @@ The tool uses five phases:
 Dry-run is the default. Mutation is limited to `--apply`.
 
 The tool skips dirty repos, conservative repos such as `.github`, missing
-default remote refs, protected branches, symbolic remote refs, ambiguous branch
-names, and branches checked out in worktrees.
+default remote refs, protected branches, symbolic remote refs, and ambiguous
+branch names.
+
+For local branches checked out in linked worktrees, normal cleanup is allowed
+only when Git proves the branch is an ancestor of the remote default branch and
+the linked worktree is clean, including untracked files. Apply mode removes the
+clean linked worktree with `git worktree remove` before deleting the branch. It
+skips worktrees with uncommitted changes, untracked files, failed status
+inspection, or the configured target worktree itself.
 
 Built-in protected branches are always kept as a safety floor: `main`,
 `master`, `trunk`, and `develop`. Configured `protected_branches` add to that
@@ -41,6 +48,11 @@ set; they do not replace it.
 Dry-run mode does not fetch or prune. Apply mode runs `git fetch <remote>
 --prune` before planning and applying cleanup. Because remote refs can change
 between those two modes, dry-run and apply action lists may differ.
+
+Codex command enforcement for this workflow should allow the direct Git argv
+forms needed for safe cleanup: `git worktree list --porcelain`, `git status
+--porcelain=v1 -z --untracked-files=all`, `git worktree remove <path>`, and
+the existing branch deletion forms such as `git branch -d -- <branch>`.
 
 Conservative repositories are skipped when config sets `"conservative": true`,
 when the repo name is `.github`, or when the configured repo path itself is
