@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from enforcement.drift_scanner import OverlapCandidate, ScanResult
+from enforcement.drift_scanner import AdvisoryFinding, OverlapCandidate, ScanResult
 from enforcement.reporting import render_json_report, render_report
 
 
@@ -25,6 +25,7 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("Playbook files scanned: 3", report)
         self.assertIn("Ignored paths: 1", report)
         self.assertIn("No overlap candidates found.", report)
+        self.assertIn("No advisory workflow-policy findings found.", report)
         self.assertNotIn("Overlap candidates:", report)
 
     def test_render_report_with_candidate_details(self) -> None:
@@ -44,6 +45,16 @@ class ReportingTests(unittest.TestCase):
                 notes_files_scanned=1,
                 playbook_files_scanned=1,
                 ignored_paths=(),
+                advisory_findings=(
+                    AdvisoryFinding(
+                        kind="weak_command_form_wording",
+                        path=root / "notes" / "thread.md",
+                        line=4,
+                        snippet="Prefer direct git and gh commands.",
+                        reasons=("make command mention",),
+                        suggested_direction="Strengthen local wording.",
+                    ),
+                ),
             )
 
             report = render_report(result, base_dir=root)
@@ -58,6 +69,9 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("Repeated headings: operating model", report)
         self.assertIn("Repeated phrases:", report)
         self.assertIn("- small scoped changes with canonical validation", report)
+        self.assertIn("Advisory workflow-policy findings: 1", report)
+        self.assertIn("weak_command_form_wording", report)
+        self.assertIn("Line: 4", report)
 
     def test_render_json_report_has_stable_advisory_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,6 +90,16 @@ class ReportingTests(unittest.TestCase):
                 notes_files_scanned=1,
                 playbook_files_scanned=2,
                 ignored_paths=(root / "notes" / ".venv" / "ignored.md",),
+                advisory_findings=(
+                    AdvisoryFinding(
+                        kind="ordinary_repo_command_shell_wrapper_example",
+                        path=root / "notes" / "prompt.md",
+                        line=2,
+                        snippet="Run `bash -lc 'make check'`.",
+                        reasons=("wrapper shell example contains ordinary repo command: make check",),
+                        suggested_direction="Use direct argv form in examples unless shell syntax is actually required.",
+                    ),
+                ),
             )
 
             first_report = render_json_report(result, base_dir=root)
@@ -88,6 +112,7 @@ class ReportingTests(unittest.TestCase):
         self.assertIs(True, data["advisory"])
         self.assertEqual(
             {
+                "advisory_finding_count": 1,
                 "candidate_count": 1,
                 "ignored_path_count": 1,
                 "notes_files_scanned": 1,
@@ -109,6 +134,17 @@ class ReportingTests(unittest.TestCase):
                 ),
             },
             data["candidates"][0],
+        )
+        self.assertEqual(
+            {
+                "kind": "ordinary_repo_command_shell_wrapper_example",
+                "path": "notes/prompt.md",
+                "line": 2,
+                "snippet": "Run `bash -lc 'make check'`.",
+                "reasons": ["wrapper shell example contains ordinary repo command: make check"],
+                "suggested_direction": "Use direct argv form in examples unless shell syntax is actually required.",
+            },
+            data["advisory_findings"][0],
         )
 
 

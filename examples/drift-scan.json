@@ -1,6 +1,18 @@
 {
   "notes_roots": ["../../ai-workflow-incubator"],
   "playbook_roots": ["../../ai-workflow-playbook/docs"],
+  "workspace_root": "../..",
+  "workspace_manifest": "../../ai-workflow-playbook/config/workspace-repos.txt",
+  "organization_repositories": [
+    "ctrl-alt-keith/.github",
+    "ctrl-alt-keith/ai-workflow-incubator",
+    "ctrl-alt-keith/ai-workflow-playbook",
+    "ctrl-alt-keith/ai-workflow-enforcement",
+    "ctrl-alt-keith/linode-image-lab",
+    "ctrl-alt-keith/linode-backup-lab",
+    "ctrl-alt-keith/knowledge-adapters",
+    "ctrl-alt-keith/ka-destinations"
+  ],
   "ignore": [
     "archive/**"
   ],

@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from .drift_scanner import OverlapCandidate, ScanResult
+from .drift_scanner import AdvisoryFinding, OverlapCandidate, ScanResult
 
 
 def render_report(result: ScanResult, *, base_dir: Path | None = None) -> str:
@@ -22,11 +22,19 @@ def render_report(result: ScanResult, *, base_dir: Path | None = None) -> str:
 
     if not result.candidates:
         lines.append("No overlap candidates found.")
+    else:
+        lines.append(f"Overlap candidates: {len(result.candidates)}")
+        for index, candidate in enumerate(result.candidates, start=1):
+            lines.extend(_render_candidate(index, candidate, base))
+
+    lines.append("")
+    if not result.advisory_findings:
+        lines.append("No advisory workflow-policy findings found.")
         return "\n".join(lines)
 
-    lines.append(f"Overlap candidates: {len(result.candidates)}")
-    for index, candidate in enumerate(result.candidates, start=1):
-        lines.extend(_render_candidate(index, candidate, base))
+    lines.append(f"Advisory workflow-policy findings: {len(result.advisory_findings)}")
+    for index, finding in enumerate(result.advisory_findings, start=1):
+        lines.extend(_render_finding(index, finding, base))
     return "\n".join(lines)
 
 
@@ -50,6 +58,18 @@ def _render_candidate(index: int, candidate: OverlapCandidate, base: Path) -> li
     return lines
 
 
+def _render_finding(index: int, finding: AdvisoryFinding, base: Path) -> list[str]:
+    return [
+        "",
+        f"{index}. {finding.kind}",
+        f"   Path: {_rel(finding.path, base)}",
+        f"   Line: {finding.line}",
+        f"   Snippet: {finding.snippet}",
+        f"   Reasons: {', '.join(finding.reasons)}",
+        f"   Suggested direction: {finding.suggested_direction}",
+    ]
+
+
 def render_json_report(result: ScanResult, *, base_dir: Path | None = None) -> str:
     base = base_dir or Path.cwd()
     report = {
@@ -61,8 +81,10 @@ def render_json_report(result: ScanResult, *, base_dir: Path | None = None) -> s
             "playbook_files_scanned": result.playbook_files_scanned,
             "ignored_path_count": len(result.ignored_paths),
             "candidate_count": len(result.candidates),
+            "advisory_finding_count": len(result.advisory_findings),
         },
         "candidates": [_candidate_to_json(candidate, base) for candidate in result.candidates],
+        "advisory_findings": [_finding_to_json(finding, base) for finding in result.advisory_findings],
     }
     return json.dumps(report, indent=2, sort_keys=True)
 
@@ -77,6 +99,17 @@ def _candidate_to_json(candidate: OverlapCandidate, base: Path) -> dict[str, obj
         "canonical_reference_present": candidate.has_canonical_reference,
         "reasons": list(candidate.reasons),
         "suggested_direction": candidate.suggested_direction,
+    }
+
+
+def _finding_to_json(finding: AdvisoryFinding, base: Path) -> dict[str, object]:
+    return {
+        "kind": finding.kind,
+        "path": _rel(finding.path, base),
+        "line": finding.line,
+        "snippet": finding.snippet,
+        "reasons": list(finding.reasons),
+        "suggested_direction": finding.suggested_direction,
     }
 
 
