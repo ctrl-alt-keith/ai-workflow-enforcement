@@ -266,6 +266,33 @@ class DriftScannerTests(unittest.TestCase):
         self.assertIn("noncanonical_authority_language", kinds)
         self.assertIn("staged_rule_stronger_than_playbook", kinds)
 
+    def test_authority_language_skips_noncanonical_disclaimers_and_external_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "staging.md").write_text(
+                "This is not a canonical source for reusable guidance.\n"
+                "Tracked examples here are not the authoritative source for live runtime state.\n"
+                "## Source of truth\n\n"
+                "GitHub issues and PRs remain authoritative for implementation work.\n"
+                "Public API behavior claims require authoritative official documentation.\n"
+                "A prompt can ask for canonical source use.\n"
+                "Runtime artifacts can appear authoritative when copied widely.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        authority_findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "noncanonical_authority_language"
+        ]
+        self.assertEqual(0, len(authority_findings))
+
     def test_shell_wrapper_examples_skip_negative_examples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
