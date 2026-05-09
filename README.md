@@ -26,6 +26,8 @@ first workflow transmission checks:
 - noncanonical runtime, generated, copied-instruction, or staging surfaces using
   authority language
 - staged/runtime rules that look stronger than matching playbook guidance
+- staged/runtime artifact-output rules, such as drop-in prompt, copy/paste-safe,
+  or delta-only prohibitions, that lack matching playbook guidance
 - ordinary repo commands shown through `zsh -lc`, `bash -lc`, or `sh -c`
 - implementation guidance that presents branch-only or optional-worktree flows
   without required repo-local worktree language

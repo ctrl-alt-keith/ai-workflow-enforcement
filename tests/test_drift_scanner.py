@@ -311,6 +311,30 @@ class DriftScannerTests(unittest.TestCase):
         self.assertIn("noncanonical_authority_language", kinds)
         self.assertIn("staged_rule_stronger_than_playbook", kinds)
 
+    def test_drop_in_artifact_rules_are_advisory_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "runtime.md").write_text(
+                "Agents must provide full drop-in prompts that are copy/paste-safe.\n"
+                "Agents must not provide delta-only targeted edits.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        staged_findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "staged_rule_stronger_than_playbook"
+        ]
+        self.assertEqual(2, len(staged_findings))
+        self.assertTrue(any("complete output" in finding.reasons[0] for finding in staged_findings))
+        self.assertTrue(any("partial prompt prohibitions" in finding.reasons[0] for finding in staged_findings))
+
     def test_sandbox_writable_roots_exhaustive_claim_is_advisory_finding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
