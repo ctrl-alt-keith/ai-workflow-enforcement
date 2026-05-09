@@ -138,7 +138,8 @@ class DriftScannerTests(unittest.TestCase):
                 "review/audit mode, or orchestration mode. For ordinary repository operations, "
                 "use direct git, gh, make, python, and repo-local scripts. Before choosing "
                 "wrapper shells such as zsh -lc, bash -lc, or sh -c, check whether a direct "
-                "form exists.",
+                "form exists. Prefer native argv execution and disable implicit shell or login "
+                "shell behavior for git and gh where supported.",
                 encoding="utf-8",
             )
             (repo / "AGENTS.md").write_text(
@@ -151,7 +152,9 @@ class DriftScannerTests(unittest.TestCase):
                 "- Use direct command execution for ordinary repo commands such as git, gh, "
                 "make, python, and repo-local scripts.\n"
                 "- Before using zsh, bash, sh, zsh -lc, bash -lc, or sh -c, check whether "
-                "the command has a direct form and use that direct form when it does.\n",
+                "the command has a direct form and use that direct form when it does.\n"
+                "- Prefer native argv execution and disable implicit shell or login shell "
+                "behavior for git and gh where supported.\n",
                 encoding="utf-8",
             )
 
@@ -202,6 +205,48 @@ class DriftScannerTests(unittest.TestCase):
         self.assertIn("agents_missing_command_form_guidance", kinds)
         self.assertIn("agents_missing_canonical_playbook_reference", kinds)
         self.assertIn("weak_command_form_wording", kinds)
+
+    def test_agents_alignment_finds_missing_git_gh_execution_layer_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            playbook_root = workspace / "ai-workflow-playbook"
+            playbook = playbook_root / "docs"
+            config_dir = playbook_root / "config"
+            repo = workspace / "demo"
+            notes = root / "notes"
+            notes.mkdir()
+            playbook.mkdir(parents=True)
+            config_dir.mkdir()
+            repo.mkdir()
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (config_dir / "workspace-repos.txt").write_text("ctrl-alt-keith/demo\n", encoding="utf-8")
+            (playbook / "start-here.md").write_text("ai-workflow-playbook guidance", encoding="utf-8")
+            (repo / "AGENTS.md").write_text(
+                "# AGENTS.md\n\n"
+                "This repo uses ai-workflow-playbook as canonical guidance.\n"
+                "Select the interaction mode: implementation, review/audit, or orchestration.\n"
+                "Use direct command execution for git, gh, make, python, and repo-local scripts.\n"
+                "Before using wrapper shells such as zsh -lc, bash -lc, or sh -c, check whether direct form exists.\n",
+                encoding="utf-8",
+            )
+
+            result = scan(
+                ScannerConfig(
+                    notes_roots=(notes,),
+                    playbook_roots=(playbook,),
+                    workspace_root=workspace,
+                    workspace_manifest=config_dir / "workspace-repos.txt",
+                    organization_repositories=("ctrl-alt-keith/demo",),
+                )
+            )
+
+        findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "agents_missing_command_form_guidance"
+        ]
+        self.assertEqual(1, len(findings))
+        self.assertIn("git/gh execution-layer setting", findings[0].reasons)
 
     def test_agents_alignment_flags_large_canonical_duplication(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -689,19 +734,20 @@ class DriftScannerTests(unittest.TestCase):
             playbook.mkdir()
             (notes / "guidance.md").write_text(
                 "Before creating a worktree, inspect `git worktree list` and inspect repo-local `.worktrees/`.\n"
-                "Choose between the active checkout, an existing clean worktree, or a new worktree based on task isolation needs.\n",
+                "Before implementation changes, select, reuse, or create a dedicated repo-local worktree.\n",
                 encoding="utf-8",
             )
             (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
 
             result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
 
-        self.assertNotIn(
-            "worktree_creation_without_inspection_signal",
-            {finding.kind for finding in result.advisory_findings},
-        )
+        worktree_kinds = {
+            finding.kind for finding in result.advisory_findings
+            if "worktree" in finding.kind
+        }
+        self.assertEqual(set(), worktree_kinds)
 
-    def test_parallel_worktree_guidance_with_normal_branch_scope_is_not_flagged(self) -> None:
+    def test_branch_only_implementation_guidance_is_flagged_without_required_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             notes = root / "notes"
@@ -717,10 +763,12 @@ class DriftScannerTests(unittest.TestCase):
 
             result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
 
-        self.assertNotIn(
-            "worktree_creation_without_inspection_signal",
-            {finding.kind for finding in result.advisory_findings},
-        )
+        findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "implementation_work_without_required_worktree"
+        ]
+        self.assertEqual(1, len(findings))
+        self.assertIn("Normal branches are fine", findings[0].snippet)
 
     def test_worktree_cleanup_and_ignore_guidance_is_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
