@@ -476,11 +476,17 @@ def _mentions_weak_git_gh_only_wording(normalized: str) -> bool:
 
 def _scan_authority_language(document: Document) -> list[AdvisoryFinding]:
     findings: list[AdvisoryFinding] = []
-    for line_number, line in _iter_lines(document.text):
+    lines = _iter_lines(document.text)
+    for index, (line_number, line) in enumerate(lines):
         if not AUTHORITY_TERMS_RE.search(line):
             continue
         normalized_line = normalize_text(line)
-        if not _has_noncanonical_authority_claim(normalized_line):
+        context = _line_context(lines, index)
+        if not _has_noncanonical_authority_claim(
+            normalized_line,
+            context,
+            is_heading=line.lstrip().startswith("#"),
+        ):
             continue
         findings.append(
             AdvisoryFinding(
@@ -495,21 +501,49 @@ def _scan_authority_language(document: Document) -> list[AdvisoryFinding]:
     return findings
 
 
-def _has_noncanonical_authority_claim(normalized_line: str) -> bool:
-    if "source of truth" in normalized_line:
+def _has_noncanonical_authority_claim(
+    normalized_line: str,
+    normalized_context: str,
+    *,
+    is_heading: bool,
+) -> bool:
+    if _is_direct_authority_claim(normalized_line, is_heading=is_heading):
+        return True
+    if _is_authority_context_exception(normalized_context):
+        return False
+    return _has_ambiguous_authority_reference(normalized_line, normalized_context)
+
+
+def _is_direct_authority_claim(normalized_line: str, *, is_heading: bool) -> bool:
+    if "source of truth" in normalized_line and not is_heading:
         source_contexts = (
             "do not treat",
+            "github issues and prs remain authoritative",
             "implementation repositories",
             "repository state",
+            "repository source of truth",
             "implemented behavior",
+            "scratch artifacts are disposable",
+            "source of truth language",
         )
         return not any(term in normalized_line for term in source_contexts)
     if "authoritative" in normalized_line:
         authoritative_contexts = (
+            "can be authoritative for behavior claims",
+            "can look",
+            "feel authoritative",
             "non authoritative",
             "not authoritative",
+            "not the authoritative source",
+            "not an authoritative source",
             "does not make",
             "do not treat",
+            "official documentation",
+            "authoritative docs",
+            "authoritative official",
+            "appear authoritative",
+            "release notes and changelogs",
+            "remain authoritative for implementation work",
         )
         return not any(term in normalized_line for term in authoritative_contexts)
     if "canonical" in normalized_line:
@@ -518,15 +552,24 @@ def _has_noncanonical_authority_claim(normalized_line: str) -> bool:
             "non canonical",
             "canonical false",
             "canonical elsewhere",
+            "canonical source use",
+            "canonical source checked",
+            "canonical source evidence",
+            "canonical sources",
+            "canonical source confusion",
             "not become an implicit authority",
+            "not a canonical",
             "not canonical",
             "not treat as canonical",
+            "not treated as canonical",
             "do not make content canonical",
             "canonical playbook",
             "playbook",
             "canonical local validation",
             "canonical validation",
+            "treating ai workflow incubator as canonical",
             "not be treated",
+            "using canonical or source of truth language",
         )
         if any(term in normalized_line for term in canonical_contexts):
             return False
@@ -534,7 +577,6 @@ def _has_noncanonical_authority_claim(normalized_line: str) -> bool:
             "is canonical",
             "are canonical",
             "as canonical",
-            "canonical source",
             "canonical true",
             "source is canonical",
             "surface is canonical",
@@ -544,6 +586,88 @@ def _has_noncanonical_authority_claim(normalized_line: str) -> bool:
         )
         return any(term in normalized_line for term in canonical_claims)
     return False
+
+
+def _has_ambiguous_authority_reference(normalized_line: str, normalized_context: str) -> bool:
+    if "source of truth" in normalized_line:
+        source_contexts = (
+            "do not treat",
+            "github issues and prs remain authoritative",
+            "implementation repositories",
+            "repository state",
+            "repository source of truth",
+            "implemented behavior",
+            "scratch artifacts are disposable",
+            "source of truth language",
+        )
+        return not any(term in normalized_context for term in source_contexts)
+    if "authoritative" in normalized_line:
+        authoritative_contexts = (
+            "can be authoritative for behavior claims",
+            "can look",
+            "feel authoritative",
+            "non authoritative",
+            "not authoritative",
+            "not the authoritative source",
+            "not an authoritative source",
+            "does not make",
+            "do not treat",
+            "official documentation",
+            "authoritative docs",
+            "authoritative official",
+            "appear authoritative",
+            "release notes and changelogs",
+            "remain authoritative for implementation work",
+        )
+        return not any(term in normalized_context for term in authoritative_contexts)
+    if "canonical" in normalized_line:
+        canonical_contexts = (
+            "noncanonical",
+            "non canonical",
+            "canonical false",
+            "canonical elsewhere",
+            "canonical source use",
+            "canonical source checked",
+            "canonical source evidence",
+            "canonical sources",
+            "canonical source confusion",
+            "not become an implicit authority",
+            "not a canonical",
+            "not canonical",
+            "not treat as canonical",
+            "not treated as canonical",
+            "do not make content canonical",
+            "canonical playbook",
+            "playbook",
+            "canonical local validation",
+            "canonical validation",
+            "treating ai workflow incubator as canonical",
+            "not be treated",
+            "using canonical or source of truth language",
+        )
+        if any(term in normalized_context for term in canonical_contexts):
+            return False
+    return False
+
+
+def _is_authority_context_exception(normalized_context: str) -> bool:
+    exception_terms = (
+        "authoritative source scanner",
+        "authoritative source rollout",
+        "authoritative source work",
+        "hardened authoritative source",
+        "manifest fields authoritative",
+        "not a canonical source",
+        "not canonical playbook guidance",
+        "not enforcement tooling",
+        "not the authoritative source",
+        "not authoritative live operational state",
+        "not as canonical repository readiness guidance",
+        "rather than an independent canonical source",
+        "risks acting like a second source of truth",
+        "shadow canonical risk",
+    )
+    return any(term in normalized_context for term in exception_terms)
 
 
 def _scan_staged_rule_mismatches(document: Document, playbook_text: str) -> list[AdvisoryFinding]:
@@ -641,6 +765,25 @@ def _first_matching_line(text: str, pattern: re.Pattern[str]) -> tuple[int, str]
 
 def _iter_lines(text: str) -> tuple[tuple[int, str], ...]:
     return tuple(enumerate(text.splitlines(), start=1))
+
+
+def _line_context(lines: tuple[tuple[int, str], ...], index: int) -> str:
+    context = [lines[index][1]]
+    previous_line = _nearest_nonblank_line(lines, range(index - 1, -1, -1))
+    next_line = _nearest_nonblank_line(lines, range(index + 1, len(lines)))
+    if previous_line:
+        context.insert(0, previous_line)
+    if next_line:
+        context.append(next_line)
+    return normalize_text(" ".join(context))
+
+
+def _nearest_nonblank_line(lines: tuple[tuple[int, str], ...], indexes: range) -> str:
+    for line_index in indexes:
+        line = lines[line_index][1].strip()
+        if line:
+            return line
+    return ""
 
 
 def _validate_config(config: ScannerConfig) -> None:
