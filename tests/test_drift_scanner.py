@@ -274,8 +274,7 @@ class DriftScannerTests(unittest.TestCase):
             notes.mkdir()
             playbook.mkdir()
             (notes / "codex.md").write_text(
-                "The sandbox_workspace_write.writable_roots list is the only writable root set.\n"
-                "Configured writable_roots are not exhaustive; implicit writable roots may also exist.\n",
+                "The sandbox_workspace_write.writable_roots list is the only writable root set.\n",
                 encoding="utf-8",
             )
             (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
@@ -288,6 +287,58 @@ class DriftScannerTests(unittest.TestCase):
         ]
         self.assertEqual(1, len(findings))
         self.assertEqual(1, findings[0].line)
+
+    def test_sandbox_writable_roots_complete_effective_claim_is_advisory_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "codex.md").write_text(
+                "`writable_roots` is the complete effective writable root set.\n"
+                "`writable_roots` is the only effective writable root set.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
+        ]
+        self.assertEqual(
+            [
+                "`writable_roots` is the complete effective writable root set.",
+                "`writable_roots` is the only effective writable root set.",
+            ],
+            [finding.snippet for finding in findings],
+        )
+
+    def test_sandbox_writable_roots_corrective_wording_is_not_advisory_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "codex.md").write_text(
+                "`writable_roots` is not the full effective writable root set.\n"
+                "Effective writable roots may also include implicit temp roots.\n"
+                "Effective writable roots can also include the current project root.\n"
+                "Do not assume `writable_roots` is exhaustive.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
+        ]
+        self.assertEqual(0, len(findings))
 
     def test_authority_language_skips_noncanonical_disclaimers_and_external_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

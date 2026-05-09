@@ -184,6 +184,16 @@ WRITABLE_ROOTS_EXHAUSTIVE_RE = re.compile(
     r"\b(?:all|complete|exhaustive|only|sole|solely|entire)\b[^.\n]{0,120}\bwritable_roots\b",
     re.IGNORECASE,
 )
+WRITABLE_ROOTS_CORRECTIVE_RE = re.compile(
+    r"\bwritable\s+roots\b.{0,100}\b(?:not\s+exhaustive|not\s+solely|not\s+just|not\s+the\s+complete|not\s+the\s+full)\b"
+    r"|"
+    r"\bdo\s+not\s+assume\b.{0,80}\bwritable\s+roots\b"
+    r"|"
+    r"\bwritable\s+roots\b.{0,100}\b(?:may|can)\s+also\s+include\b"
+    r"|"
+    r"\beffective\s+writable\s+roots?\b.{0,80}\b(?:may|can)\s+also\s+include\b",
+    re.IGNORECASE,
+)
 
 RUNTIME_SURFACE_PARTS = {
     "generated",
@@ -867,23 +877,7 @@ def _scan_sandbox_writable_roots_claims(document: Document) -> list[AdvisoryFind
 
 def _has_writable_roots_exhaustive_exception(context: str) -> bool:
     normalized = normalize_text(context)
-    exception_terms = (
-        "not exhaustive",
-        "not solely",
-        "not just",
-        "do not assume",
-        "not the complete",
-        "not the full",
-        "may also include",
-        "can also include",
-        "implicit writable roots",
-        "implicit roots",
-        "exclude slash tmp",
-        "exclude tmpdir env var",
-        "effective writable root",
-        "effective writable roots",
-    )
-    return any(term in normalized for term in exception_terms)
+    return bool(WRITABLE_ROOTS_CORRECTIVE_RE.search(normalized))
 
 
 def _encourages_worktree_creation(line: str) -> bool:
