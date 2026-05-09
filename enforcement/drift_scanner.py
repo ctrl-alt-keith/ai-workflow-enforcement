@@ -22,10 +22,17 @@ SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".rst"}
 AUTHORITY_TERMS_RE = re.compile(r"\b(source of truth|canonical|authoritative)\b", re.IGNORECASE)
 STRONG_RULE_RE = re.compile(r"\b(must|never|do not|required|prohibit(?:ed|s)?|only)\b", re.IGNORECASE)
 WRAPPER_EXAMPLE_RE = re.compile(
-    r"\b(?:zsh|bash)\s+-lc\s+[`'\"]([^`'\"]+)[`'\"]|\bsh\s+-c\s+[`'\"]([^`'\"]+)[`'\"]",
+    r"(?<![\w.-])(?:/(?:usr/)?bin/)?(?:(?:zsh|bash)\s+-lc|sh\s+-c)\s+"
+    r"(?:--\s+)?(?P<quote>[`'\"])(?P<command>.*?)(?P=quote)",
     re.IGNORECASE,
 )
-ORDINARY_REPO_COMMAND_RE = re.compile(r"^(?:git|gh|make|python|python3|\./[\w.-]+)\b")
+ORDINARY_REPO_COMMAND_RE = re.compile(r"^(?:git|gh|make|python|python3|\./[\w./-]+|(?:scripts|bin|tools)/[\w./-]+)\b")
+SHELL_SYNTAX_RE = re.compile(
+    r"&&|\|\||[|<>;]|\$\(|\$\{|\$[A-Za-z_][A-Za-z0-9_]*|[`*?]"
+    r"|\b(?:for|while|until|if|case|then|else|elif|fi|do|done|esac)\b",
+    re.IGNORECASE,
+)
+ENV_ASSIGNMENT_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+(?:\s+|$))+")
 WORKTREE_CREATION_RE = re.compile(
     r"\bgit\s+worktree\s+add\b"
     r"|"
@@ -761,25 +768,28 @@ def _scan_shell_wrapper_examples(document: Document) -> list[AdvisoryFinding]:
     findings: list[AdvisoryFinding] = []
     lines = _iter_lines(document.text)
     for index, (line_number, line) in enumerate(lines):
-        match = WRAPPER_EXAMPLE_RE.search(line)
-        if not match:
-            continue
-        command = (match.group(1) or match.group(2) or "").strip()
-        if not ORDINARY_REPO_COMMAND_RE.search(command):
-            continue
-        previous_line = lines[index - 1][1] if index else ""
-        if _is_negative_shell_wrapper_example(f"{previous_line} {line}"):
-            continue
-        findings.append(
-            AdvisoryFinding(
-                kind="ordinary_repo_command_shell_wrapper_example",
-                path=document.path,
-                line=line_number,
-                snippet=line.strip(),
-                reasons=(f"wrapper shell example contains ordinary repo command: {command}",),
-                suggested_direction="Use direct argv form in examples unless shell syntax is actually required.",
+        for match in WRAPPER_EXAMPLE_RE.finditer(line):
+            command = match.group("command").strip()
+            if not ORDINARY_REPO_COMMAND_RE.search(command):
+                continue
+            if _requires_shell_syntax(command):
+                continue
+            context = _nearby_context(lines, index, radius=2)
+            previous_line = lines[index - 1][1] if index else ""
+            if _is_negative_shell_wrapper_example(f"{previous_line} {line}"):
+                continue
+            if _is_explanatory_shell_wrapper_discussion(document, context):
+                continue
+            findings.append(
+                AdvisoryFinding(
+                    kind="ordinary_repo_command_shell_wrapper_example",
+                    path=document.path,
+                    line=line_number,
+                    snippet=line.strip(),
+                    reasons=(f"wrapper shell example contains ordinary repo command: {command}",),
+                    suggested_direction="Use direct argv form in examples unless shell syntax is actually required.",
+                )
             )
-        )
     return findings
 
 
@@ -833,8 +843,53 @@ def _is_descriptive_worktree_record(line: str, context: str) -> bool:
 
 def _is_negative_shell_wrapper_example(line: str) -> bool:
     normalized = normalize_text(line)
-    negative_markers = ("incorrect", "do not", "not normal", "avoid", "rather than")
-    return any(marker in normalized for marker in negative_markers) or "not" in normalized.split()
+    if re.search(r"\bnot\s+`?(?:/(?:usr/)?bin/)?(?:(?:zsh|bash)\s+-lc|sh\s+-c)\b", line, re.IGNORECASE):
+        return True
+    negative_markers = (
+        "bad example",
+        "do not",
+        "don't",
+        "incorrect",
+        "must not",
+        "never",
+        "not normal",
+        "not recommended",
+        "rather than",
+        "should not",
+        "wrong",
+        "avoid",
+    )
+    return any(marker in normalized for marker in negative_markers)
+
+
+def _requires_shell_syntax(command: str) -> bool:
+    stripped = command.strip()
+    return bool(ENV_ASSIGNMENT_RE.search(stripped) or SHELL_SYNTAX_RE.search(stripped))
+
+
+def _is_explanatory_shell_wrapper_discussion(document: Document, context: str) -> bool:
+    normalized = normalize_text(context)
+    explanatory_context_markers = (
+        "evidence",
+        "observed failure",
+        "observed failures",
+        "observed example",
+        "discussion",
+        "explanatory",
+        "descriptive",
+        "source material",
+        "not guidance",
+        "not policy",
+        "not an instruction",
+    )
+    if any(marker in normalized for marker in explanatory_context_markers):
+        return True
+    parts = {part.lower() for part in document.path.parts}
+    return bool(
+        {"operational-evidence", "workflow-patterns"} & parts
+        and "wrapper" in normalized
+        and ("drift" in normalized or "failure pattern" in normalized)
+    )
 
 
 def _is_noncanonical_surface(document: Document, config: ScannerConfig) -> bool:
