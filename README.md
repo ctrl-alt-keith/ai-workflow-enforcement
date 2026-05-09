@@ -20,12 +20,15 @@ reports possible overlap candidates using deterministic heuristics:
 The scanner also emits a small advisory workflow-policy finding stream for the
 first workflow transmission checks:
 
-- `AGENTS.md` files missing interaction-mode, command-form, or playbook pointers
+- `AGENTS.md` files missing interaction-mode, command-form, execution-layer, or
+  playbook pointers
 - weak command-form wording that names only `git` and `gh`
 - noncanonical runtime, generated, copied-instruction, or staging surfaces using
   authority language
 - staged/runtime rules that look stronger than matching playbook guidance
 - ordinary repo commands shown through `zsh -lc`, `bash -lc`, or `sh -c`
+- implementation guidance that presents branch-only or optional-worktree flows
+  without required repo-local worktree language
 - cross-repo scope gaps when an explicit workspace inventory is provided
 - Codex sandbox docs/examples that imply `writable_roots` is the exhaustive
   effective writable root set

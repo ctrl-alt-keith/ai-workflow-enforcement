@@ -135,6 +135,18 @@ WORKTREE_CREATION_RE = re.compile(
     r"\b(?:one\s+)?worktrees?\s+per\s+(?:issue|task|lane|arc)\b",
     re.IGNORECASE,
 )
+BRANCH_ONLY_IMPLEMENTATION_RE = re.compile(
+    r"\bnormal\s+branches?\b[^.\n]{0,160}\b(?:fine|ok|okay|acceptable|sufficient|enough|safe)\b"
+    r"[^.\n]{0,160}\b(?:single|sequential|single[-\s]+task|implementation|repo[-\s]+changing)\b"
+    r"|"
+    r"\b(?:single|sequential|single[-\s]+task|implementation|repo[-\s]+changing)\b"
+    r"[^.\n]{0,160}\bnormal\s+branches?\b[^.\n]{0,160}\b(?:fine|ok|okay|acceptable|sufficient|enough|safe)\b"
+    r"|"
+    r"\bworktrees?\b[^.\n]{0,120}\b(?:only|just)\b[^.\n]{0,80}\b(?:parallel|isolation)\b"
+    r"|"
+    r"\b(?:only|just)\b[^.\n]{0,80}\bworktrees?\b[^.\n]{0,120}\b(?:parallel|isolation)\b",
+    re.IGNORECASE,
+)
 ISOLATED_SURFACE_CREATION_RE = re.compile(
     r"\b(?:create|creating|add|adding|set\s+up|setting\s+up|spin\s+up|spinning\s+up|make|making)\b"
     r"[^.\n]{0,100}\b(?:isolated|isolation)\b"
@@ -148,29 +160,18 @@ WORKTREE_SELECTION_SIGNAL_RE = re.compile(
     r"|"
     r"\b\.worktrees/?\b[^.\n]{0,100}\b(?:inspect|check|list|review|existing)\w*\b"
     r"|"
-    r"\breuse\w*\b[^.\n]{0,100}\b(?:existing\s+)?(?:clean\s+)?(?:worktree|checkout|surface)\b"
+    r"\breuse\w*\b[^.\n]{0,100}\b(?:existing\s+)?(?:clean\s+)?(?:repo-local\s+)?worktree\b"
     r"|"
-    r"\bexisting\s+(?:clean\s+)?(?:worktree|checkout|surface)\b"
+    r"\bexisting\s+(?:clean\s+)?(?:repo-local\s+)?worktree\b"
     r"|"
-    r"\bactive\s+checkout\b"
+    r"\b(?:select|choose|reuse|create|creating|use|using|set\s+up|setting\s+up)\w*\b"
+    r"[^.\n]{0,160}\brepo-local\s+(?:git\s+)?worktree\b"
     r"|"
-    r"\bchoose\w*\b[^.\n]{0,160}\b(?:active\s+checkout|existing\s+worktree|new\s+worktree)\b"
+    r"\bchoose\w*\b[^.\n]{0,160}\b(?:existing\s+worktree|new\s+worktree)\b"
     r"|"
-    r"\b(?:active\s+checkout|existing\s+worktree)\b[^.\n]{0,160}\bnew\s+worktree\b"
+    r"\bexisting\s+worktree\b[^.\n]{0,160}\bnew\s+worktree\b"
     r"|"
-    r"\bnew\s+worktree\b[^.\n]{0,160}\b(?:active\s+checkout|existing\s+worktree)\b"
-    r"|"
-    r"\bonly\s+when\b[^.\n]{0,100}\bisolation\b"
-    r"|"
-    r"\bisolation\b[^.\n]{0,100}\bonly\s+when\b"
-    r"|"
-    r"\bisolation\s+is\s+needed\b"
-    r"|"
-    r"\bneeds\s+isolation\b"
-    r"|"
-    r"\bnormal\s+branches?\b[^.\n]{0,120}\b(?:single|sequential|single[-\s]+task)\b"
-    r"|"
-    r"\b(?:single|sequential|single[-\s]+task)\b[^.\n]{0,120}\bnormal\s+branches?\b",
+    r"\bnew\s+worktree\b[^.\n]{0,160}\bexisting\s+worktree\b",
     re.IGNORECASE,
 )
 NEGATIVE_WORKTREE_GUIDANCE_RE = re.compile(
@@ -607,6 +608,10 @@ def _command_form_gaps(normalized: str) -> list[str]:
         ("repo-local script or tool mention", ("repo local", "repo-local")),
         ("wrapper shell restriction", ("wrapper shell", "shell wrapper", "zsh lc", "bash lc", "sh c")),
         ("wrapper-shell preflight", ("preflight", "before using", "before choosing", "check whether")),
+        (
+            "git/gh execution-layer setting",
+            ("native argv", "shell false", "login false", "use shell false", "implicit shell", "login shell"),
+        ),
     )
     gaps: list[str] = []
     for label, options in required:
@@ -631,7 +636,9 @@ def _scan_weak_command_form_wording(document: Document) -> list[AdvisoryFinding]
             snippet=line,
             reasons=tuple(gaps),
             suggested_direction=(
-                "Strengthen local wording to include make, python, repo-local scripts, wrapper-shell preflight, and explicit shell-wrapper restrictions."
+                "Strengthen local wording to include make, python, repo-local scripts, "
+                "wrapper-shell preflight, explicit shell-wrapper restrictions, and execution-layer "
+                "settings that avoid implicit shell or login-shell wrapping for git/gh."
             ),
         )
     ]
@@ -828,9 +835,22 @@ def _scan_worktree_creation_guidance(document: Document) -> list[AdvisoryFinding
     findings: list[AdvisoryFinding] = []
     lines = _iter_lines(document.text)
     for index, (line_number, line) in enumerate(lines):
+        context = _nearby_context(lines, index, radius=5)
+        if BRANCH_ONLY_IMPLEMENTATION_RE.search(line) and not WORKTREE_SELECTION_SIGNAL_RE.search(context):
+            findings.append(
+                AdvisoryFinding(
+                    kind="implementation_work_without_required_worktree",
+                    path=document.path,
+                    line=line_number,
+                    snippet=line.strip(),
+                    reasons=("implementation guidance presents branch-only or optional-worktree flow without required repo-local worktree language",),
+                    suggested_direction=(
+                        "State that implementation changes require selecting, reusing, or creating a dedicated repo-local worktree before making changes."
+                    ),
+                )
+            )
         if not _encourages_worktree_creation(line):
             continue
-        context = _nearby_context(lines, index, radius=5)
         if _is_descriptive_worktree_record(line, context):
             continue
         if WORKTREE_SELECTION_SIGNAL_RE.search(context):
@@ -843,9 +863,9 @@ def _scan_worktree_creation_guidance(document: Document) -> list[AdvisoryFinding
                 path=document.path,
                 line=line_number,
                 snippet=line.strip(),
-                reasons=("worktree or isolated-surface creation appears without nearby inspection, reuse, or selection-order guidance",),
+                reasons=("worktree or isolated-surface creation appears without nearby required repo-local worktree selection, reuse, or creation guidance",),
                 suggested_direction=(
-                    "Add nearby guidance to inspect `git worktree list` and repo-local `.worktrees/`, then choose the active checkout, an existing clean worktree, or a new worktree based on task isolation needs."
+                    "Add nearby guidance to inspect `git worktree list` and repo-local `.worktrees/`, then select, reuse, or create a dedicated repo-local worktree before implementation changes."
                 ),
             )
         )
