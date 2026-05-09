@@ -34,6 +34,18 @@ The tool skips dirty repos, conservative repos such as `.github`, missing
 default remote refs, protected branches, symbolic remote refs, ambiguous branch
 names, and branches checked out in worktrees.
 
+Built-in protected branches are always kept as a safety floor: `main`,
+`master`, `trunk`, and `develop`. Configured `protected_branches` add to that
+set; they do not replace it.
+
+Dry-run mode does not fetch or prune. Apply mode runs `git fetch <remote>
+--prune` before planning and applying cleanup. Because remote refs can change
+between those two modes, dry-run and apply action lists may differ.
+
+Conservative repositories are skipped when config sets `"conservative": true`,
+when the repo name is `.github`, or when the configured repo path itself is
+named `.github`.
+
 Normal cleanup stays separate from stale cleanup. Normal cleanup uses Git
 ancestor proof. Stale cleanup requires config approval plus evidence such as a
 merged GitHub PR record whose `head_oid` matches the branch tip, or an explicit

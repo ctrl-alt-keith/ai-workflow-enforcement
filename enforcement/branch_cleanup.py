@@ -45,6 +45,9 @@ class BranchCleanupConfig:
     protected_branches: tuple[str, ...] = DEFAULT_PROTECTED_BRANCHES
     stale_approvals: tuple[StaleApproval, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "protected_branches", _protected_branches(self.protected_branches))
+
 
 @dataclass(frozen=True)
 class GitCommand:
@@ -84,6 +87,7 @@ class RepoReport:
     path: str
     skipped: str = ""
     default_branch: str = ""
+    default_branch_evidence: str = ""
     starting_branch: str = ""
     actions: list[BranchAction] = field(default_factory=list)
 
@@ -103,7 +107,7 @@ def load_config(path: Path) -> BranchCleanupConfig:
     base = path.parent
     repositories = tuple(_repo_target(item, base) for item in data.get("repositories", ()))
     approvals = tuple(_stale_approval(item) for item in data.get("stale_approvals", ()))
-    protected = tuple(data.get("protected_branches", DEFAULT_PROTECTED_BRANCHES))
+    protected = _protected_branches(data.get("protected_branches", ()))
     if not repositories:
         raise ValueError("branch cleanup config must define at least one repository")
     return BranchCleanupConfig(
@@ -173,6 +177,8 @@ def render_text_report(report: BranchCleanupReport) -> str:
             continue
         lines.append(f"  starting branch: {repo.starting_branch or 'unknown'}")
         lines.append(f"  default branch: {repo.default_branch}")
+        if repo.default_branch_evidence:
+            lines.append(f"  default branch evidence: {repo.default_branch_evidence}")
         if not repo.actions:
             lines.append("  actions: none")
         for action in repo.actions:
@@ -200,6 +206,7 @@ def render_json_report(report: BranchCleanupReport) -> str:
                 "skipped": repo.skipped,
                 "starting_branch": repo.starting_branch,
                 "default_branch": repo.default_branch,
+                "default_branch_evidence": repo.default_branch_evidence,
                 "actions": [
                     {
                         "phase": action.phase,
@@ -255,18 +262,19 @@ def _cleanup_repo(config: BranchCleanupConfig, target: RepoTarget, *, apply: boo
             return report
 
     report.starting_branch = _current_branch(path)
-    default_branch = target.default_branch or _origin_default_branch(path, target.remote)
+    default_branch, default_evidence = _resolve_default_branch(path, target)
     report.default_branch = default_branch
+    report.default_branch_evidence = default_evidence
     default_ref = f"refs/remotes/{target.remote}/{default_branch}"
     if _verify_ref(path, default_ref).returncode != 0:
-        report.skipped = f"default remote ref missing: {default_ref}"
+        report.skipped = f"default remote ref missing: {default_ref}; {default_evidence}"
         return report
 
     local_refs = _refs(path, "refs/heads")
     remote_refs = _refs(path, f"refs/remotes/{target.remote}")
     worktree_branches = _worktree_branches(path)
 
-    normal = _audit_normal_cleanup(
+    normal, normal_keys = _audit_normal_cleanup(
         config,
         target,
         default_branch,
@@ -280,6 +288,7 @@ def _cleanup_repo(config: BranchCleanupConfig, target: RepoTarget, *, apply: boo
         target,
         default_branch,
         default_ref,
+        normal_keys,
         local_refs,
         remote_refs,
         worktree_branches,
@@ -299,8 +308,9 @@ def _audit_normal_cleanup(
     local_refs: tuple[RefInfo, ...],
     remote_refs: tuple[RefInfo, ...],
     worktree_branches: dict[str, str],
-) -> list[BranchAction]:
+) -> tuple[list[BranchAction], set[tuple[str, str]]]:
     actions: list[BranchAction] = []
+    delete_keys: set[tuple[str, str]] = set()
     path = target.path
     for ref in local_refs:
         branch = ref.branch
@@ -315,6 +325,7 @@ def _audit_normal_cleanup(
             actions.append(_preserved(target.name, "normal_cleanup", "local", branch, reason))
             continue
         if _is_ancestor(path, ref.refname, default_ref):
+            delete_keys.add(("local", branch))
             actions.append(
                 BranchAction(
                     target.name,
@@ -342,7 +353,12 @@ def _audit_normal_cleanup(
         if reason:
             actions.append(_preserved(target.name, "normal_cleanup", "remote", branch, reason))
             continue
+        remote_reason = _remote_branch_skip_reason(path, target.remote, branch)
+        if remote_reason:
+            actions.append(_preserved(target.name, "normal_cleanup", "remote", branch, remote_reason))
+            continue
         if _is_ancestor(path, ref.refname, default_ref):
+            delete_keys.add(("remote", branch))
             actions.append(
                 BranchAction(
                     target.name,
@@ -354,7 +370,7 @@ def _audit_normal_cleanup(
                     (f"tip={ref.oid}",),
                 )
             )
-    return actions
+    return actions, delete_keys
 
 
 def _audit_stale_cleanup(
@@ -362,24 +378,13 @@ def _audit_stale_cleanup(
     target: RepoTarget,
     default_branch: str,
     default_ref: str,
+    normal_keys: set[tuple[str, str]],
     local_refs: tuple[RefInfo, ...],
     remote_refs: tuple[RefInfo, ...],
     worktree_branches: dict[str, str],
 ) -> list[BranchAction]:
     actions: list[BranchAction] = []
     path = target.path
-    normal_keys = {
-        ("local", ref.branch)
-        for ref in local_refs
-        if ref.branch != default_branch and _is_ancestor(path, ref.refname, default_ref)
-    }
-    normal_keys.update(
-        ("remote", branch)
-        for ref in remote_refs
-        for branch in [remote_branch_name(ref.refname, target.remote)]
-        if branch and branch != default_branch and _is_ancestor(path, ref.refname, default_ref)
-    )
-
     for ref in local_refs:
         branch = ref.branch
         if ("local", branch) in normal_keys:
@@ -409,6 +414,10 @@ def _audit_stale_cleanup(
         )
         if reason:
             actions.append(_preserved(target.name, "stale_cleanup", "remote", branch, reason))
+            continue
+        remote_reason = _remote_branch_skip_reason(path, target.remote, branch)
+        if remote_reason:
+            actions.append(_preserved(target.name, "stale_cleanup", "remote", branch, remote_reason))
             continue
         actions.append(_stale_action(config, target, "remote", branch, ref.refname, ref.oid, default_ref))
     return actions
@@ -455,7 +464,7 @@ def _apply_action(path: Path, remote: str, action: BranchAction) -> BranchAction
     elif action.scope == "local" and action.phase == "stale_cleanup":
         result = _git(path, "branch", "-D", "--", action.branch)
     elif action.scope == "remote":
-        result = _git(path, "push", remote, "--delete", action.branch)
+        result = _git(path, "push", remote, "--delete", "--", action.branch)
     else:
         return _replace_action(action, "failed", "unsupported action scope or phase")
 
@@ -517,6 +526,34 @@ def _has_ambiguous_name(path: Path, branch: str) -> bool:
     return tag.returncode == 0 and local.returncode == 0
 
 
+def _remote_branch_skip_reason(path: Path, remote: str, branch: str) -> str:
+    if _has_remote_ambiguous_name(path, remote, branch):
+        return "ambiguous remote ref name"
+    return ""
+
+
+def _has_remote_ambiguous_name(path: Path, remote: str, branch: str) -> bool:
+    result = _git(
+        path,
+        "ls-remote",
+        remote,
+        f"refs/heads/{branch}",
+        f"refs/tags/{branch}",
+        f"refs/tags/{branch}^{{}}",
+    )
+    if result.returncode != 0:
+        return True
+    heads = False
+    tags = False
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        heads = heads or parts[1] == f"refs/heads/{branch}"
+        tags = tags or parts[1] in {f"refs/tags/{branch}", f"refs/tags/{branch}^{{}}"}
+    return heads and tags
+
+
 def _refs(path: Path, namespace: str) -> tuple[RefInfo, ...]:
     result = _git(path, "for-each-ref", namespace, "--format=%(refname)%09%(objectname)%09%(symref)")
     refs: list[RefInfo] = []
@@ -549,11 +586,20 @@ def _worktree_branches(path: Path) -> dict[str, str]:
     return branches
 
 
-def _origin_default_branch(path: Path, remote: str) -> str:
+def _resolve_default_branch(path: Path, target: RepoTarget) -> tuple[str, str]:
+    if target.default_branch:
+        return target.default_branch, "configured default_branch"
+    return _origin_default_branch(path, target.remote)
+
+
+def _origin_default_branch(path: Path, remote: str) -> tuple[str, str]:
     result = _git(path, "symbolic-ref", "--quiet", "--short", f"refs/remotes/{remote}/HEAD")
     if result.returncode == 0 and result.stdout.startswith(f"{remote}/"):
-        return result.stdout.split("/", 1)[1].strip()
-    return "main"
+        return result.stdout.split("/", 1)[1].strip(), f"resolved from refs/remotes/{remote}/HEAD"
+    if result.returncode == 1:
+        return "main", f"remote HEAD missing for {remote}; fell back to main"
+    detail = result.stderr or result.stdout or f"exit {result.returncode}"
+    return "main", f"symbolic-ref lookup failed unexpectedly for {remote}: {detail}; fell back to main"
 
 
 def _current_branch(path: Path) -> str:
@@ -606,9 +652,12 @@ def _repo_target(item: dict[str, object], base: Path) -> RepoTarget:
 
 
 def _stale_approval(item: dict[str, object]) -> StaleApproval:
+    scope = str(item.get("scope", ""))
+    if scope not in {"local", "remote"}:
+        raise ValueError(f"stale approval scope must be 'local' or 'remote': {scope or 'missing'}")
     return StaleApproval(
         repo=str(item.get("repo", "")),
-        scope=str(item.get("scope", "")),
+        scope=scope,
         branch=str(item.get("branch", "")),
         approved_by=str(item.get("approved_by", "")),
         reason=str(item.get("reason", "")),
@@ -630,6 +679,14 @@ def _approval_for(
 
 def _is_conservative_repo(target: RepoTarget) -> bool:
     return target.conservative or target.name == ".github" or target.path.name == ".github"
+
+
+def _protected_branches(configured: Iterable[str]) -> tuple[str, ...]:
+    protected: list[str] = []
+    for branch in DEFAULT_PROTECTED_BRANCHES + tuple(configured):
+        if branch and branch not in protected:
+            protected.append(branch)
+    return tuple(protected)
 
 
 def _preserved(

@@ -10,6 +10,7 @@ from enforcement.branch_cleanup import (
     RepoTarget,
     StaleApproval,
     cleanup_branches,
+    load_config,
     remote_branch_name,
 )
 
@@ -29,6 +30,48 @@ class BranchCleanupTests(unittest.TestCase):
         release = _action(report, "release", "local", "normal_cleanup")
         self.assertEqual("preserved", release.action)
         self.assertEqual("protected branch", release.reason)
+
+    def test_configured_protected_refs_cannot_unprotect_builtin_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            _git(repo, "branch", "master", "main")
+            config = BranchCleanupConfig(
+                repositories=(RepoTarget("sample", repo),),
+                protected_branches=("release",),
+            )
+
+            report = cleanup_branches(config)
+
+        master = _action(report, "master", "local", "normal_cleanup")
+        self.assertIn("release", config.protected_branches)
+        self.assertIn("master", config.protected_branches)
+        self.assertEqual("preserved", master.action)
+        self.assertEqual("protected branch", master.reason)
+
+    def test_loaded_config_adds_protected_refs_to_builtin_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            _git(repo, "branch", "trunk", "main")
+            config_path = root / "branch-cleanup.json"
+            config_path.write_text(
+                """
+{
+  "repositories": [{"name": "sample", "path": "repo"}],
+  "protected_branches": ["release"]
+}
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+            report = cleanup_branches(config)
+
+        trunk = _action(report, "trunk", "local", "normal_cleanup")
+        self.assertIn("release", config.protected_branches)
+        self.assertIn("trunk", config.protected_branches)
+        self.assertEqual("preserved", trunk.action)
+        self.assertEqual("protected branch", trunk.reason)
 
     def test_symbolic_refs_are_not_remote_delete_names(self) -> None:
         self.assertIsNone(remote_branch_name("refs/remotes/origin/HEAD"))
@@ -59,6 +102,22 @@ class BranchCleanupTests(unittest.TestCase):
         action = _action(report, "ambiguous", "local", "normal_cleanup")
         self.assertEqual("preserved", action.action)
         self.assertEqual("ambiguous ref name", action.reason)
+
+    def test_ambiguous_remote_ref_names_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            _git(repo, "branch", "remote-ambiguous", "main")
+            _git(repo, "push", "origin", "remote-ambiguous")
+            _git(repo, "fetch", "origin")
+            _git(repo, "tag", "remote-ambiguous", "main")
+            _git(repo, "push", "origin", "refs/tags/remote-ambiguous")
+            _git(repo, "tag", "-d", "remote-ambiguous")
+
+            report = cleanup_branches(_config(repo))
+
+        action = _action(report, "remote-ambiguous", "remote", "normal_cleanup")
+        self.assertEqual("preserved", action.action)
+        self.assertEqual("ambiguous remote ref name", action.reason)
 
     def test_dot_github_is_conservative(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -177,6 +236,50 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("deleted", action.action)
         self.assertEqual("", remote_check.stdout.strip())
 
+    def test_patch_equivalent_evidence_gates_stale_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            _commit_branch(repo, "stale-patch", "patch.txt", "same change\n")
+            _git(repo, "switch", "main")
+            (repo / "patch.txt").write_text("same change\n", encoding="utf-8")
+            _git(repo, "add", "patch.txt")
+            _git(repo, "commit", "-m", "Add equivalent patch")
+            _git(repo, "push", "origin", "main")
+            approval = StaleApproval(
+                repo="sample",
+                scope="local",
+                branch="stale-patch",
+                approved_by="keith",
+                reason="patch-equivalent stale branch",
+                evidence={"kind": "patch_equivalent"},
+            )
+
+            report = cleanup_branches(
+                BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
+                apply=True,
+            )
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/stale-patch")
+
+        action = _action(report, "stale-patch", "local", "stale_cleanup")
+        self.assertEqual("deleted", action.action)
+        self.assertNotEqual(0, ref_check.returncode)
+
+    def test_remote_branch_names_starting_with_dash_are_deleted_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            remote = root / "repo.git"
+            oid = _git(repo, "rev-parse", "main").stdout.strip()
+            _git(root, "--git-dir", str(remote), "update-ref", "refs/heads/--remote-stale", oid)
+            _git(repo, "fetch", "origin")
+
+            report = cleanup_branches(_config(repo), apply=True)
+            remote_check = _git(repo, "ls-remote", "--heads", "origin", "refs/heads/--remote-stale")
+
+        action = _action(report, "--remote-stale", "remote", "normal_cleanup")
+        self.assertEqual("deleted", action.action)
+        self.assertEqual("", remote_check.stdout.strip())
+
     def test_branch_names_with_shell_metacharacters_are_direct_argv_safe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
@@ -191,6 +294,43 @@ class BranchCleanupTests(unittest.TestCase):
         action = _action(report, branch, "local", "normal_cleanup")
         self.assertEqual("deleted", action.action)
         self.assertNotEqual(0, ref_check.returncode)
+
+    def test_invalid_stale_approval_scope_fails_config_load(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_repo(root)
+            config_path = root / "branch-cleanup.json"
+            config_path.write_text(
+                """
+{
+  "repositories": [{"name": "sample", "path": "repo"}],
+  "stale_approvals": [
+    {
+      "repo": "sample",
+      "scope": "global",
+      "branch": "stale",
+      "approved_by": "keith",
+      "reason": "invalid",
+      "evidence": {"kind": "patch_equivalent"}
+    }
+  ]
+}
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "scope must be 'local' or 'remote'"):
+                load_config(config_path)
+
+    def test_default_branch_fallback_reports_missing_remote_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            _git(repo, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+
+            report = cleanup_branches(BranchCleanupConfig(repositories=(RepoTarget("sample", repo),)))
+
+        self.assertEqual("main", report.repos[0].default_branch)
+        self.assertEqual("remote HEAD missing for origin; fell back to main", report.repos[0].default_branch_evidence)
 
 
 def _config(repo: Path) -> BranchCleanupConfig:
