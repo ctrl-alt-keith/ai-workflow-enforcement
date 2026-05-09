@@ -20,7 +20,7 @@ from .heuristics import (
 
 SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".rst"}
 AUTHORITY_TERMS_RE = re.compile(
-    r"\b(source of truth|canonical|authoritative|definitive|primary operational reference|official workflow definition|governs?)\b",
+    r"\b(source of truth|canonical|authoritative|definitive|primary operational reference|official workflow definition|governs?|defines?)\b",
     re.IGNORECASE,
 )
 AUTHORITY_SEGMENT_SPLIT_RE = re.compile(r"[.;:!?]|\b(?:but|however|though|although|while)\b", re.IGNORECASE)
@@ -52,7 +52,6 @@ AUTHORITY_EXTERNAL_SOURCE_PHRASES = (
     "github issues and prs remain authoritative",
     "implemented behavior",
     "official documentation",
-    "playbook",
     "release notes and changelogs",
     "remain authoritative for implementation work",
     "repository source of truth",

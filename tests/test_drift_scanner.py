@@ -327,6 +327,7 @@ class DriftScannerTests(unittest.TestCase):
             (notes / "staging.md").write_text(
                 "This runtime note provides authoritative guidance.\n"
                 "This document governs the workflow.\n"
+                "This document defines the workflow.\n"
                 "Treat this as the source of truth.\n",
                 encoding="utf-8",
             )
@@ -342,7 +343,36 @@ class DriftScannerTests(unittest.TestCase):
             [
                 "This runtime note provides authoritative guidance.",
                 "This document governs the workflow.",
+                "This document defines the workflow.",
                 "Treat this as the source of truth.",
+            ],
+            [finding.snippet for finding in authority_findings],
+        )
+
+    def test_authority_language_flags_playbook_authority_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "staging.md").write_text(
+                "This playbook is canonical.\n"
+                "This playbook provides authoritative guidance.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        authority_findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "noncanonical_authority_language"
+        ]
+        self.assertEqual(
+            [
+                "This playbook is canonical.",
+                "This playbook provides authoritative guidance.",
             ],
             [finding.snippet for finding in authority_findings],
         )
