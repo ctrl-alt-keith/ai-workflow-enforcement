@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
+from enforcement import branch_cleanup
 from enforcement.branch_cleanup import (
     BranchCleanupConfig,
     RepoTarget,
@@ -131,6 +134,58 @@ class BranchCleanupTests(unittest.TestCase):
         action = _action(report, "done", "local", "normal_cleanup")
         self.assertEqual("preserved", action.action)
         self.assertIn("worktree has untracked files", action.reason)
+        self.assertTrue(linked_exists)
+        self.assertEqual(0, ref_check.returncode)
+
+    def test_missing_worktree_path_is_preserved_as_inspection_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+            shutil.rmtree(linked)
+
+            report = cleanup_branches(_config(repo), apply=True)
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/done")
+
+        action = _action(report, "done", "local", "normal_cleanup")
+        self.assertEqual("preserved", action.action)
+        self.assertIn("could not inspect worktree state", action.reason)
+        self.assertEqual(0, ref_check.returncode)
+
+    def test_worktree_remove_revalidates_branch_is_still_merged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+            real_worktree_branches = branch_cleanup._worktree_branches
+            calls = 0
+
+            def worktree_branches_with_late_commit(path: Path) -> dict[str, str]:
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    (linked / "late.txt").write_text("late\n", encoding="utf-8")
+                    _git(linked, "add", "late.txt")
+                    _git(linked, "commit", "-m", "Late branch change")
+                return real_worktree_branches(path)
+
+            with mock.patch.object(
+                branch_cleanup,
+                "_worktree_branches",
+                side_effect=worktree_branches_with_late_commit,
+            ):
+                report = cleanup_branches(_config(repo), apply=True)
+
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/done")
+            linked_exists = linked.exists()
+
+        action = _action(report, "done", "local", "normal_cleanup")
+        self.assertEqual("failed", action.action)
+        self.assertIn("branch is no longer proven merged", action.reason)
         self.assertTrue(linked_exists)
         self.assertEqual(0, ref_check.returncode)
 

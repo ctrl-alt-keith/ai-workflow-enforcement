@@ -296,7 +296,7 @@ def _cleanup_repo(config: BranchCleanupConfig, target: RepoTarget, *, apply: boo
     report.actions.extend(normal)
     report.actions.extend(stale)
     if apply:
-        report.actions = [_apply_action(path, target.remote, action) for action in report.actions]
+        report.actions = [_apply_action(path, target.remote, default_ref, action) for action in report.actions]
     return report
 
 
@@ -465,11 +465,11 @@ def _stale_action(
     )
 
 
-def _apply_action(path: Path, remote: str, action: BranchAction) -> BranchAction:
+def _apply_action(path: Path, remote: str, default_ref: str, action: BranchAction) -> BranchAction:
     if action.action != "would_delete":
         return action
     if action.scope == "local" and action.phase == "normal_cleanup":
-        worktree_error = _remove_worktree_for_branch(path, action.branch)
+        worktree_error = _remove_worktree_for_branch(path, action.branch, default_ref)
         if worktree_error:
             return _replace_action(action, "failed", worktree_error)
         result = _git(path, "branch", "-d", "--", action.branch)
@@ -549,7 +549,12 @@ def _worktree_delete_skip_reason(path: Path, branch: str, worktree_branches: dic
 
 
 def _worktree_is_clean(worktree_path: Path) -> tuple[bool, str]:
-    status = _git(worktree_path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    if not worktree_path.exists():
+        return False, "could not inspect worktree state"
+    try:
+        status = _git(worktree_path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    except OSError:
+        return False, "could not inspect worktree state"
     if status.returncode != 0:
         return False, "could not inspect worktree state"
     entries = [entry for entry in status.stdout.split("\0") if entry]
@@ -560,7 +565,7 @@ def _worktree_is_clean(worktree_path: Path) -> tuple[bool, str]:
     return False, "worktree has uncommitted changes"
 
 
-def _remove_worktree_for_branch(path: Path, branch: str) -> str:
+def _remove_worktree_for_branch(path: Path, branch: str, default_ref: str) -> str:
     worktree_branches = _worktree_branches(path)
     raw_worktree_path = worktree_branches.get(branch)
     if not raw_worktree_path:
@@ -568,6 +573,11 @@ def _remove_worktree_for_branch(path: Path, branch: str) -> str:
     reason = _worktree_delete_skip_reason(path, branch, worktree_branches)
     if reason:
         return reason
+    branch_ref = f"refs/heads/{branch}"
+    if _verify_ref(path, branch_ref).returncode != 0:
+        return f"branch is no longer available: {branch_ref}"
+    if not _is_ancestor(path, branch_ref, default_ref):
+        return f"branch is no longer proven merged into {default_ref}"
     result = _git(path, "worktree", "remove", raw_worktree_path)
     if result.returncode == 0:
         return ""
