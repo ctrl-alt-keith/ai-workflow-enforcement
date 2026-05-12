@@ -409,6 +409,51 @@ class DriftScannerTests(unittest.TestCase):
         ]
         self.assertEqual(0, len(findings))
 
+    def test_sandbox_writable_roots_corrective_context_is_not_advisory_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "codex.md").write_text(
+                "In workspace-write mode, do not assume\n"
+                "`[sandbox_workspace_write].writable_roots` is the complete effective writable\n"
+                "root list. Codex may also have implicit writable roots.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
+        ]
+        self.assertEqual(0, len(findings))
+
+    def test_sandbox_writable_roots_detector_description_is_not_advisory_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "scanner.md").write_text(
+                "The scanner reports Codex sandbox docs/examples that imply "
+                "`writable_roots` is the exhaustive effective writable root set.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
+        ]
+        self.assertEqual(0, len(findings))
+
     def test_authority_language_skips_noncanonical_disclaimers_and_external_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -614,6 +659,67 @@ class DriftScannerTests(unittest.TestCase):
             {finding.kind for finding in result.advisory_findings},
         )
 
+    def test_authority_language_skips_named_playbook_reference_explanations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "staging.md").write_text(
+                "`ai-workflow-playbook` is the canonical reusable workflow-policy source.\n"
+                "`ctrl-alt-keith/ai-workflow-playbook`: GitHub playbook repository and canonical source.\n"
+                "Use `ai-workflow-playbook/docs/context-refresh.md` as the canonical reference.\n"
+                "Canonical guidance lives in `ai-workflow-playbook` after repeated evidence.\n"
+                "A separate Playbook Update task updates canonical guidance if warranted.\n"
+                "Audit drift between staging notes and canonical guidance.\n"
+                "Review role-mode confusion, canonical-source evidence, and validation records.\n"
+                "Reference canonical guidance and repo-local execution rules.\n"
+                "Audit findings distinguish canonical guidance ownership from local hygiene.\n"
+                "Expectations are not yet fully promoted into\n"
+                "canonical guidance.\n"
+                "- What would become canonical if promoted: a narrow review caution.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "noncanonical_authority_language",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
+    def test_authority_language_flags_playbook_replacement_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "staging.md").write_text(
+                "This runtime document replaces ai-workflow-playbook as the canonical source.\n"
+                "Treat this note, not ai-workflow-playbook, as the canonical workflow reference.\n"
+                "This prompt supersedes ai-workflow-playbook as canonical guidance.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        authority_findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "noncanonical_authority_language"
+        ]
+        self.assertEqual(
+            [
+                "This runtime document replaces ai-workflow-playbook as the canonical source.",
+                "Treat this note, not ai-workflow-playbook, as the canonical workflow reference.",
+                "This prompt supersedes ai-workflow-playbook as canonical guidance.",
+            ],
+            [finding.snippet for finding in authority_findings],
+        )
+
     def test_shell_wrapper_examples_skip_negative_examples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -725,6 +831,61 @@ class DriftScannerTests(unittest.TestCase):
             "ordinary_repo_command_shell_wrapper_example",
             {finding.kind for finding in result.advisory_findings},
         )
+
+    def test_shell_wrapper_runtime_policy_evidence_is_not_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            policy = notes / "runtime-artifacts" / "codex-local-policy"
+            policy.mkdir(parents=True)
+            playbook.mkdir()
+            (policy / "README.md").write_text(
+                "Shell-wrapped validation examples:\n\n"
+                "- `/bin/zsh -lc 'git worktree remove .worktrees/example'` -> no rule-layer\n"
+                "  allow; hook does not auto-allow the raw wrapper command\n\n"
+                "Copyable validation:\n\n"
+                "```sh\n"
+                "codex execpolicy check --pretty --rules custom.rules -- /bin/bash -lc 'git worktree remove .worktrees/example'\n"
+                "```\n",
+                encoding="utf-8",
+            )
+            (policy / "runtime-enforcement-matrix.md").write_text(
+                "| Surface | Requested command | Hook payload command | Static policy | Runtime behavior |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| interactive Codex runtime | `/bin/zsh -lc 'git worktree remove .worktrees/example'` | none logged | `matchedRules: []` | Executed. |\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "ordinary_repo_command_shell_wrapper_example",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
+    def test_shell_wrapper_runtime_behavior_guidance_is_flagged_outside_policy_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "prompt.md").write_text(
+                "Runtime behavior: run `bash -lc 'make check'` before review.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        wrapper_findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "ordinary_repo_command_shell_wrapper_example"
+        ]
+        self.assertEqual(1, len(wrapper_findings))
+        self.assertIn("make check", wrapper_findings[0].reasons[0])
 
     def test_worktree_creation_without_inspection_signal_is_advisory_finding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
