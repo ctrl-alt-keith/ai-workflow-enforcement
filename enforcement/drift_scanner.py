@@ -45,13 +45,25 @@ AUTHORITY_DISCLAIMER_PHRASES = (
 AUTHORITY_EXTERNAL_SOURCE_PHRASES = (
     "authoritative docs",
     "authoritative official",
+    "ai workflow playbook as canonical",
+    "ai workflow playbook is the canonical",
     "can be authoritative for behavior claims",
     "canonical local validation",
+    "canonical local blocking validation",
+    "canonical guidance already owns",
+    "canonical guidance can",
+    "canonical guidance lives in ai workflow playbook",
+    "canonical guidance remains",
+    "canonical lifecycle",
     "canonical playbook",
+    "canonical reference links",
+    "canonical reusable workflow policy source",
     "canonical validation",
     "github issues and prs remain authoritative",
     "implemented behavior",
+    "make check is the canonical",
     "official documentation",
+    "playbook update task updates canonical guidance",
     "release notes and changelogs",
     "remain authoritative for implementation work",
     "repository source of truth",
@@ -71,16 +83,25 @@ AUTHORITY_DISCUSSION_PHRASES = (
     "canonical source evidence",
     "canonical source use",
     "canonical sources",
+    "audit findings distinguish canonical guidance",
+    "checking whether audit findings distinguish canonical guidance",
     "feel authoritative",
     "hardened authoritative source",
+    "identify authority boundary risks",
     "manifest fields authoritative",
+    "non authoritative source exception",
+    "not yet fully promoted into canonical guidance",
+    "promotion task updates canonical guidance",
     "phrase source of truth",
+    "playbook repository and canonical source",
+    "repo owns it as the canonical",
     "scratch artifacts are disposable",
     "shadow canonical risk",
     "source of truth language",
     "source of truth wording",
     "treating ai workflow incubator as canonical",
     "using canonical or source of truth language",
+    "what would become canonical if promoted",
 )
 AUTHORITY_CLAIM_PHRASES = (
     "authoritative guidance",
@@ -708,6 +729,10 @@ def _has_noncanonical_authority_claim(
 def _is_direct_authority_claim(line: str, normalized_line: str, *, is_heading: bool) -> bool:
     if is_heading and "source of truth" in normalized_line:
         return False
+    if normalized_line == "canonical guidance":
+        return False
+    if _is_benign_playbook_canonical_reference(normalized_line):
+        return False
     segments = _authority_segments(line)
     return any(_segment_has_authority_claim(segment) for segment in segments)
 
@@ -730,6 +755,38 @@ def _segment_has_authority_claim(normalized_segment: str) -> bool:
 
 
 def _has_authority_exception(normalized_text: str) -> bool:
+    if _is_playbook_override_authority_claim(normalized_text):
+        return False
+    if _is_benign_playbook_canonical_reference(normalized_text):
+        return True
+    if (
+        "canonical guidance" in normalized_text
+        and any(
+            term in normalized_text
+            for term in (
+                "audit drift",
+                "canonical guidance ownership",
+                "distinguish canonical guidance",
+                "findings are useful",
+                "repo local execution",
+                "staging notes",
+            )
+        )
+    ):
+        return True
+    if (
+        "canonical source" in normalized_text
+        and any(
+            term in normalized_text
+            for term in (
+                "could better record",
+                "role mode confusion",
+                "under weighting",
+                "validation role",
+            )
+        )
+    ):
+        return True
     exception_phrases = (
         AUTHORITY_DISCLAIMER_PHRASES
         + AUTHORITY_EXTERNAL_SOURCE_PHRASES
@@ -737,6 +794,29 @@ def _has_authority_exception(normalized_text: str) -> bool:
         + ("implementation repositories", "non authoritative", "not enforcement tooling")
     )
     return any(term in normalized_text for term in exception_phrases)
+
+
+def _is_benign_playbook_canonical_reference(normalized_text: str) -> bool:
+    if "ai workflow playbook" not in normalized_text or "canonical" not in normalized_text:
+        return False
+    if _is_playbook_override_authority_claim(normalized_text):
+        return False
+    benign_patterns = (
+        r"\bai workflow playbook\b.{0,80}\bis\b.{0,80}\bcanonical\b.{0,80}\b(?:source|reference|guidance|policy)\b",
+        r"\bai workflow playbook\b.{0,80}\b(?:repository|docs?)\b.{0,80}\bcanonical\b.{0,80}\b(?:source|reference|guidance|policy)\b",
+        r"\buse\b.{0,80}\bai workflow playbook\b.{0,80}\bas\b.{0,80}\bcanonical\b.{0,80}\b(?:source|reference|guidance|policy)\b",
+        r"\bcanonical\b.{0,80}\b(?:guidance|source|reference|policy)\b.{0,80}\b(?:lives|remains)\b.{0,80}\bai workflow playbook\b",
+    )
+    return any(re.search(pattern, normalized_text) for pattern in benign_patterns)
+
+
+def _is_playbook_override_authority_claim(normalized_text: str) -> bool:
+    override_patterns = (
+        r"\b(?:replaces?|supersedes?|overrides?)\b.{0,80}\bai workflow playbook\b.{0,80}\bcanonical\b",
+        r"\btreat\s+this\b.{0,80}\bnot\b.{0,20}\bai workflow playbook\b.{0,80}\bcanonical\b",
+        r"\bnot\b.{0,20}\bai workflow playbook\b.{0,80}\bas\b.{0,20}\bcanonical\b",
+    )
+    return any(re.search(pattern, normalized_text) for pattern in override_patterns)
 
 
 def _has_authority_disclaimer(normalized_text: str) -> bool:
@@ -887,10 +967,11 @@ def _scan_worktree_creation_guidance(document: Document) -> list[AdvisoryFinding
 def _scan_sandbox_writable_roots_claims(document: Document) -> list[AdvisoryFinding]:
     findings: list[AdvisoryFinding] = []
     lines = _iter_lines(document.text)
-    for line_number, line in lines:
+    for index, (line_number, line) in enumerate(lines):
         if not WRITABLE_ROOTS_EXHAUSTIVE_RE.search(line):
             continue
-        if _has_writable_roots_exhaustive_exception(line):
+        context = _nearby_context(lines, index, radius=2)
+        if _has_writable_roots_exhaustive_exception(context):
             continue
         findings.append(
             AdvisoryFinding(
@@ -909,6 +990,8 @@ def _scan_sandbox_writable_roots_claims(document: Document) -> list[AdvisoryFind
 
 def _has_writable_roots_exhaustive_exception(context: str) -> bool:
     normalized = normalize_text(context)
+    if "imply writable roots is the exhaustive" in normalized:
+        return True
     return bool(WRITABLE_ROOTS_CORRECTIVE_RE.search(normalized))
 
 
@@ -976,6 +1059,35 @@ def _is_explanatory_shell_wrapper_discussion(document: Document, context: str) -
     if any(marker in normalized for marker in explanatory_context_markers):
         return True
     parts = {part.lower() for part in document.path.parts}
+    local_policy_context_markers = (
+        "no rule layer allow",
+        "static rule matching",
+        "hook allow intent",
+        "hook payload command",
+        "static policy",
+        "runtime behavior",
+        "fact status",
+    )
+    if (
+        {"runtime-artifacts", "codex-local-policy"} <= parts
+        and any(marker in normalized for marker in local_policy_context_markers)
+    ):
+        return True
+    if (
+        {"runtime-artifacts", "codex-local-policy"} <= parts
+        and (
+            "codex execpolicy check" in normalized
+            or "hook" in normalized
+            or "matrix" in normalized
+            or "payload" in normalized
+            or "runtime" in normalized
+            or (
+                "git worktree remove" in normalized
+                and ("zsh lc" in normalized or "bash lc" in normalized)
+            )
+        )
+    ):
+        return True
     return bool(
         {"operational-evidence", "workflow-patterns"} & parts
         and "wrapper" in normalized
