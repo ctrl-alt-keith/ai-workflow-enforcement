@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 DEFAULT_SOURCE_REF = "main"
 REPORT_TYPE = "repo_settings_audit"
+CENTRAL_POLICY_PATH = Path(__file__).resolve().parent.parent / "config" / "repo-settings-policy.json"
 WORKFLOW_SUFFIXES = (".yml", ".yaml")
 DEPENDABOT_PATHS = (".github/dependabot.yml", ".github/dependabot.yaml")
 LOCAL_GOVERNANCE_PREFIXES = ("docs/", ".github/workflows/")
@@ -247,7 +248,7 @@ def render_json_report(report: RepoSettingsReport) -> str:
 
 
 def _hosted_items(repo_root: Path, remote: RemoteSnapshot, state: HostedState) -> list[AuditItem]:
-    expected = _expectations(remote)
+    expected = _expectations(state.repo, remote)
     items = [
         AuditItem(
             setting="repository visibility",
@@ -307,32 +308,58 @@ class ExpectedSettings:
     canonical_validation: str
 
 
-def _expectations(remote: RemoteSnapshot) -> ExpectedSettings:
+@dataclass(frozen=True)
+class CentralPolicy:
+    visibility: str
+    default_branch: str
+    required_checks: tuple[str, ...]
+    require_status_checks: bool | None
+    required_prs: bool | None
+    strict_checks: bool | None
+    force_pushes_allowed: bool | None
+    deletions_allowed: bool | None
+    required_approving_reviews: int | None
+    admin_bypass: bool | None
+    merge_methods: dict[str, bool]
+
+
+def _expectations(repo_data: dict[str, object], remote: RemoteSnapshot) -> ExpectedSettings:
     text = remote.governance_text
     normalized = text.lower()
     declarations = _explicit_declarations(text)
-    required_checks = _documented_required_checks(text)
+    policy = _central_policy(str(repo_data.get("full_name") or ""))
+    required_checks = policy.required_checks
+    documented_checks = _documented_required_checks(text)
+    if documented_checks:
+        required_checks = documented_checks
     canonical_validation = _canonical_validation(remote)
     solo_operator = _bool_declaration(declarations, "solo-operator review policy")
-    required_prs = _documented_required_prs(declarations)
-    require_status_checks = _documented_require_status_checks(declarations)
-    required_reviews = _int_declaration(declarations, "required approving reviews")
-    admin_bypass = _bool_declaration(declarations, "administrator bypass")
+    required_prs = _override_bool(policy.required_prs, _documented_required_prs(declarations))
+    require_status_checks = _override_bool(policy.require_status_checks, _documented_require_status_checks(declarations))
+    strict_checks = _override_bool(policy.strict_checks, _documented_strict_checks(declarations))
+    required_reviews = _override_int(policy.required_approving_reviews, _int_declaration(declarations, "required approving reviews"))
+    admin_bypass = _override_bool(policy.admin_bypass, _bool_declaration(declarations, "administrator bypass"))
     if solo_operator is True:
         required_prs = True if required_prs is None else required_prs
         require_status_checks = True if require_status_checks is None else require_status_checks
         required_reviews = 0 if required_reviews is None else required_reviews
         admin_bypass = True if admin_bypass is None else admin_bypass
-    force_pushes_allowed = _bool_declaration(declarations, "force pushes on main")
-    deletions_allowed = _bool_declaration(declarations, "deletions on main")
+    force_pushes_allowed = _override_bool(policy.force_pushes_allowed, _bool_declaration(declarations, "force pushes on main"))
+    deletions_allowed = _override_bool(policy.deletions_allowed, _bool_declaration(declarations, "deletions on main"))
+    merge_methods = {
+        **policy.merge_methods,
+        **_documented_merge_methods(declarations),
+    }
+    visibility = _documented_visibility(declarations) or policy.visibility
+    default_branch = _documented_default_branch(declarations) or policy.default_branch
     return ExpectedSettings(
-        visibility=_documented_visibility(declarations),
-        default_branch=_documented_default_branch(declarations) or "main",
+        visibility=visibility,
+        default_branch=default_branch,
         branch_rules=bool(
             required_prs
             or require_status_checks
             or required_checks
-            or _documented_strict_checks(declarations) is not None
+            or strict_checks is not None
             or force_pushes_allowed is not None
             or deletions_allowed is not None
             or required_reviews is not None
@@ -341,13 +368,13 @@ def _expectations(remote: RemoteSnapshot) -> ExpectedSettings:
         required_checks=required_checks,
         require_status_checks=require_status_checks,
         required_prs=required_prs,
-        strict_checks=_documented_strict_checks(declarations),
+        strict_checks=strict_checks,
         force_pushes_allowed=force_pushes_allowed,
         deletions_allowed=deletions_allowed,
         required_approving_reviews=required_reviews,
         admin_bypass=admin_bypass,
         dependabot="dependabot" in normalized,
-        merge_methods=_documented_merge_methods(declarations),
+        merge_methods=merge_methods,
         merge_methods_documented=_mentions_any(
             normalized,
             ("squash merge", "merge commit", "rebase merge", "auto-merge"),
@@ -899,6 +926,89 @@ def _git_stdout(repo_root: Path, argv: tuple[str, ...]) -> str:
 DeclarationMap = dict[str, tuple[str, ...]]
 
 
+def _central_policy(repo: str) -> CentralPolicy:
+    data = _read_central_policy()
+    baseline = _policy_object(data.get("baseline"), "baseline")
+    repositories = _policy_object(data.get("repositories", {}), "repositories")
+    override = _policy_object(repositories.get(repo, {}), f"repositories.{repo}")
+    merged = {**baseline, **override}
+    return CentralPolicy(
+        visibility=_policy_string(merged, "visibility"),
+        default_branch=_policy_string(merged, "default_branch"),
+        required_checks=tuple(str(check) for check in merged.get("required_checks", ()) if str(check)),
+        require_status_checks=_policy_bool(merged.get("require_status_checks")),
+        required_prs=_policy_bool(merged.get("require_pull_requests")),
+        strict_checks=_policy_bool(merged.get("strict_required_checks")),
+        force_pushes_allowed=_enabled_policy_bool(merged.get("force_pushes")),
+        deletions_allowed=_enabled_policy_bool(merged.get("branch_deletions")),
+        required_approving_reviews=_policy_int(merged.get("required_approving_reviews")),
+        admin_bypass=_enabled_policy_bool(merged.get("administrator_bypass")),
+        merge_methods=_policy_merge_methods(merged),
+    )
+
+
+def _read_central_policy() -> dict[str, object]:
+    try:
+        data = json.loads(CENTRAL_POLICY_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"central repo settings policy not found: {CENTRAL_POLICY_PATH}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"central repo settings policy is invalid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("central repo settings policy must be a JSON object")
+    return data
+
+
+def _policy_object(value: object, label: str) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    raise RuntimeError(f"central repo settings policy field {label} must be an object")
+
+
+def _policy_string(policy: dict[str, object], key: str) -> str:
+    value = policy.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _policy_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _policy_int(value: object) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def _enabled_policy_bool(value: object) -> bool | None:
+    if value == "enabled":
+        return True
+    if value == "disabled":
+        return False
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _policy_merge_methods(policy: dict[str, object]) -> dict[str, bool]:
+    methods: dict[str, bool] = {}
+    if policy.get("merge_policy") == "squash-only":
+        methods.update(
+            {
+                "allow_squash_merge": True,
+                "allow_merge_commit": False,
+                "allow_rebase_merge": False,
+            }
+        )
+    return methods
+
+
+def _override_bool(base: bool | None, override: bool | None) -> bool | None:
+    return base if override is None else override
+
+
+def _override_int(base: int | None, override: int | None) -> int | None:
+    return base if override is None else override
+
+
 def _explicit_declarations(text: str) -> DeclarationMap:
     declarations: dict[str, list[str]] = {}
     in_fenced_block = False
@@ -1439,7 +1549,7 @@ def _enabled_disabled_unknown(value: bool | None) -> str:
 
 
 def _source(remote: RemoteSnapshot) -> str:
-    return f"GitHub {remote.ref} ({remote.sha})"
+    return f"central repo-settings policy + GitHub {remote.ref} ({remote.sha})"
 
 
 def _summary(items: Iterable[AuditItem]) -> dict[str, int]:

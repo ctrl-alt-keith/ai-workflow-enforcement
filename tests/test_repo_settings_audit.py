@@ -31,7 +31,7 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertIn(("gh", "api", "/repos/ctrl-alt-keith/sample/commits/reviewed-ref"), gh.commands)
         self.assertTrue(
             all(
-                item.source == "GitHub reviewed-ref (remote-sha)"
+                item.source == "central repo-settings policy + GitHub reviewed-ref (remote-sha)"
                 for item in report.items
                 if item.setting not in {
                     "local current branch vs source-of-truth ref",
@@ -122,7 +122,7 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("match", item.status)
         self.assertEqual("build, lint / docs", item.expected)
 
-    def test_prose_required_check_mentions_do_not_define_expectations(self) -> None:
+    def test_prose_required_check_mentions_do_not_define_exact_check_expectations(self) -> None:
         responses = _responses()
         responses[
             "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
@@ -140,8 +140,11 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "required status checks")
 
-        self.assertEqual("unknown", item.status)
-        self.assertEqual("no required-check expectation found", item.expected)
+        self.assertEqual("match", item.status)
+        self.assertEqual(
+            "hosted required status checks are explicitly required; exact names are not documented",
+            item.expected,
+        )
 
     def test_historical_required_check_references_do_not_define_expectations(self) -> None:
         responses = _responses()
@@ -162,8 +165,11 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "required status checks")
 
-        self.assertEqual("unknown", item.status)
-        self.assertEqual("no required-check expectation found", item.expected)
+        self.assertEqual("match", item.status)
+        self.assertEqual(
+            "hosted required status checks are explicitly required; exact names are not documented",
+            item.expected,
+        )
 
     def test_example_command_blocks_do_not_define_required_checks(self) -> None:
         responses = _responses()
@@ -186,8 +192,11 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "required status checks")
 
-        self.assertEqual("unknown", item.status)
-        self.assertEqual("no required-check expectation found", item.expected)
+        self.assertEqual("match", item.status)
+        self.assertEqual(
+            "hosted required status checks are explicitly required; exact names are not documented",
+            item.expected,
+        )
 
     def test_linode_backup_lab_style_governance_ignores_manifest_prose_noise(self) -> None:
         responses = _responses(required_check="make check (Python 3.10)")
@@ -256,8 +265,11 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "required status checks")
 
-        self.assertEqual("unknown", item.status)
-        self.assertEqual("no required-check expectation found", item.expected)
+        self.assertEqual("match", item.status)
+        self.assertEqual(
+            "hosted required status checks are explicitly required; exact names are not documented",
+            item.expected,
+        )
 
     def test_generic_private_language_is_not_visibility_expectation(self) -> None:
         responses = _responses()
@@ -274,8 +286,8 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "repository visibility")
 
-        self.assertEqual("unknown", item.status)
-        self.assertIn("no visibility expectation", item.expected)
+        self.assertEqual("match", item.status)
+        self.assertEqual("public", item.expected)
 
     def test_private_visibility_expectation_matches_hosted_private_repo(self) -> None:
         responses = _responses(private=True)
@@ -333,6 +345,71 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("drift", item.status)
         self.assertEqual("private", item.expected)
         self.assertEqual("public", item.actual)
+
+    def test_baseline_defaults_apply_without_repo_local_governance_docs(self) -> None:
+        responses = _responses(
+            allow_merge_commit=False,
+            allow_squash_merge=True,
+            allow_rebase_merge=False,
+            enforce_admins=False,
+        )
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("This repo has no hosted settings declarations.\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        self.assertEqual("match", _item(report, "repository visibility").status)
+        self.assertEqual("match", _item(report, "default branch").status)
+        self.assertEqual("match", _item(report, "required pull requests").status)
+        self.assertEqual("match", _item(report, "branch up-to-date requirement").status)
+        self.assertEqual("match", _item(report, "force-push and deletion restrictions").status)
+        self.assertEqual("match", _item(report, "merge method settings").status)
+        self.assertEqual("match", _item(report, "review and administrator policy").status)
+
+    def test_central_private_override_matches_hosted_private_repo(self) -> None:
+        repo = "ctrl-alt-keith/ai-workflow-incubator"
+        responses = _responses(repo=repo, private=True)
+        responses[
+            f"/repos/{repo}/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("No repo-local visibility declaration needed for inherited private exception.\n")
+
+        report = audit_repo_settings(
+            repo,
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "repository visibility")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("private", item.expected)
+        self.assertEqual("private", item.actual)
+
+    def test_repo_local_explicit_override_takes_precedence_over_central_baseline(self) -> None:
+        responses = _responses(private=True)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- repository visibility: private\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "repository visibility")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("private", item.expected)
+        self.assertEqual("private", item.actual)
 
     def test_default_branch_protection_phrase_does_not_define_default_branch(self) -> None:
         responses = _responses()
@@ -397,10 +474,10 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "merge method settings")
 
-        self.assertEqual("unknown", item.status)
-        self.assertIn("no concrete expected settings are parsed", item.expected)
+        self.assertEqual("drift", item.status)
+        self.assertIn("merge commits: disabled", item.expected)
         self.assertIn("squash merges: yes", item.actual)
-        self.assertIn("Compare allowed merge methods manually", item.follow_up)
+        self.assertIn("Align hosted merge methods", item.follow_up)
 
     def test_squash_only_merge_policy_matches_hosted_settings(self) -> None:
         responses = _responses(
@@ -514,8 +591,8 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "review and administrator policy")
 
-        self.assertEqual("unknown", item.status)
-        self.assertIn("no review/admin expectation", item.expected)
+        self.assertEqual("match", item.status)
+        self.assertEqual("required approving reviews: 0; administrator bypass: enabled", item.expected)
 
     def test_explicit_branch_protection_policy_matches_hosted_settings(self) -> None:
         responses = _responses()
@@ -572,6 +649,7 @@ class FakeGh:
 
 def _responses(
     *,
+    repo: str = "ctrl-alt-keith/sample",
     source_ref: str = "main",
     required_check: str = "make check",
     hosted_check: str | None = None,
@@ -583,6 +661,7 @@ def _responses(
     enforce_admins: bool = False,
 ) -> dict[str, object]:
     hosted_check = hosted_check or required_check
+    _, repo_name = repo.split("/", 1)
     governance_doc = (
         "Default branch `main` uses branch protection.\n"
         f"Required status checks: `{required_check}`.\n"
@@ -600,9 +679,9 @@ def _responses(
         for path in files
     ]
     responses: dict[str, object] = {
-        "/repos/ctrl-alt-keith/sample": {
-            "name": "sample",
-            "full_name": "ctrl-alt-keith/sample",
+        f"/repos/{repo}": {
+            "name": repo_name,
+            "full_name": repo,
             "private": private,
             "default_branch": "main",
             "allow_merge_commit": allow_merge_commit,
@@ -611,9 +690,9 @@ def _responses(
             "allow_auto_merge": False,
             "delete_branch_on_merge": True,
         },
-        f"/repos/ctrl-alt-keith/sample/commits/{source_ref}": {"sha": "remote-sha"},
-        "/repos/ctrl-alt-keith/sample/git/trees/remote-sha?recursive=1": {"tree": tree},
-        "/repos/ctrl-alt-keith/sample/branches/main/protection": {
+        f"/repos/{repo}/commits/{source_ref}": {"sha": "remote-sha"},
+        f"/repos/{repo}/git/trees/remote-sha?recursive=1": {"tree": tree},
+        f"/repos/{repo}/branches/main/protection": {
             "required_status_checks": {
                 "strict": True,
                 "contexts": [hosted_check],
@@ -626,8 +705,8 @@ def _responses(
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False},
         },
-        "/repos/ctrl-alt-keith/sample/rulesets?targets=branch": [],
-        "/repos/ctrl-alt-keith/sample/actions/workflows": {
+        f"/repos/{repo}/rulesets?targets=branch": [],
+        f"/repos/{repo}/actions/workflows": {
             "workflows": [
                 {
                     "path": ".github/workflows/check.yml",
@@ -637,7 +716,7 @@ def _responses(
         },
     }
     for path, text in files.items():
-        responses[f"/repos/ctrl-alt-keith/sample/contents/{path}?ref=remote-sha"] = _content(text)
+        responses[f"/repos/{repo}/contents/{path}?ref=remote-sha"] = _content(text)
     return responses
 
 
