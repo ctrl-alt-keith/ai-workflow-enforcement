@@ -742,7 +742,7 @@ def _approval_for(
 
 
 def _is_conservative_repo(target: RepoTarget) -> bool:
-    return target.conservative or target.name == ".github" or target.path.name == ".github"
+    return target.conservative
 
 
 def _protected_branches(configured: Iterable[str]) -> tuple[str, ...]:
