@@ -6,7 +6,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from enforcement import repo_settings_audit
 from enforcement.repo_settings_audit import (
     GhCommand,
     audit_repo_settings,
@@ -616,6 +618,250 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("match", _item(report, "branch up-to-date requirement").status)
         self.assertEqual("match", _item(report, "force-push and deletion restrictions").status)
 
+    def test_dependabot_github_actions_baseline_matches_weekly_config(self) -> None:
+        responses = _responses(dependabot_config=_dependabot_config("github-actions"))
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("github-actions", item.expected)
+        self.assertIn("github-actions (weekly)", item.actual)
+
+    def test_dependabot_pip_baseline_matches_weekly_config(self) -> None:
+        responses = _responses(
+            include_workflow=False,
+            include_pyproject=True,
+            dependabot_config=_dependabot_config("pip"),
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("pip", item.expected)
+        self.assertIn("pip (weekly)", item.actual)
+
+    def test_dependabot_missing_config_drifts_when_supported_ecosystem_present(self) -> None:
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(_responses()),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("drift", item.status)
+        self.assertIn("github-actions", item.expected)
+        self.assertIn("not present", item.actual)
+
+    def test_dependabot_config_missing_required_ecosystem_drifts(self) -> None:
+        responses = _responses(
+            include_pyproject=True,
+            dependabot_config=_dependabot_config("github-actions"),
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("drift", item.status)
+        self.assertIn("missing ecosystems: pip", item.actual)
+
+    def test_dependabot_not_applicable_matches_without_supported_ecosystems(self) -> None:
+        responses = _responses(include_workflow=False)
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("not applicable", item.expected)
+
+    def test_dependabot_repo_override_disables_expectation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            policy_path = Path(temp_dir) / "repo-settings-policy.json"
+            policy_path.write_text(
+                json.dumps(
+                    {
+                        "baseline": {
+                            "visibility": "public",
+                            "default_branch": "main",
+                            "dependabot": {
+                                "enabled": "auto",
+                                "ecosystems": ["github-actions"],
+                                "schedule": "weekly",
+                            },
+                        },
+                        "repositories": {
+                            "ctrl-alt-keith/sample": {
+                                "dependabot": {"enabled": False},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(repo_settings_audit, "CENTRAL_POLICY_PATH", policy_path):
+                report = audit_repo_settings(
+                    "ctrl-alt-keith/sample",
+                    source_ref="main",
+                    repo_root=Path("/does/not/exist"),
+                    runner=FakeGh(_responses()),
+                )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("disabled", item.expected)
+
+    def test_dependabot_repo_override_customizes_schedule(self) -> None:
+        responses = _responses(dependabot_config=_dependabot_config("github-actions", interval="daily"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            policy_path = Path(temp_dir) / "repo-settings-policy.json"
+            policy_path.write_text(
+                json.dumps(
+                    {
+                        "baseline": {
+                            "visibility": "public",
+                            "default_branch": "main",
+                            "dependabot": {
+                                "enabled": "auto",
+                                "ecosystems": ["github-actions"],
+                                "schedule": "weekly",
+                            },
+                        },
+                        "repositories": {
+                            "ctrl-alt-keith/sample": {
+                                "dependabot": {"schedule": "daily"},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(repo_settings_audit, "CENTRAL_POLICY_PATH", policy_path):
+                report = audit_repo_settings(
+                    "ctrl-alt-keith/sample",
+                    source_ref="main",
+                    repo_root=Path("/does/not/exist"),
+                    runner=FakeGh(responses),
+                )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("github-actions (daily)", item.actual)
+
+    def test_malformed_dependabot_config_reports_unknown_unavailable(self) -> None:
+        responses = _responses(dependabot_config="version: 2\nupdates: [\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("unknown", item.status)
+        self.assertIn("unknown_unavailable", item.actual)
+        self.assertIn("unknown_unavailable", item.follow_up)
+
+    def test_ruleset_detail_parses_reviews_checks_and_admin_bypass(self) -> None:
+        responses = _responses()
+        protection_endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        responses[protection_endpoint] = GhCommand(
+            argv=("gh", "api", protection_endpoint),
+            returncode=1,
+            stdout="",
+            stderr="HTTP 404 Not Found",
+        )
+        responses["/repos/ctrl-alt-keith/sample/rulesets?targets=branch"] = [
+            {
+                "id": 123,
+                "name": "Protect main",
+                "target": "branch",
+                "enforcement": "active",
+            }
+        ]
+        responses["/repos/ctrl-alt-keith/sample/rulesets/123"] = _ruleset_detail(
+            current_user_can_bypass="never",
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        self.assertEqual("match", _item(report, "required status checks").status)
+        self.assertEqual("match", _item(report, "required pull requests").status)
+        self.assertEqual("drift", _item(report, "review and administrator policy").status)
+        self.assertEqual(
+            "required approving reviews: 0; administrator bypass: disabled",
+            _item(report, "review and administrator policy").actual,
+        )
+
+    def test_ruleset_detail_without_admin_fields_reports_specific_unknown(self) -> None:
+        responses = _responses()
+        protection_endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        responses[protection_endpoint] = GhCommand(
+            argv=("gh", "api", protection_endpoint),
+            returncode=1,
+            stdout="",
+            stderr="HTTP 404 Not Found",
+        )
+        responses["/repos/ctrl-alt-keith/sample/rulesets?targets=branch"] = [
+            {
+                "id": 123,
+                "name": "Protect main",
+                "target": "branch",
+                "enforcement": "active",
+            }
+        ]
+        detail = dict(_ruleset_detail(current_user_can_bypass="never"))
+        detail.pop("current_user_can_bypass")
+        detail.pop("bypass_actors")
+        responses["/repos/ctrl-alt-keith/sample/rulesets/123"] = detail
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "review and administrator policy")
+
+        self.assertEqual("unknown", item.status)
+        self.assertIn("current_user_can_bypass or bypass_actors", item.actual)
+
     def test_optional_hosted_call_succeeds_on_retry(self) -> None:
         responses = _responses()
         endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
@@ -772,6 +1018,9 @@ def _responses(
     allow_rebase_merge: bool = False,
     required_review_count: int = 0,
     enforce_admins: bool = False,
+    include_workflow: bool = True,
+    include_pyproject: bool = False,
+    dependabot_config: str = "",
 ) -> dict[str, object]:
     hosted_check = hosted_check or required_check
     _, repo_name = repo.split("/", 1)
@@ -785,8 +1034,13 @@ def _responses(
         "AGENTS.md": "Use pull requests. Target `main`. Run `make check`.\n",
         "Makefile": "check:\n\tpython3 -m unittest discover -s tests\n",
         "docs/governance-ci.md": governance_doc,
-        ".github/workflows/check.yml": "name: check\n",
     }
+    if include_workflow:
+        files[".github/workflows/check.yml"] = "name: check\n"
+    if include_pyproject:
+        files["pyproject.toml"] = "[project]\nname = \"sample\"\n"
+    if dependabot_config:
+        files[".github/dependabot.yml"] = dependabot_config
     tree = [
         {"path": path, "type": "blob"}
         for path in files
@@ -837,6 +1091,52 @@ def _content(text: str) -> dict[str, str]:
     return {
         "encoding": "base64",
         "content": base64.b64encode(text.encode("utf-8")).decode("ascii"),
+    }
+
+
+def _dependabot_config(*ecosystems: str, interval: str = "weekly") -> str:
+    entries = []
+    for ecosystem in ecosystems:
+        entries.append(
+            "  - package-ecosystem: \"{ecosystem}\"\n"
+            "    directory: \"/\"\n"
+            "    schedule:\n"
+            "      interval: \"{interval}\"\n".format(ecosystem=ecosystem, interval=interval)
+        )
+    return "version: 2\nupdates:\n" + "".join(entries)
+
+
+def _ruleset_detail(current_user_can_bypass: str) -> dict[str, object]:
+    return {
+        "id": 123,
+        "name": "Protect main",
+        "target": "branch",
+        "enforcement": "active",
+        "rules": [
+            {
+                "type": "pull_request",
+                "parameters": {
+                    "required_approving_review_count": 0,
+                },
+            },
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "strict_required_status_checks_policy": True,
+                    "required_status_checks": [
+                        {
+                            "context": "make check",
+                            "integration_id": 15368,
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "non_fast_forward",
+            },
+        ],
+        "bypass_actors": [],
+        "current_user_can_bypass": current_user_can_bypass,
     }
 
 

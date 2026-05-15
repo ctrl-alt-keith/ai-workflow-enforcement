@@ -10,7 +10,15 @@
     "branch_deletions": "disabled",
     "merge_policy": "squash-only",
     "required_approving_reviews": 0,
-    "administrator_bypass": "enabled"
+    "administrator_bypass": "enabled",
+    "dependabot": {
+      "enabled": "auto",
+      "ecosystems": [
+        "github-actions",
+        "pip"
+      ],
+      "schedule": "weekly"
+    }
   },
   "repositories": {
     "ctrl-alt-keith/ai-workflow-incubator": {

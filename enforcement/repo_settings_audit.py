@@ -25,8 +25,10 @@ REPORT_TYPE = "repo_settings_audit"
 CENTRAL_POLICY_PATH = Path(__file__).resolve().parent.parent / "config" / "repo-settings-policy.json"
 WORKFLOW_SUFFIXES = (".yml", ".yaml")
 DEPENDABOT_PATHS = (".github/dependabot.yml", ".github/dependabot.yaml")
+PYTHON_PACKAGE_METADATA_PATHS = ("pyproject.toml", "setup.cfg", "setup.py")
 LOCAL_GOVERNANCE_PREFIXES = ("docs/", ".github/workflows/")
 LOCAL_GOVERNANCE_NAMES = ("AGENTS.md", "README.md", "Makefile") + DEPENDABOT_PATHS
+SOURCE_METADATA_NAMES = PYTHON_PACKAGE_METADATA_PATHS
 
 
 @dataclass(frozen=True)
@@ -325,7 +327,7 @@ class ExpectedSettings:
     deletions_allowed: bool | None
     required_approving_reviews: int | None
     admin_bypass: bool | None
-    dependabot: bool
+    dependabot: "ExpectedDependabot"
     merge_methods: dict[str, bool]
     merge_methods_documented: bool
     canonical_validation: str
@@ -344,6 +346,34 @@ class CentralPolicy:
     required_approving_reviews: int | None
     admin_bypass: bool | None
     merge_methods: dict[str, bool]
+    dependabot: "DependabotPolicy"
+
+
+@dataclass(frozen=True)
+class DependabotPolicy:
+    enabled: str
+    ecosystems: tuple[str, ...]
+    schedule: str
+
+
+@dataclass(frozen=True)
+class ExpectedDependabot:
+    enabled: bool
+    ecosystems: tuple[str, ...]
+    schedule: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class DependabotUpdate:
+    ecosystem: str
+    interval: str
+
+
+@dataclass(frozen=True)
+class DependabotConfig:
+    updates: tuple[DependabotUpdate, ...]
+    error: str = ""
 
 
 def _expectations(repo_data: dict[str, object], remote: RemoteSnapshot) -> ExpectedSettings:
@@ -396,7 +426,7 @@ def _expectations(repo_data: dict[str, object], remote: RemoteSnapshot) -> Expec
         deletions_allowed=deletions_allowed,
         required_approving_reviews=required_reviews,
         admin_bypass=admin_bypass,
-        dependabot="dependabot" in normalized,
+        dependabot=_expected_dependabot(policy.dependabot, remote),
         merge_methods=merge_methods,
         merge_methods_documented=_mentions_any(
             normalized,
@@ -657,20 +687,62 @@ def _actions_item(remote: RemoteSnapshot, state: HostedState) -> AuditItem:
 
 
 def _dependabot_item(remote: RemoteSnapshot, expected: ExpectedSettings) -> AuditItem:
+    dependabot = expected.dependabot
+    config = _dependabot_config(remote)
+    if config.error:
+        return AuditItem(
+            setting="Dependabot config presence",
+            status="unknown",
+            expected=_describe_expected_dependabot(dependabot),
+            actual=f"{remote.dependabot_path} could not be parsed ({config.error})",
+            source=_source(remote),
+            follow_up="unknown_unavailable: fix or inspect Dependabot config before treating dependency-update policy as drift.",
+        )
+    if not dependabot.enabled:
+        status = "match" if not remote.dependabot_path else "drift"
+        return AuditItem(
+            setting="Dependabot config presence",
+            status=status,
+            expected="Dependabot disabled by central repo settings policy",
+            actual=remote.dependabot_path or "not present in source-of-truth ref",
+            source=_source(remote),
+            follow_up=(
+                "Remove or justify Dependabot config through a central repo policy override."
+                if status == "drift"
+                else "Dependabot is intentionally disabled for this repository."
+            ),
+        )
+    if not dependabot.ecosystems:
+        return AuditItem(
+            setting="Dependabot config presence",
+            status="match",
+            expected=f"not applicable: no supported ecosystems detected ({dependabot.reason})",
+            actual=remote.dependabot_path or "not present in source-of-truth ref",
+            source=_source(remote),
+            follow_up="No Dependabot config is required until a supported ecosystem is added.",
+        )
+    missing = _missing_dependabot_ecosystems(dependabot, config)
+    wrong_schedule = _wrong_dependabot_schedules(dependabot, config)
+    status = "match" if remote.dependabot_path and not missing and not wrong_schedule else "drift"
+    actual_parts = []
+    if remote.dependabot_path:
+        actual_parts.append(_describe_dependabot_config(config))
+    else:
+        actual_parts.append("not present in source-of-truth ref")
+    if missing:
+        actual_parts.append(f"missing ecosystems: {', '.join(missing)}")
+    if wrong_schedule:
+        actual_parts.append(f"non-weekly schedules: {', '.join(wrong_schedule)}")
     return AuditItem(
         setting="Dependabot config presence",
-        status=_compare_if_known(expected.dependabot, bool(remote.dependabot_path)),
-        expected=(
-            "Dependabot config is expected because source-of-truth docs mention Dependabot"
-            if expected.dependabot
-            else "unknown_policy: no Dependabot expectation found in source-of-truth docs"
-        ),
-        actual=remote.dependabot_path or "not present in source-of-truth ref",
+        status=status,
+        expected=_describe_expected_dependabot(dependabot),
+        actual="; ".join(actual_parts),
         source=_source(remote),
         follow_up=(
-            "Add Dependabot config in a normal PR only if dependency-update automation is intended."
-            if expected.dependabot and not remote.dependabot_path
-            else "unknown_policy: hosted Dependabot/security toggles may still require separate org-admin inspection."
+            "Add or update Dependabot config in a normal PR so supported ecosystems update weekly."
+            if status == "drift"
+            else "Dependabot config covers the supported baseline ecosystems."
         ),
     )
 
@@ -810,7 +882,7 @@ def _fetch_hosted_state(
             errors,
         )
         protection_retried = protection_retried or read_depth_retried
-    rulesets_fetch = _fetch_optional_collection(runner, f"/repos/{repo}/rulesets?targets=branch", errors)
+    rulesets_fetch = _fetch_rulesets(runner, repo, errors)
     workflows_fetch = _fetch_optional_object(runner, f"/repos/{repo}/actions/workflows", errors)
     workflows = None
     workflows_error = workflows_fetch.error
@@ -968,6 +1040,45 @@ def _fetch_optional_collection_once(
     return OptionalCollectionResult(value=tuple(item for item in data if isinstance(item, dict)))
 
 
+def _fetch_rulesets(
+    runner: Runner,
+    repo: str,
+    errors: list[str],
+) -> OptionalCollectionResult:
+    endpoint = f"/repos/{repo}/rulesets?targets=branch"
+    listed = _fetch_optional_collection(runner, endpoint, errors)
+    if listed.value is None:
+        return listed
+    details: list[dict[str, object]] = []
+    retried = listed.retried
+    detail_errors: list[str] = []
+    for ruleset in listed.value:
+        ruleset_id = ruleset.get("id")
+        if not isinstance(ruleset_id, int):
+            details.append(ruleset)
+            continue
+        detail_endpoint = f"/repos/{repo}/rulesets/{ruleset_id}"
+        detail = _fetch_optional_object(runner, detail_endpoint, errors)
+        retried = retried or detail.retried
+        if detail.value is not None:
+            details.append(detail.value)
+        else:
+            details.append(ruleset)
+            if detail.error:
+                detail_errors.append(detail.error)
+    if detail_errors:
+        return OptionalCollectionResult(
+            value=tuple(details),
+            error="; ".join(detail_errors),
+            retried=retried,
+        )
+    return OptionalCollectionResult(
+        value=tuple(details),
+        retried=retried,
+        absent=listed.absent,
+    )
+
+
 def _retry_incomplete_branch_protection(
     runner: Runner,
     endpoint: str,
@@ -1013,7 +1124,11 @@ def _gh(argv: tuple[str, ...]) -> GhCommand:
 
 
 def _is_governance_path(path: str) -> bool:
-    return path in LOCAL_GOVERNANCE_NAMES or any(path.startswith(prefix) for prefix in LOCAL_GOVERNANCE_PREFIXES)
+    return (
+        path in LOCAL_GOVERNANCE_NAMES
+        or path in SOURCE_METADATA_NAMES
+        or any(path.startswith(prefix) for prefix in LOCAL_GOVERNANCE_PREFIXES)
+    )
 
 
 def _local_doc_diffs(repo_root: Path, remote: RemoteSnapshot) -> tuple[list[str] | None, list[str] | None]:
@@ -1103,6 +1218,11 @@ def _central_policy(repo: str) -> CentralPolicy:
     repositories = _policy_object(data.get("repositories", {}), "repositories")
     override = _policy_object(repositories.get(repo, {}), f"repositories.{repo}")
     merged = {**baseline, **override}
+    if isinstance(baseline.get("dependabot"), dict) or isinstance(override.get("dependabot"), dict):
+        merged["dependabot"] = {
+            **(baseline.get("dependabot") if isinstance(baseline.get("dependabot"), dict) else {}),
+            **(override.get("dependabot") if isinstance(override.get("dependabot"), dict) else {}),
+        }
     return CentralPolicy(
         visibility=_policy_string(merged, "visibility"),
         default_branch=_policy_string(merged, "default_branch"),
@@ -1115,6 +1235,7 @@ def _central_policy(repo: str) -> CentralPolicy:
         required_approving_reviews=_policy_int(merged.get("required_approving_reviews")),
         admin_bypass=_enabled_policy_bool(merged.get("administrator_bypass")),
         merge_methods=_policy_merge_methods(merged),
+        dependabot=_dependabot_policy(merged.get("dependabot")),
     )
 
 
@@ -1172,12 +1293,72 @@ def _policy_merge_methods(policy: dict[str, object]) -> dict[str, bool]:
     return methods
 
 
+def _dependabot_policy(value: object) -> DependabotPolicy:
+    if not isinstance(value, dict):
+        return DependabotPolicy(enabled="disabled", ecosystems=(), schedule="")
+    enabled = value.get("enabled")
+    if enabled is True:
+        enabled_value = "enabled"
+    elif enabled is False:
+        enabled_value = "disabled"
+    elif enabled in ("auto", "enabled", "disabled"):
+        enabled_value = str(enabled)
+    else:
+        enabled_value = "disabled"
+    ecosystems = value.get("ecosystems")
+    schedule = value.get("schedule")
+    return DependabotPolicy(
+        enabled=enabled_value,
+        ecosystems=tuple(str(item) for item in ecosystems if isinstance(item, str)) if isinstance(ecosystems, list) else (),
+        schedule=schedule if isinstance(schedule, str) else "",
+    )
+
+
 def _override_bool(base: bool | None, override: bool | None) -> bool | None:
     return base if override is None else override
 
 
 def _override_int(base: int | None, override: int | None) -> int | None:
     return base if override is None else override
+
+
+def _expected_dependabot(policy: DependabotPolicy, remote: RemoteSnapshot) -> ExpectedDependabot:
+    if policy.enabled == "disabled":
+        return ExpectedDependabot(
+            enabled=False,
+            ecosystems=(),
+            schedule=policy.schedule,
+            reason="disabled by central policy",
+        )
+    supported = _supported_dependabot_ecosystems(remote)
+    configured = tuple(ecosystem for ecosystem in policy.ecosystems if ecosystem in supported)
+    if policy.enabled == "enabled":
+        configured = policy.ecosystems
+    return ExpectedDependabot(
+        enabled=True,
+        ecosystems=configured,
+        schedule=policy.schedule,
+        reason=", ".join(_dependabot_support_reasons(remote)) or "no supported ecosystem files",
+    )
+
+
+def _supported_dependabot_ecosystems(remote: RemoteSnapshot) -> tuple[str, ...]:
+    ecosystems = []
+    if remote.workflow_paths:
+        ecosystems.append("github-actions")
+    if any(path in remote.files for path in PYTHON_PACKAGE_METADATA_PATHS):
+        ecosystems.append("pip")
+    return tuple(ecosystems)
+
+
+def _dependabot_support_reasons(remote: RemoteSnapshot) -> tuple[str, ...]:
+    reasons = []
+    if remote.workflow_paths:
+        reasons.append(".github/workflows/*.yml")
+    python_metadata = [path for path in PYTHON_PACKAGE_METADATA_PATHS if path in remote.files]
+    if python_metadata:
+        reasons.append(", ".join(python_metadata))
+    return tuple(reasons)
 
 
 def _explicit_declarations(text: str) -> DeclarationMap:
@@ -1635,18 +1816,36 @@ def _admin_bypass_enabled(state: HostedState) -> bool | None:
             return not bool(enforce_admins["enabled"])
         if "enforce_admins" in state.branch_protection_incomplete:
             return None
-    if bool(_active_branch_rulesets(state.rulesets)):
+    rulesets = _active_branch_rulesets(state.rulesets)
+    if rulesets:
+        bypass_values = [_ruleset_admin_bypass_enabled(ruleset) for ruleset in rulesets]
+        if any(value is True for value in bypass_values):
+            return True
+        if all(value is False for value in bypass_values):
+            return False
         return None
     if _hosted_rule_unknown_reason(state):
         return None
     return True
 
 
+def _ruleset_admin_bypass_enabled(ruleset: dict[str, object]) -> bool | None:
+    current_user = ruleset.get("current_user_can_bypass")
+    if current_user in ("always", "pull_requests_only"):
+        return True
+    if current_user == "never":
+        return False
+    bypass_actors = ruleset.get("bypass_actors")
+    if isinstance(bypass_actors, list):
+        return bool(bypass_actors)
+    return None
+
+
 def _hosted_rule_unknown_reason(state: HostedState) -> str:
     reasons = []
     if state.branch_protection is None and state.branch_protection_error:
         reasons.append(state.branch_protection_error)
-    if state.rulesets is None and state.rulesets_error:
+    if state.rulesets_error:
         reasons.append(state.rulesets_error)
     return "; ".join(reasons)
 
@@ -1673,7 +1872,10 @@ def _review_admin_unknown_reason(
         if reason:
             reasons.append(reason)
         elif bool(_active_branch_rulesets(state.rulesets)):
-            reasons.append("unknown_unavailable: administrator bypass for branch rulesets is not parsed")
+            reasons.append(
+                "unknown_unavailable: branch ruleset detail did not expose "
+                "current_user_can_bypass or bypass_actors"
+            )
         else:
             hosted_reason = _hosted_rule_unknown_reason(state)
             if hosted_reason:
@@ -1755,6 +1957,134 @@ def _workflow_follow_up(
     if inactive:
         return f"Review disabled hosted workflows: {', '.join(inactive)}."
     return "Confirm hosted workflow names align with required status check names."
+
+
+def _dependabot_config(remote: RemoteSnapshot) -> DependabotConfig:
+    path = remote.dependabot_path
+    if not path:
+        return DependabotConfig(updates=())
+    text = remote.files.get(path, "")
+    return _parse_dependabot_config(text)
+
+
+def _parse_dependabot_config(text: str) -> DependabotConfig:
+    updates_started = False
+    current: dict[str, str] | None = None
+    updates: list[DependabotUpdate] = []
+    in_schedule = False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        stripped = line.strip()
+        if stripped.startswith("updates:"):
+            if stripped != "updates:":
+                return DependabotConfig(updates=(), error="unknown_unavailable: unsupported inline updates declaration")
+            updates_started = True
+            in_schedule = False
+            continue
+        if not updates_started:
+            continue
+        if not line.startswith((" ", "-")):
+            break
+        if stripped.startswith("- "):
+            if current is not None:
+                updates.extend(_dependabot_update_from_mapping(current))
+            current = {}
+            in_schedule = False
+            tail = stripped[2:].strip()
+            if tail:
+                key, value, error = _dependabot_key_value(tail)
+                if error:
+                    return DependabotConfig(updates=(), error=error)
+                if key:
+                    current[key] = value
+            continue
+        if current is None:
+            return DependabotConfig(updates=(), error="unknown_unavailable: updates entry is not a list item")
+        key, value, error = _dependabot_key_value(stripped)
+        if error:
+            return DependabotConfig(updates=(), error=error)
+        if not key:
+            continue
+        if key == "schedule":
+            in_schedule = True
+            continue
+        if in_schedule and key == "interval":
+            current["interval"] = value
+        elif key == "package-ecosystem":
+            current["package-ecosystem"] = value
+        else:
+            in_schedule = False if not line.startswith("      ") else in_schedule
+    if current is not None:
+        updates.extend(_dependabot_update_from_mapping(current))
+    return DependabotConfig(updates=tuple(updates))
+
+
+def _dependabot_key_value(line: str) -> tuple[str, str, str]:
+    if ":" not in line:
+        return "", "", ""
+    key, value = line.split(":", 1)
+    key = key.strip()
+    value = _clean_yaml_scalar(value)
+    if value in ("[", "{"):
+        return "", "", f"unknown_unavailable: unsupported Dependabot YAML value for {key}"
+    return key, value, ""
+
+
+def _clean_yaml_scalar(value: str) -> str:
+    cleaned = value.strip()
+    if " #" in cleaned:
+        cleaned = cleaned.split(" #", 1)[0].strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"'):
+        cleaned = cleaned[1:-1]
+    return cleaned
+
+
+def _dependabot_update_from_mapping(mapping: dict[str, str]) -> tuple[DependabotUpdate, ...]:
+    ecosystem = mapping.get("package-ecosystem", "")
+    if not ecosystem:
+        return ()
+    return (DependabotUpdate(ecosystem=ecosystem, interval=mapping.get("interval", "")),)
+
+
+def _missing_dependabot_ecosystems(
+    expected: ExpectedDependabot,
+    config: DependabotConfig,
+) -> tuple[str, ...]:
+    configured = {update.ecosystem for update in config.updates}
+    return tuple(ecosystem for ecosystem in expected.ecosystems if ecosystem not in configured)
+
+
+def _wrong_dependabot_schedules(
+    expected: ExpectedDependabot,
+    config: DependabotConfig,
+) -> tuple[str, ...]:
+    wrong = []
+    for update in config.updates:
+        if update.ecosystem in expected.ecosystems and update.interval != expected.schedule:
+            wrong.append(f"{update.ecosystem} ({update.interval or 'missing interval'})")
+    return tuple(wrong)
+
+
+def _describe_expected_dependabot(expected: ExpectedDependabot) -> str:
+    if not expected.enabled:
+        return "Dependabot disabled"
+    if not expected.ecosystems:
+        return f"Dependabot not applicable: no supported ecosystems detected ({expected.reason})"
+    return (
+        f"Dependabot updates expected {expected.schedule or 'with documented schedule'} "
+        f"for {', '.join(expected.ecosystems)} "
+        f"({expected.reason})"
+    )
+
+
+def _describe_dependabot_config(config: DependabotConfig) -> str:
+    if not config.updates:
+        return "Dependabot config has no parsed update entries"
+    return ", ".join(
+        f"{update.ecosystem} ({update.interval or 'missing interval'})"
+        for update in config.updates
+    )
 
 
 def _describe_merge_methods(state: HostedState) -> str:

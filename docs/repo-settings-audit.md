@@ -70,6 +70,7 @@ The central baseline currently means:
 - merge policy: squash-only
 - required approving reviews: `0`
 - administrator/owner self-merge allowed
+- Dependabot expected weekly when a supported ecosystem is present
 
 Repository visibility defaults to `public` intentionally. Repositories must opt
 into `private` in the central policy file so private repositories remain
@@ -95,9 +96,10 @@ follow-up for:
 - branch up-to-date or strict status-check requirements
 - force-push and default-branch deletion restrictions
 - required approving review count and administrator bypass policy, when
-  supported by hosted inspection
+  supported by branch-protection or ruleset-detail inspection
 - Actions workflow presence and hosted workflow state
-- Dependabot config presence, when documented
+- Dependabot config presence and weekly update entries for supported
+  ecosystems
 - merge method settings as hosted values
 - repo-local governance docs and canonical local validation
 
@@ -138,7 +140,8 @@ exact check-name expectations.
 
 Central repo-specific overrides live under `repositories` in
 `config/repo-settings-policy.json`. Use them for intentional exceptions, such
-as private repositories or exact hosted required-check names.
+as private repositories, exact hosted required-check names, or Dependabot
+exceptions.
 
 Example:
 
@@ -152,6 +155,16 @@ Example:
       "required_checks": [
         "check"
       ]
+    },
+    "ctrl-alt-keith/example-no-dependabot": {
+      "dependabot": {
+        "enabled": false
+      }
+    },
+    "ctrl-alt-keith/example-daily-dependabot": {
+      "dependabot": {
+        "schedule": "daily"
+      }
     }
   }
 }
@@ -197,6 +210,41 @@ review posture used by this repo family:
 
 It does not declare exact required check names. Add an explicit
 `required status checks:` list when exact hosted check comparison is intended.
+
+## Dependabot Baseline
+
+The central baseline sets Dependabot to `auto`. In `auto` mode, the audit
+expects `.github/dependabot.yml` or `.github/dependabot.yaml` only when the
+source-of-truth ref contains supported ecosystem signals:
+
+- `github-actions` when `.github/workflows/*.yml` or `.yaml` exists
+- `pip` when Python packaging metadata such as `pyproject.toml`, `setup.cfg`,
+  or `setup.py` exists
+
+Expected Dependabot updates must use `schedule.interval: weekly`. If no
+supported ecosystem is detected, Dependabot is reported as not applicable with
+status `match`, rather than `unknown`.
+
+Repo-specific central overrides may disable Dependabot:
+
+```json
+{
+  "repositories": {
+    "ctrl-alt-keith/example": {
+      "dependabot": {
+        "enabled": false
+      }
+    }
+  }
+}
+```
+
+Dependabot YAML parsing is intentionally conservative. The audit reads the
+validated source-of-truth ref, extracts `updates[].package-ecosystem` and
+`updates[].schedule.interval`, and reports drift when required ecosystems are
+missing or non-weekly. If the config shape is unsupported or malformed, the
+setting reports `unknown_unavailable` with follow-up text instead of guessing.
+Repo-specific central overrides may also customize the expected schedule.
 
 Example governance block:
 
