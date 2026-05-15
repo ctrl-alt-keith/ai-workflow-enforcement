@@ -445,17 +445,17 @@ def _branch_rules_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
     else:
         status = _compare_if_known(expected.branch_rules, present)
         follow_up = (
-            "Review hosted branch protection/rulesets manually; this audit will not enable them."
+            "Review hosted default-branch enforcement manually; this audit will not enable it."
             if expected.branch_rules and not present
-            else "Document branch protection expectations before treating this setting as drift."
+            else "Document effective default-branch governance expectations before treating this setting as drift."
         )
     return AuditItem(
         setting="default branch protection or ruleset",
         status=status,
         expected=(
-            "default branch protection or an active branch ruleset is documented"
+            "effective default branch enforcement is documented"
             if expected.branch_rules
-            else "no branch protection/ruleset expectation found in source-of-truth docs"
+            else "no default branch enforcement expectation found in source-of-truth docs"
         ),
         actual=_describe_branch_rules(state),
         source=_source(remote),
@@ -474,7 +474,7 @@ def _required_checks_item(remote: RemoteSnapshot, state: HostedState, expected: 
         else:
             status = "match" if expected.required_checks == actual_checks else "drift"
         follow_up = (
-            "Update branch protection/rulesets or the source-of-truth governance docs so required check names match."
+            "Update hosted enforcement or the source-of-truth governance docs so effective required check names match."
             if status == "drift"
             else f"Retry completed, but hosted required-check state is still unavailable: {unknown_reason}."
             if status == "unknown"
@@ -493,7 +493,7 @@ def _required_checks_item(remote: RemoteSnapshot, state: HostedState, expected: 
             if actual_checks
             else f"Retry completed, but hosted required-check state is still unavailable: {unknown_reason}."
             if status == "unknown"
-            else "Require the hosted validation checks declared by source-of-truth governance docs."
+            else "Require the hosted validation checks declared by source-of-truth governance docs through an enforcement mechanism."
         )
         expected_text = "hosted required status checks are explicitly required; exact names are not documented"
     elif expected.require_status_checks is False:
@@ -550,7 +550,7 @@ def _pull_request_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
         follow_up=(
             f"Retry completed, but hosted pull-request state is still unavailable: {unknown_reason}."
             if unknown_reason
-            else "Require pull requests through branch protection/rulesets only after explicit human approval."
+            else "Require pull requests through hosted enforcement only after explicit human approval."
             if expected.required_prs and actual is False
             else "unknown_policy: document pull-request expectations before treating this setting as drift."
         ),
@@ -614,7 +614,7 @@ def _strict_checks_item(remote: RemoteSnapshot, state: HostedState, expected: Ex
         ),
         source=_source(remote),
         follow_up=(
-            "Enable strict required checks only through an explicit hosted-settings change."
+            "Enable strict required checks through an explicit hosted-settings change."
             if expected.strict_checks and actual is False
             else f"Retry completed, but hosted up-to-date state is still unavailable: {unknown_reason}."
             if unknown_reason
@@ -657,7 +657,7 @@ def _force_delete_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
         ),
         source=_source(remote),
         follow_up=(
-            "Review hosted protection/ruleset restrictions manually; this audit is report-only."
+            "Review hosted effective force-push/deletion restrictions manually; this audit is report-only."
             if status == "drift"
             else f"Retry completed, but hosted force-push/deletion state is still unavailable: {unknown_reason}."
             if status == "unknown" and unknown_reason
@@ -1226,7 +1226,7 @@ def _central_policy(repo: str) -> CentralPolicy:
     return CentralPolicy(
         visibility=_policy_string(merged, "visibility"),
         default_branch=_policy_string(merged, "default_branch"),
-        required_checks=tuple(str(check) for check in merged.get("required_checks", ()) if str(check)),
+        required_checks=_policy_required_checks(merged.get("required_checks", ())),
         require_status_checks=_policy_bool(merged.get("require_status_checks")),
         required_prs=_policy_bool(merged.get("require_pull_requests")),
         strict_checks=_policy_bool(merged.get("strict_required_checks")),
@@ -1268,6 +1268,17 @@ def _policy_bool(value: object) -> bool | None:
 
 def _policy_int(value: object) -> int | None:
     return value if isinstance(value, int) else None
+
+
+def _policy_required_checks(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    checks = []
+    for item in value:
+        clean = _clean_check_name(item)
+        if clean:
+            checks.append(clean)
+    return tuple(checks)
 
 
 def _enabled_policy_bool(value: object) -> bool | None:
@@ -1601,8 +1612,8 @@ def _indent_width(line: str) -> int:
 def _check_values(line: str) -> list[str]:
     values: list[str] = []
     for value in re.findall(r"`([^`]+)`", line):
-        clean = value.strip()
-        if _is_hosted_check_name(clean):
+        clean = _clean_check_name(value)
+        if clean:
             values.append(clean)
     return values
 
@@ -1621,8 +1632,15 @@ def _declaration_check_values(line: str) -> list[str]:
     return []
 
 
-def _is_hosted_check_name(value: str) -> bool:
-    return bool(value)
+def _clean_check_name(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    clean = value.strip()
+    if not clean:
+        return ""
+    if not any(char.isalnum() for char in clean):
+        return ""
+    return clean
 
 
 def _canonical_validation(remote: RemoteSnapshot) -> str:
@@ -1697,13 +1715,13 @@ def _required_checks(state: HostedState) -> tuple[str, ...]:
     if isinstance(required, dict):
         contexts = required.get("contexts")
         if isinstance(contexts, list):
-            checks.extend(str(context) for context in contexts)
+            checks.extend(clean for context in contexts if (clean := _clean_check_name(context)))
         check_items = required.get("checks")
         if isinstance(check_items, list):
             checks.extend(
-                str(item["context"])
+                clean
                 for item in check_items
-                if isinstance(item, dict) and item.get("context")
+                if isinstance(item, dict) and (clean := _clean_check_name(item.get("context", "")))
             )
 
     for ruleset in _active_branch_rulesets(state.rulesets):
@@ -1720,9 +1738,9 @@ def _required_checks(state: HostedState) -> tuple[str, ...]:
             if not isinstance(required_items, list):
                 continue
             checks.extend(
-                str(item["context"])
+                clean
                 for item in required_items
-                if isinstance(item, dict) and item.get("context")
+                if isinstance(item, dict) and (clean := _clean_check_name(item.get("context", "")))
             )
     return tuple(sorted(set(checks)))
 
@@ -1738,9 +1756,14 @@ def _pull_request_required(state: HostedState) -> bool | None:
 
 
 def _strict_status_checks(state: HostedState) -> bool | None:
+    values: list[bool] = []
+    unknown = False
     required = state.branch_protection.get("required_status_checks") if state.branch_protection else None
-    if isinstance(required, dict) and isinstance(required.get("strict"), bool):
-        return bool(required["strict"])
+    if isinstance(required, dict):
+        if isinstance(required.get("strict"), bool):
+            values.append(bool(required["strict"]))
+        else:
+            unknown = True
     for ruleset in _active_branch_rulesets(state.rulesets):
         rules = ruleset.get("rules")
         if not isinstance(rules, list):
@@ -1750,7 +1773,15 @@ def _strict_status_checks(state: HostedState) -> bool | None:
                 continue
             parameters = rule.get("parameters")
             if isinstance(parameters, dict) and isinstance(parameters.get("strict_required_status_checks_policy"), bool):
-                return bool(parameters["strict_required_status_checks_policy"])
+                values.append(bool(parameters["strict_required_status_checks_policy"]))
+            else:
+                unknown = True
+    if any(values):
+        return True
+    if unknown:
+        return None
+    if values:
+        return False
     if _required_checks(state):
         return None
     if _hosted_rule_unknown_reason(state):
@@ -1787,12 +1818,15 @@ def _deletions_allowed(state: HostedState) -> bool | None:
 
 
 def _required_approving_reviews(state: HostedState) -> int | None:
+    counts: list[int] = []
+    unknown = False
     reviews = state.branch_protection.get("required_pull_request_reviews") if state.branch_protection else None
     if isinstance(reviews, dict):
         count = reviews.get("required_approving_review_count")
         if isinstance(count, int):
-            return count
-        return 0
+            counts.append(count)
+        else:
+            counts.append(0)
     for ruleset in _active_branch_rulesets(state.rulesets):
         rules = ruleset.get("rules")
         if not isinstance(rules, list):
@@ -1802,7 +1836,15 @@ def _required_approving_reviews(state: HostedState) -> int | None:
                 continue
             parameters = rule.get("parameters")
             if isinstance(parameters, dict) and isinstance(parameters.get("required_approving_review_count"), int):
-                return int(parameters["required_approving_review_count"])
+                counts.append(int(parameters["required_approving_review_count"]))
+            elif isinstance(parameters, dict):
+                counts.append(0)
+            else:
+                unknown = True
+    if counts:
+        return max(counts)
+    if unknown:
+        return None
     pull_requests = _pull_request_required(state)
     if pull_requests is None:
         return None
@@ -1810,19 +1852,26 @@ def _required_approving_reviews(state: HostedState) -> int | None:
 
 
 def _admin_bypass_enabled(state: HostedState) -> bool | None:
+    values: list[bool] = []
+    unknown = False
     if state.branch_protection:
         enforce_admins = state.branch_protection.get("enforce_admins")
         if isinstance(enforce_admins, dict) and isinstance(enforce_admins.get("enabled"), bool):
-            return not bool(enforce_admins["enabled"])
-        if "enforce_admins" in state.branch_protection_incomplete:
-            return None
+            values.append(not bool(enforce_admins["enabled"]))
+        elif "enforce_admins" in state.branch_protection_incomplete:
+            unknown = True
     rulesets = _active_branch_rulesets(state.rulesets)
-    if rulesets:
-        bypass_values = [_ruleset_admin_bypass_enabled(ruleset) for ruleset in rulesets]
-        if any(value is True for value in bypass_values):
-            return True
-        if all(value is False for value in bypass_values):
-            return False
+    for ruleset in rulesets:
+        value = _ruleset_admin_bypass_enabled(ruleset)
+        if value is None:
+            unknown = True
+        else:
+            values.append(value)
+    if any(value is False for value in values):
+        return False
+    if values and not unknown:
+        return True
+    if unknown:
         return None
     if _hosted_rule_unknown_reason(state):
         return None

@@ -1,10 +1,10 @@
 # Repo Settings Audit
 
 `enforcement.repo_settings_audit` is a read-only GitHub repository settings
-audit. It compares hosted settings with the central repo-family policy in
-`config/repo-settings-policy.json`, repo-specific central overrides, and any
-explicit repo-local governance declarations read from one GitHub
-source-of-truth ref, defaulting to `main`.
+audit. It compares effective hosted governance behavior with the central
+repo-family policy in `config/repo-settings-policy.json`, repo-specific central
+overrides, and any explicit repo-local governance declarations read from one
+GitHub source-of-truth ref, defaulting to `main`.
 
 Run an audit for one repository:
 
@@ -84,11 +84,13 @@ in repo-local governance docs.
 ## Audited Surfaces
 
 The audit reports expected, actual, status, source, and suggested human
-follow-up for:
+follow-up for effective governance behavior, regardless of whether GitHub
+currently enforces that behavior through classic branch protection or rulesets:
 
 - repository visibility
 - default branch
-- default branch protection or active branch rulesets
+- default branch enforcement through classic branch protection or active
+  branch rulesets
 - required status checks, including exact documented check names when clearly
   declared in central overrides or explicit required-status-check governance
   sections
@@ -135,6 +137,33 @@ status checks:`, or structured required-check lists under governance or
 branch-protection sections. Prose-only mentions, workflow filenames, historical
 notes, command examples, and generic local validation guidance do not become
 exact check-name expectations.
+
+## Mechanism-Neutral Interpretation
+
+Classic branch protection and GitHub rulesets are treated as interchangeable
+hosted enforcement mechanisms when they produce equivalent effective behavior.
+Policy describes the intended outcome, not the GitHub implementation style.
+
+The audit normalizes these surfaces across both mechanisms:
+
+- pull-request requirement
+- required status check names
+- strict/up-to-date status checks
+- required approving review count
+- administrator bypass or self-merge
+- force-push restrictions
+- default-branch deletion restrictions
+
+When more than one mechanism is active, the effective result is the strongest
+applicable hosted behavior. For example, any active non-fast-forward rule or
+disabled classic force pushes means force pushes are effectively restricted;
+any active deletion rule or disabled classic deletions means branch deletions
+are effectively restricted; the maximum required review count is used; and
+administrator bypass is considered enabled only when all active mechanisms
+allow the relevant bypass.
+
+Human follow-up text may mention that hosted implementation differs by
+mechanism, but drift classification is based on effective policy behavior.
 
 ## Central Overrides
 
