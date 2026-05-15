@@ -146,6 +146,25 @@ findings by repository, and reports skipped or inaccessible repository scopes
 with reasons. Machine-readable JSON is available with `--output-format json`.
 See `docs/org-pr-issue-scan.md`.
 
+## Repo Settings Audit
+
+The repo settings audit is a read-only hosted governance checker for one GitHub
+repository at a time.
+
+```sh
+python3 -m enforcement.repo_settings_audit --repo ctrl-alt-keith/example
+```
+
+It fetches governance docs and config from a single GitHub source-of-truth ref,
+defaulting to `main`, then compares hosted settings such as default branch,
+branch protection or rulesets, required status checks, pull-request settings,
+up-to-date requirements, force-push/deletion restrictions, Actions workflows,
+Dependabot config presence, and merge method settings where the source docs
+document expectations. Local checkout state is reported separately so stale
+working-tree or local-branch docs do not silently define hosted expectations.
+Machine-readable JSON is available with `--output-format json`. See
+`docs/repo-settings-audit.md`.
+
 ## Workflow Contracts
 
 Phase 2 introduces the first minimal structured workflow contract: a
