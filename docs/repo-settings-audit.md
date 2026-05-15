@@ -83,6 +83,10 @@ status checks, but exact check-name comparison happens only when
 `required_checks` is set in central repo overrides or exact checks are declared
 in repo-local governance docs.
 
+Maintained repositories are expected to have at least one meaningful validation
+check. Docs-only, org-profile, and lightweight stub repositories can satisfy
+that baseline with markdown/docs validation instead of application tests.
+
 ## Audited Surfaces
 
 The audit reports expected, actual, status, source, and suggested human
@@ -184,6 +188,23 @@ Repos may still opt into strict checks with an explicit repo-local governance
 declaration such as `require branches up to date before merge: yes`. When a
 repo explicitly declares that requirement, the audit treats disabled hosted
 strict checks as drift.
+
+## Minimum Validation
+
+The minimum maintained-repo validation baseline is one lightweight, meaningful
+hosted check. For documentation-only repositories, the repo-family default is a
+markdown validation workflow with required check name `markdownlint`.
+
+The existing repo-family pattern is the playbook's Markdown Lint workflow: run
+on pull requests and pushes to `main`, use read-only contents permissions, set
+up Node, install `markdownlint-cli2`, and run `make check`. The corresponding
+Makefile target may use `markdownlint-cli2 "**/*.md" "#dist"` or an equivalent
+markdownlint invocation.
+
+Maintained repositories without application tests should add this markdown/docs
+validation rather than carry a required-check exception. A central exception is
+reserved for repositories that are explicitly archived, unmanaged, or otherwise
+accepted as not maintained under the repo-family governance baseline.
 
 ## Solo-Operator Merge Hygiene
 

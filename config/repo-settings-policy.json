@@ -24,7 +24,10 @@
   },
   "repositories": {
     "ctrl-alt-keith/ai-workflow-incubator": {
-      "visibility": "private"
+      "visibility": "private",
+      "required_checks": [
+        "markdownlint"
+      ]
     },
     "ctrl-alt-keith/knowledge-vault": {
       "visibility": "private"
@@ -33,6 +36,11 @@
       "visibility": "private",
       "required_checks": [
         "check"
+      ]
+    },
+    "ctrl-alt-keith/.github": {
+      "required_checks": [
+        "markdownlint"
       ]
     },
     "ctrl-alt-keith/ai-workflow-playbook": {
