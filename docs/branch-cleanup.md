@@ -16,9 +16,21 @@ Apply the reported deletions:
 python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json --apply
 ```
 
+Run bounded normal cleanup with re-scans after each successful apply:
+
+```sh
+python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json --apply --retry-normal-cleanup
+```
+
+Audit stale/non-ancestor refs without deleting them:
+
+```sh
+python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json --audit-stale --audit-github-prs
+```
+
 ## Safety Model
 
-The tool uses five phases:
+The single-pass tool uses five phases:
 
 1. discover configured repo targets and current Git state
 2. audit local and remote branch refs
@@ -48,6 +60,12 @@ Dry-run mode does not fetch or prune. Apply mode runs `git fetch <remote>
 --prune` before planning and applying cleanup. Because remote refs can change
 between those two modes, dry-run and apply action lists may differ.
 
+`--retry-normal-cleanup` makes that behavior explicit and bounded. It starts
+with a dry-run, applies normal cleanup only when `--apply` is also present,
+then re-scans after each apply. It repeats while the latest re-scan reports
+`normal_cleanup` actions with `would_delete`, stopping when no such refs remain
+or when `--max-apply-passes` is reached. The default pass cap is 3.
+
 Codex command enforcement for this workflow should allow the direct Git argv
 forms needed for safe cleanup: `git worktree list --porcelain`, `git status
 --porcelain=v1 -z --untracked-files=all`, `git worktree remove <path>`, and
@@ -58,9 +76,27 @@ ancestor proof. Stale cleanup requires config approval plus evidence such as a
 merged GitHub PR record whose `head_oid` matches the branch tip, or an explicit
 patch-equivalence approval validated with `git cherry`.
 
-The library does not write automation memory, schedule work, or call the GitHub
-API. GitHub PR evidence is supplied by config so humans can decide what proof
-is acceptable before any non-ancestor cleanup.
+`--audit-stale` adds report-only classifications for non-ancestor refs that
+cannot be deleted by normal cleanup. It reports why each candidate was not
+auto-deleted and may classify refs as:
+
+- `stale_candidate_patch_equivalent`
+- `stale_candidate_merged_pr_exact_head`
+- `closed_unmerged_preserve`
+- `needs_human_review`
+- `blocked_dirty_worktree`
+
+Patch-equivalence uses `git cherry` against the remote default branch. When
+`--audit-github-prs` is supplied, the audit also uses `gh pr list` for current
+PR state, merged timestamps, and head SHA evidence. If GitHub evidence cannot
+be retrieved or parsed, the candidate remains `needs_human_review`.
+
+Stale audit classifications are not deletion approvals. Stale cleanup still
+requires explicit `stale_approvals` entries in config, and apply mode deletes
+only stale refs whose configured approval evidence validates exactly.
+
+The library does not write automation memory or schedule work. GitHub PR audit
+evidence is retrieved only when `--audit-github-prs` is explicitly requested.
 
 ## Config Shape
 
