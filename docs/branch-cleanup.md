@@ -64,7 +64,10 @@ between those two modes, dry-run and apply action lists may differ.
 with a dry-run, applies normal cleanup only when `--apply` is also present,
 then re-scans after each apply. It repeats while the latest re-scan reports
 `normal_cleanup` actions with `would_delete`, stopping when no such refs remain
-or when `--max-apply-passes` is reached. The default pass cap is 3.
+or when `--max-apply-passes` is reached. The default pass cap is 3. Retry mode
+applies only `normal_cleanup` actions; approved `stale_cleanup` actions are
+reported but preserved during the sequence. Use a single-pass `--apply` run
+without `--retry-normal-cleanup` for explicitly approved stale cleanup.
 
 Codex command enforcement for this workflow should allow the direct Git argv
 forms needed for safe cleanup: `git worktree list --porcelain`, `git status

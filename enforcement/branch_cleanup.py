@@ -134,11 +134,19 @@ def cleanup_branches(
     apply: bool = False,
     audit_stale: bool = False,
     audit_github_prs: bool = False,
+    apply_normal_only: bool = False,
 ) -> BranchCleanupReport:
     """Run discover, audit, normal cleanup, approved stale cleanup, and report phases."""
     started = _utc_now()
     repo_reports = tuple(
-        _cleanup_repo(config, target, apply=apply, audit_stale=audit_stale, audit_github_prs=audit_github_prs)
+        _cleanup_repo(
+            config,
+            target,
+            apply=apply,
+            audit_stale=audit_stale,
+            audit_github_prs=audit_github_prs,
+            apply_normal_only=apply_normal_only,
+        )
         for target in config.repositories
     )
     finished = _utc_now()
@@ -172,7 +180,15 @@ def cleanup_branches_with_retries(
         for pass_number in range(max_apply_passes):
             if pass_number > 0 and not _has_normal_would_delete(reports[-1]):
                 break
-            reports.append(cleanup_branches(config, apply=True, audit_stale=audit_stale, audit_github_prs=audit_github_prs))
+            reports.append(
+                cleanup_branches(
+                    config,
+                    apply=True,
+                    audit_stale=audit_stale,
+                    audit_github_prs=audit_github_prs,
+                    apply_normal_only=True,
+                )
+            )
             rescan = cleanup_branches(config, apply=False, audit_stale=audit_stale, audit_github_prs=audit_github_prs)
             reports.append(rescan)
             if not _has_normal_would_delete(rescan):
@@ -200,7 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--retry-normal-cleanup",
         action="store_true",
-        help="Run a bounded dry-run/apply/re-scan sequence for Git-proven normal cleanup.",
+        help="Run a bounded dry-run/apply/re-scan sequence for Git-proven normal cleanup only.",
     )
     parser.add_argument(
         "--max-apply-passes",
@@ -374,6 +390,7 @@ def _cleanup_repo(
     apply: bool,
     audit_stale: bool,
     audit_github_prs: bool,
+    apply_normal_only: bool,
 ) -> RepoReport:
     report = RepoReport(repo=target.name, path=str(target.path))
     path = target.path
@@ -446,7 +463,10 @@ def _cleanup_repo(
             )
         )
     if apply:
-        report.actions = [_apply_action(path, target.remote, default_ref, action) for action in report.actions]
+        report.actions = [
+            _apply_action(path, target.remote, default_ref, action, normal_only=apply_normal_only)
+            for action in report.actions
+        ]
     return report
 
 
@@ -784,9 +804,22 @@ def _stale_action(
     )
 
 
-def _apply_action(path: Path, remote: str, default_ref: str, action: BranchAction) -> BranchAction:
+def _apply_action(
+    path: Path,
+    remote: str,
+    default_ref: str,
+    action: BranchAction,
+    *,
+    normal_only: bool = False,
+) -> BranchAction:
     if action.action != "would_delete":
         return action
+    if normal_only and action.phase != "normal_cleanup":
+        return _replace_action(
+            action,
+            "preserved",
+            "not applied during retry-normal-cleanup; stale cleanup requires single-pass --apply",
+        )
     if action.scope == "local" and action.phase == "normal_cleanup":
         worktree_error = _remove_worktree_for_branch(path, action.branch, default_ref)
         if worktree_error:

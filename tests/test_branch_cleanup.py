@@ -223,6 +223,38 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertNotEqual(0, ref_check.returncode)
         self.assertEqual("", remote_check.stdout.strip())
 
+    def test_retry_normal_cleanup_preserves_approved_stale_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
+            oid = _git(repo, "rev-parse", "refs/heads/stale").stdout.strip()
+            approval = StaleApproval(
+                repo="sample",
+                scope="local",
+                branch="stale",
+                approved_by="keith",
+                reason="PR merged and local branch is stale",
+                evidence={
+                    "kind": "github_merged_pr",
+                    "pr_number": 456,
+                    "state": "MERGED",
+                    "merged_at": "2026-05-08T00:00:00Z",
+                    "head_oid": oid,
+                },
+            )
+
+            report = cleanup_branches_with_retries(
+                BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
+                apply=True,
+                max_apply_passes=2,
+            )
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/stale")
+
+        action = _action(report.reports[1], "stale", "local", "stale_cleanup")
+        self.assertEqual("preserved", action.action)
+        self.assertIn("stale cleanup requires single-pass --apply", action.reason)
+        self.assertEqual(0, ref_check.returncode)
+
     def test_ambiguous_ref_names_are_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
