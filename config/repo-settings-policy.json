@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "visibility": "public",
+    "default_branch": "main",
+    "require_pull_requests": true,
+    "require_status_checks": true,
+    "strict_required_checks": true,
+    "force_pushes": "disabled",
+    "branch_deletions": "disabled",
+    "merge_policy": "squash-only",
+    "required_approving_reviews": 0,
+    "administrator_bypass": "enabled",
+    "dependabot": {
+      "enabled": "auto",
+      "ecosystems": [
+        "github-actions",
+        "pip"
+      ],
+      "schedule": "weekly"
+    }
+  },
+  "repositories": {
+    "ctrl-alt-keith/ai-workflow-incubator": {
+      "visibility": "private"
+    },
+    "ctrl-alt-keith/knowledge-vault": {
+      "visibility": "private"
+    },
+    "ctrl-alt-keith/nexus": {
+      "visibility": "private",
+      "required_checks": [
+        "check"
+      ]
+    },
+    "ctrl-alt-keith/ai-workflow-playbook": {
+      "required_checks": [
+        "markdownlint"
+      ]
+    },
+    "ctrl-alt-keith/linode-backup-lab": {
+      "required_checks": [
+        "authoritative-source-check / authoritative-source-check",
+        "make check"
+      ]
+    },
+    "ctrl-alt-keith/linode-image-lab": {
+      "required_checks": [
+        "make check"
+      ]
+    },
+    "ctrl-alt-keith/knowledge-adapters": {
+      "required_checks": [
+        "test"
+      ]
+    },
+    "ctrl-alt-keith/ka-destinations": {
+      "required_checks": [
+        "check"
+      ]
+    }
+  }
+}

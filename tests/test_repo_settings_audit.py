@@ -6,7 +6,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from enforcement import repo_settings_audit
 from enforcement.repo_settings_audit import (
     GhCommand,
     audit_repo_settings,
@@ -31,7 +33,7 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertIn(("gh", "api", "/repos/ctrl-alt-keith/sample/commits/reviewed-ref"), gh.commands)
         self.assertTrue(
             all(
-                item.source == "GitHub reviewed-ref (remote-sha)"
+                item.source == "central repo-settings policy + GitHub reviewed-ref (remote-sha)"
                 for item in report.items
                 if item.setting not in {
                     "local current branch vs source-of-truth ref",
@@ -47,7 +49,17 @@ class RepoSettingsAuditTests(unittest.TestCase):
             _write(repo / "AGENTS.md", "Use pull requests. Target `main`.\n")
             _write(repo / "docs" / "governance-ci.md", "Required status checks: `old matrix`.\n")
             _git(repo, "add", ".")
-            _git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+            _git(
+                repo,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--no-gpg-sign",
+                "-m",
+                "initial",
+            )
             _write(repo / "docs" / "governance-ci.md", "Required status checks: `working tree edit`.\n")
 
             report = audit_repo_settings(
@@ -80,6 +92,187 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("new matrix", item.actual)
         self.assertIn("source-of-truth governance docs", item.follow_up)
 
+    def test_required_checks_parse_explicit_section_list(self) -> None:
+        responses = _responses(required_check="build")
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "## Hosted Branch Protection\n\n"
+            "The intended hosted branch protection for `main` is:\n\n"
+            "- require pull requests before merge;\n"
+            "- require these status checks:\n"
+            "  - `build`\n"
+            "  - `lint / docs`\n"
+        )
+        responses["/repos/ctrl-alt-keith/sample/branches/main/protection"][
+            "required_status_checks"
+        ] = {
+            "strict": True,
+            "contexts": ["build", "lint / docs"],
+            "checks": [],
+        }
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("build, lint / docs", item.expected)
+
+    def test_prose_required_check_mentions_do_not_define_exact_check_expectations(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "Use `make check` before review. Required CI canaries are separate from local checks.\n"
+            "Do not rename workflow jobs without checking branch protection later.\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual(
+            "hosted required status checks are explicitly required; exact names are not documented",
+            item.expected,
+        )
+
+    def test_historical_required_check_references_do_not_define_expectations(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "PR #26 added the workflow file, then left branch protection and required status checks "
+            "as a hosted GitHub follow-up.\n"
+            "As of May 14, 2026, hosted inspection was still pending.\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual(
+            "hosted required status checks are explicitly required; exact names are not documented",
+            item.expected,
+        )
+
+    def test_example_command_blocks_do_not_define_required_checks(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "Inspect required status checks with a read-only command:\n\n"
+            "```sh\n"
+            "gh pr view 26 --json statusCheckRollup\n"
+            "gh api repos/ctrl-alt-keith/sample/branches/main/protection\n"
+            "```\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual(
+            "hosted required status checks are explicitly required; exact names are not documented",
+            item.expected,
+        )
+
+    def test_linode_backup_lab_style_governance_ignores_manifest_prose_noise(self) -> None:
+        responses = _responses(required_check="make check (Python 3.10)")
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "## Current Workflows\n\n"
+            "- `.github/workflows/check.yml` runs on pull requests. Its required status\n"
+            "  check names are:\n"
+            "  - `make check (Python 3.10)`\n"
+            "  - `make check (Python 3.11)`\n"
+            "- `.github/workflows/authoritative-source-check.yml` runs on pull requests.\n"
+            "  Its required status check name is\n"
+            "  `authoritative-source-check / authoritative-source-check`.\n\n"
+            "## Hosted Branch Protection\n\n"
+            "- require these status checks:\n"
+            "  - `make check (Python 3.10)`\n"
+            "  - `make check (Python 3.11)`\n"
+            "  - `authoritative-source-check / authoritative-source-check`\n\n"
+            "| `passed_with_unverified_provider_state` | `plan` | snapshot-label checks passed, "
+            "but a fresh `inspect` is required before mutation. |\n"
+        )
+        responses["/repos/ctrl-alt-keith/sample/branches/main/protection"][
+            "required_status_checks"
+        ] = {
+            "strict": True,
+            "contexts": [
+                "make check (Python 3.10)",
+                "make check (Python 3.11)",
+                "authoritative-source-check / authoritative-source-check",
+            ],
+            "checks": [],
+        }
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual(
+            "authoritative-source-check / authoritative-source-check, "
+            "make check (Python 3.10), make check (Python 3.11)",
+            item.expected,
+        )
+        self.assertNotIn("inspect", item.expected)
+        self.assertNotIn("passed_with_unverified_provider_state", item.expected)
+        self.assertNotIn("plan", item.expected)
+
+    def test_no_explicit_required_check_section_returns_unknown(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("CI runs the repository validation workflow and local `make check` remains canonical.\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual(
+            "hosted required status checks are explicitly required; exact names are not documented",
+            item.expected,
+        )
+
     def test_generic_private_language_is_not_visibility_expectation(self) -> None:
         responses = _responses()
         responses[
@@ -95,8 +288,130 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "repository visibility")
 
-        self.assertEqual("unknown", item.status)
-        self.assertIn("no visibility expectation", item.expected)
+        self.assertEqual("match", item.status)
+        self.assertEqual("public", item.expected)
+
+    def test_private_visibility_expectation_matches_hosted_private_repo(self) -> None:
+        responses = _responses(private=True)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- repository visibility: private\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "repository visibility")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("private", item.expected)
+        self.assertEqual("private", item.actual)
+
+    def test_public_visibility_expectation_matches_hosted_public_repo(self) -> None:
+        responses = _responses(private=False)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- visibility: public\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "repository visibility")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("public", item.expected)
+        self.assertEqual("public", item.actual)
+
+    def test_visibility_drift_when_hosted_visibility_differs(self) -> None:
+        responses = _responses(private=False)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- repository visibility: private\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "repository visibility")
+
+        self.assertEqual("drift", item.status)
+        self.assertEqual("private", item.expected)
+        self.assertEqual("public", item.actual)
+
+    def test_baseline_defaults_apply_without_repo_local_governance_docs(self) -> None:
+        responses = _responses(
+            allow_merge_commit=False,
+            allow_squash_merge=True,
+            allow_rebase_merge=False,
+            enforce_admins=False,
+        )
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("This repo has no hosted settings declarations.\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        self.assertEqual("match", _item(report, "repository visibility").status)
+        self.assertEqual("match", _item(report, "default branch").status)
+        self.assertEqual("match", _item(report, "required pull requests").status)
+        self.assertEqual("match", _item(report, "branch up-to-date requirement").status)
+        self.assertEqual("match", _item(report, "force-push and deletion restrictions").status)
+        self.assertEqual("match", _item(report, "merge method settings").status)
+        self.assertEqual("match", _item(report, "review and administrator policy").status)
+
+    def test_central_private_override_matches_hosted_private_repo(self) -> None:
+        repo = "ctrl-alt-keith/ai-workflow-incubator"
+        responses = _responses(repo=repo, private=True)
+        responses[
+            f"/repos/{repo}/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("No repo-local visibility declaration needed for inherited private exception.\n")
+
+        report = audit_repo_settings(
+            repo,
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "repository visibility")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("private", item.expected)
+        self.assertEqual("private", item.actual)
+
+    def test_repo_local_explicit_override_takes_precedence_over_central_baseline(self) -> None:
+        responses = _responses(private=True)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- repository visibility: private\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "repository visibility")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("private", item.expected)
+        self.assertEqual("private", item.actual)
 
     def test_default_branch_protection_phrase_does_not_define_default_branch(self) -> None:
         responses = _responses()
@@ -116,8 +431,8 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "default branch")
 
-        self.assertEqual("unknown", item.status)
-        self.assertIn("no default-branch expectation", item.expected)
+        self.assertEqual("match", item.status)
+        self.assertEqual("main", item.expected)
 
     def test_workflow_state_is_compared_to_remote_ref_files(self) -> None:
         responses = _responses()
@@ -161,10 +476,501 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "merge method settings")
 
-        self.assertEqual("unknown", item.status)
-        self.assertIn("no concrete expected settings are parsed", item.expected)
+        self.assertEqual("drift", item.status)
+        self.assertIn("merge commits: disabled", item.expected)
         self.assertIn("squash merges: yes", item.actual)
-        self.assertIn("Compare allowed merge methods manually", item.follow_up)
+        self.assertIn("Align hosted merge methods", item.follow_up)
+
+    def test_squash_only_merge_policy_matches_hosted_settings(self) -> None:
+        responses = _responses(
+            allow_merge_commit=False,
+            allow_squash_merge=True,
+            allow_rebase_merge=False,
+        )
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- merge policy: squash-only\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("merge commits: disabled", item.expected)
+        self.assertIn("squash merges: enabled", item.expected)
+        self.assertIn("rebase merges: disabled", item.expected)
+
+    def test_squash_only_merge_policy_drifts_when_merge_or_rebase_is_enabled(self) -> None:
+        responses = _responses(
+            allow_merge_commit=True,
+            allow_squash_merge=True,
+            allow_rebase_merge=True,
+        )
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- merge methods: squash-only\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("drift", item.status)
+        self.assertIn("merge commits: disabled", item.expected)
+        self.assertIn("rebase merges: disabled", item.expected)
+        self.assertIn("merge commits: yes", item.actual)
+        self.assertIn("rebase merges: yes", item.actual)
+
+    def test_explicit_zero_review_solo_operator_policy_matches_hosted_settings(self) -> None:
+        responses = _responses(required_review_count=0, enforce_admins=False)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "## Hosted Repository Settings\n\n"
+            "- solo-operator review policy: enabled\n"
+            "- require status checks before merge: yes\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        review_item = _item(report, "review and administrator policy")
+        pr_item = _item(report, "required pull requests")
+        checks_item = _item(report, "required status checks")
+
+        self.assertEqual("match", review_item.status)
+        self.assertEqual("required approving reviews: 0; administrator bypass: enabled", review_item.expected)
+        self.assertEqual("match", pr_item.status)
+        self.assertEqual("match", checks_item.status)
+
+    def test_review_admin_policy_drifts_when_hosted_settings_differ(self) -> None:
+        responses = _responses(required_review_count=1, enforce_admins=True)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "- required approving reviews: 0\n"
+            "- administrator bypass: enabled\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "review and administrator policy")
+
+        self.assertEqual("drift", item.status)
+        self.assertEqual("required approving reviews: 0; administrator bypass: enabled", item.expected)
+        self.assertEqual("required approving reviews: 1; administrator bypass: disabled", item.actual)
+
+    def test_ambiguous_review_admin_prose_remains_unknown(self) -> None:
+        responses = _responses(required_review_count=0, enforce_admins=False)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("The solo operator can review hosted settings when needed.\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "review and administrator policy")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("required approving reviews: 0; administrator bypass: enabled", item.expected)
+
+    def test_explicit_branch_protection_policy_matches_hosted_settings(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "- require pull requests before merge: yes\n"
+            "- require branches up to date before merge: yes\n"
+            "- force pushes on main: disabled\n"
+            "- deletions on main: disabled\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        self.assertEqual("match", _item(report, "required pull requests").status)
+        self.assertEqual("match", _item(report, "branch up-to-date requirement").status)
+        self.assertEqual("match", _item(report, "force-push and deletion restrictions").status)
+
+    def test_dependabot_github_actions_baseline_matches_weekly_config(self) -> None:
+        responses = _responses(dependabot_config=_dependabot_config("github-actions"))
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("github-actions", item.expected)
+        self.assertIn("github-actions (weekly)", item.actual)
+
+    def test_dependabot_pip_baseline_matches_weekly_config(self) -> None:
+        responses = _responses(
+            include_workflow=False,
+            include_pyproject=True,
+            dependabot_config=_dependabot_config("pip"),
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("pip", item.expected)
+        self.assertIn("pip (weekly)", item.actual)
+
+    def test_dependabot_missing_config_drifts_when_supported_ecosystem_present(self) -> None:
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(_responses()),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("drift", item.status)
+        self.assertIn("github-actions", item.expected)
+        self.assertIn("not present", item.actual)
+
+    def test_dependabot_config_missing_required_ecosystem_drifts(self) -> None:
+        responses = _responses(
+            include_pyproject=True,
+            dependabot_config=_dependabot_config("github-actions"),
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("drift", item.status)
+        self.assertIn("missing ecosystems: pip", item.actual)
+
+    def test_dependabot_not_applicable_matches_without_supported_ecosystems(self) -> None:
+        responses = _responses(include_workflow=False)
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("not applicable", item.expected)
+
+    def test_dependabot_repo_override_disables_expectation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            policy_path = Path(temp_dir) / "repo-settings-policy.json"
+            policy_path.write_text(
+                json.dumps(
+                    {
+                        "baseline": {
+                            "visibility": "public",
+                            "default_branch": "main",
+                            "dependabot": {
+                                "enabled": "auto",
+                                "ecosystems": ["github-actions"],
+                                "schedule": "weekly",
+                            },
+                        },
+                        "repositories": {
+                            "ctrl-alt-keith/sample": {
+                                "dependabot": {"enabled": False},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(repo_settings_audit, "CENTRAL_POLICY_PATH", policy_path):
+                report = audit_repo_settings(
+                    "ctrl-alt-keith/sample",
+                    source_ref="main",
+                    repo_root=Path("/does/not/exist"),
+                    runner=FakeGh(_responses()),
+                )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("disabled", item.expected)
+
+    def test_dependabot_repo_override_customizes_schedule(self) -> None:
+        responses = _responses(dependabot_config=_dependabot_config("github-actions", interval="daily"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            policy_path = Path(temp_dir) / "repo-settings-policy.json"
+            policy_path.write_text(
+                json.dumps(
+                    {
+                        "baseline": {
+                            "visibility": "public",
+                            "default_branch": "main",
+                            "dependabot": {
+                                "enabled": "auto",
+                                "ecosystems": ["github-actions"],
+                                "schedule": "weekly",
+                            },
+                        },
+                        "repositories": {
+                            "ctrl-alt-keith/sample": {
+                                "dependabot": {"schedule": "daily"},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(repo_settings_audit, "CENTRAL_POLICY_PATH", policy_path):
+                report = audit_repo_settings(
+                    "ctrl-alt-keith/sample",
+                    source_ref="main",
+                    repo_root=Path("/does/not/exist"),
+                    runner=FakeGh(responses),
+                )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("github-actions (daily)", item.actual)
+
+    def test_malformed_dependabot_config_reports_unknown_unavailable(self) -> None:
+        responses = _responses(dependabot_config="version: 2\nupdates: [\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "Dependabot config presence")
+
+        self.assertEqual("unknown", item.status)
+        self.assertIn("unknown_unavailable", item.actual)
+        self.assertIn("unknown_unavailable", item.follow_up)
+
+    def test_ruleset_detail_parses_reviews_checks_and_admin_bypass(self) -> None:
+        responses = _responses()
+        protection_endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        responses[protection_endpoint] = GhCommand(
+            argv=("gh", "api", protection_endpoint),
+            returncode=1,
+            stdout="",
+            stderr="HTTP 404 Not Found",
+        )
+        responses["/repos/ctrl-alt-keith/sample/rulesets?targets=branch"] = [
+            {
+                "id": 123,
+                "name": "Protect main",
+                "target": "branch",
+                "enforcement": "active",
+            }
+        ]
+        responses["/repos/ctrl-alt-keith/sample/rulesets/123"] = _ruleset_detail(
+            current_user_can_bypass="never",
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        self.assertEqual("match", _item(report, "required status checks").status)
+        self.assertEqual("match", _item(report, "required pull requests").status)
+        self.assertEqual("drift", _item(report, "review and administrator policy").status)
+        self.assertEqual(
+            "required approving reviews: 0; administrator bypass: disabled",
+            _item(report, "review and administrator policy").actual,
+        )
+
+    def test_ruleset_detail_without_admin_fields_reports_specific_unknown(self) -> None:
+        responses = _responses()
+        protection_endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        responses[protection_endpoint] = GhCommand(
+            argv=("gh", "api", protection_endpoint),
+            returncode=1,
+            stdout="",
+            stderr="HTTP 404 Not Found",
+        )
+        responses["/repos/ctrl-alt-keith/sample/rulesets?targets=branch"] = [
+            {
+                "id": 123,
+                "name": "Protect main",
+                "target": "branch",
+                "enforcement": "active",
+            }
+        ]
+        detail = dict(_ruleset_detail(current_user_can_bypass="never"))
+        detail.pop("current_user_can_bypass")
+        detail.pop("bypass_actors")
+        responses["/repos/ctrl-alt-keith/sample/rulesets/123"] = detail
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "review and administrator policy")
+
+        self.assertEqual("unknown", item.status)
+        self.assertIn("current_user_can_bypass or bypass_actors", item.actual)
+
+    def test_optional_hosted_call_succeeds_on_retry(self) -> None:
+        responses = _responses()
+        endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        responses[endpoint] = (
+            GhCommand(argv=("gh", "api", endpoint), returncode=1, stdout="", stderr="HTTP 502"),
+            responses[endpoint],
+        )
+        gh = FakeGh(responses)
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=gh,
+        )
+
+        self.assertEqual(2, _command_count(gh, endpoint))
+        self.assertEqual((), report.errors)
+        self.assertEqual("match", _item(report, "default branch protection or ruleset").status)
+        self.assertEqual("match", _item(report, "required status checks").status)
+
+    def test_optional_hosted_call_unavailable_after_retry_reports_reason(self) -> None:
+        responses = _responses()
+        endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        responses[endpoint] = (
+            GhCommand(argv=("gh", "api", endpoint), returncode=1, stdout="", stderr="HTTP 403"),
+            GhCommand(argv=("gh", "api", endpoint), returncode=1, stdout="", stderr="HTTP 403"),
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        branch_item = _item(report, "default branch protection or ruleset")
+        checks_item = _item(report, "required status checks")
+
+        self.assertEqual("unknown", branch_item.status)
+        self.assertIn("unknown_after_retry", branch_item.actual)
+        self.assertEqual("unknown", checks_item.status)
+        self.assertIn("unknown_after_retry", checks_item.actual)
+        self.assertTrue(any("unknown_after_retry" in error for error in report.errors))
+
+    def test_missing_branch_protection_reports_drift_when_policy_expects_protection(self) -> None:
+        responses = _responses()
+        endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        responses[endpoint] = GhCommand(
+            argv=("gh", "api", endpoint),
+            returncode=1,
+            stdout="",
+            stderr="HTTP 404 Not Found",
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        self.assertEqual("drift", _item(report, "default branch protection or ruleset").status)
+        self.assertEqual("drift", _item(report, "required status checks").status)
+        self.assertEqual("drift", _item(report, "required pull requests").status)
+        self.assertEqual("drift", _item(report, "branch up-to-date requirement").status)
+        self.assertEqual("drift", _item(report, "force-push and deletion restrictions").status)
+
+    def test_admin_bypass_unknown_after_retry_stays_unknown(self) -> None:
+        responses = _responses()
+        endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        partial = dict(responses[endpoint])
+        partial.pop("enforce_admins")
+        responses[endpoint] = (partial, dict(partial))
+        gh = FakeGh(responses)
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=gh,
+        )
+
+        item = _item(report, "review and administrator policy")
+
+        self.assertEqual(2, _command_count(gh, endpoint))
+        self.assertEqual("unknown", item.status)
+        self.assertIn("unknown_after_retry", item.actual)
+        self.assertIn("administrator bypass: unknown", item.actual)
+
+    def test_required_checks_absent_with_policy_requiring_checks_reports_drift(self) -> None:
+        responses = _responses()
+        endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        protection = dict(responses[endpoint])
+        protection.pop("required_status_checks")
+        responses[endpoint] = protection
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("drift", item.status)
+        self.assertEqual("make check", item.expected)
+        self.assertEqual("no required hosted status checks detected", item.actual)
 
     def test_json_report_marks_audit_read_only(self) -> None:
         report = audit_repo_settings(
@@ -192,6 +998,9 @@ class FakeGh:
         self.commands.append(argv)
         endpoint = argv[-1]
         response = self.responses[endpoint]
+        if isinstance(response, tuple):
+            response = response[0]
+            self.responses[endpoint] = self.responses[endpoint][1:]
         if isinstance(response, GhCommand):
             return response
         return GhCommand(argv=argv, returncode=0, stdout=json.dumps(response), stderr="")
@@ -199,11 +1008,22 @@ class FakeGh:
 
 def _responses(
     *,
+    repo: str = "ctrl-alt-keith/sample",
     source_ref: str = "main",
     required_check: str = "make check",
     hosted_check: str | None = None,
+    private: bool = False,
+    allow_merge_commit: bool = True,
+    allow_squash_merge: bool = True,
+    allow_rebase_merge: bool = False,
+    required_review_count: int = 0,
+    enforce_admins: bool = False,
+    include_workflow: bool = True,
+    include_pyproject: bool = False,
+    dependabot_config: str = "",
 ) -> dict[str, object]:
     hosted_check = hosted_check or required_check
+    _, repo_name = repo.split("/", 1)
     governance_doc = (
         "Default branch `main` uses branch protection.\n"
         f"Required status checks: `{required_check}`.\n"
@@ -214,38 +1034,46 @@ def _responses(
         "AGENTS.md": "Use pull requests. Target `main`. Run `make check`.\n",
         "Makefile": "check:\n\tpython3 -m unittest discover -s tests\n",
         "docs/governance-ci.md": governance_doc,
-        ".github/workflows/check.yml": "name: check\n",
     }
+    if include_workflow:
+        files[".github/workflows/check.yml"] = "name: check\n"
+    if include_pyproject:
+        files["pyproject.toml"] = "[project]\nname = \"sample\"\n"
+    if dependabot_config:
+        files[".github/dependabot.yml"] = dependabot_config
     tree = [
         {"path": path, "type": "blob"}
         for path in files
     ]
     responses: dict[str, object] = {
-        "/repos/ctrl-alt-keith/sample": {
-            "name": "sample",
-            "full_name": "ctrl-alt-keith/sample",
-            "private": False,
+        f"/repos/{repo}": {
+            "name": repo_name,
+            "full_name": repo,
+            "private": private,
             "default_branch": "main",
-            "allow_merge_commit": True,
-            "allow_squash_merge": True,
-            "allow_rebase_merge": False,
+            "allow_merge_commit": allow_merge_commit,
+            "allow_squash_merge": allow_squash_merge,
+            "allow_rebase_merge": allow_rebase_merge,
             "allow_auto_merge": False,
             "delete_branch_on_merge": True,
         },
-        f"/repos/ctrl-alt-keith/sample/commits/{source_ref}": {"sha": "remote-sha"},
-        "/repos/ctrl-alt-keith/sample/git/trees/remote-sha?recursive=1": {"tree": tree},
-        "/repos/ctrl-alt-keith/sample/branches/main/protection": {
+        f"/repos/{repo}/commits/{source_ref}": {"sha": "remote-sha"},
+        f"/repos/{repo}/git/trees/remote-sha?recursive=1": {"tree": tree},
+        f"/repos/{repo}/branches/main/protection": {
             "required_status_checks": {
                 "strict": True,
                 "contexts": [hosted_check],
                 "checks": [],
             },
-            "required_pull_request_reviews": {},
+            "required_pull_request_reviews": {
+                "required_approving_review_count": required_review_count,
+            },
+            "enforce_admins": {"enabled": enforce_admins},
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False},
         },
-        "/repos/ctrl-alt-keith/sample/rulesets?targets=branch": [],
-        "/repos/ctrl-alt-keith/sample/actions/workflows": {
+        f"/repos/{repo}/rulesets?targets=branch": [],
+        f"/repos/{repo}/actions/workflows": {
             "workflows": [
                 {
                     "path": ".github/workflows/check.yml",
@@ -255,7 +1083,7 @@ def _responses(
         },
     }
     for path, text in files.items():
-        responses[f"/repos/ctrl-alt-keith/sample/contents/{path}?ref=remote-sha"] = _content(text)
+        responses[f"/repos/{repo}/contents/{path}?ref=remote-sha"] = _content(text)
     return responses
 
 
@@ -266,11 +1094,61 @@ def _content(text: str) -> dict[str, str]:
     }
 
 
+def _dependabot_config(*ecosystems: str, interval: str = "weekly") -> str:
+    entries = []
+    for ecosystem in ecosystems:
+        entries.append(
+            "  - package-ecosystem: \"{ecosystem}\"\n"
+            "    directory: \"/\"\n"
+            "    schedule:\n"
+            "      interval: \"{interval}\"\n".format(ecosystem=ecosystem, interval=interval)
+        )
+    return "version: 2\nupdates:\n" + "".join(entries)
+
+
+def _ruleset_detail(current_user_can_bypass: str) -> dict[str, object]:
+    return {
+        "id": 123,
+        "name": "Protect main",
+        "target": "branch",
+        "enforcement": "active",
+        "rules": [
+            {
+                "type": "pull_request",
+                "parameters": {
+                    "required_approving_review_count": 0,
+                },
+            },
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "strict_required_status_checks_policy": True,
+                    "required_status_checks": [
+                        {
+                            "context": "make check",
+                            "integration_id": 15368,
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "non_fast_forward",
+            },
+        ],
+        "bypass_actors": [],
+        "current_user_can_bypass": current_user_can_bypass,
+    }
+
+
 def _item(report, setting: str):
     for item in report.items:
         if item.setting == setting:
             return item
     raise AssertionError(f"missing audit item: {setting}")
+
+
+def _command_count(gh: FakeGh, endpoint: str) -> int:
+    return sum(1 for command in gh.commands if command[-1] == endpoint)
 
 
 def _init_repo(repo: Path) -> None:
