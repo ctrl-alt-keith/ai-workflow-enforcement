@@ -26,7 +26,6 @@ class RepoTarget:
     path: Path
     remote: str = "origin"
     default_branch: str | None = None
-    conservative: bool = False
 
 
 @dataclass(frozen=True)
@@ -238,9 +237,6 @@ def remote_branch_name(refname: str, remote: str = "origin") -> str | None:
 def _cleanup_repo(config: BranchCleanupConfig, target: RepoTarget, *, apply: bool) -> RepoReport:
     report = RepoReport(repo=target.name, path=str(target.path))
     path = target.path
-    if _is_conservative_repo(target):
-        report.skipped = "conservative repository requires explicit human handling"
-        return report
     if not path.exists():
         report.skipped = "repository path does not exist"
         return report
@@ -711,7 +707,6 @@ def _repo_target(item: dict[str, object], base: Path) -> RepoTarget:
         path=path,
         remote=str(item.get("remote", "origin")),
         default_branch=str(item["default_branch"]) if item.get("default_branch") else None,
-        conservative=bool(item.get("conservative", False)),
     )
 
 
@@ -739,10 +734,6 @@ def _approval_for(
         if approval.repo == repo and approval.scope == scope and approval.branch == branch:
             return approval
     return None
-
-
-def _is_conservative_repo(target: RepoTarget) -> bool:
-    return target.conservative
 
 
 def _protected_branches(configured: Iterable[str]) -> tuple[str, ...]:
