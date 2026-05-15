@@ -52,7 +52,8 @@ follow-up for:
 - repository visibility, when documented
 - default branch, when documented
 - default branch protection or active branch rulesets
-- required status checks, including exact documented check names when present
+- required status checks, including exact documented check names when clearly
+  declared in explicit required-status-check governance sections
 - required pull request settings
 - branch up-to-date or strict status-check requirements, when documented
 - force-push and default-branch deletion restrictions, when documented
@@ -68,6 +69,14 @@ Statuses are advisory:
 - `drift`: state differs from the documented expectation
 - `unknown`: no documented expectation was found or a partial hosted surface
   could not be inspected
+
+Required-status-check comparison is intentionally conservative. The audit
+extracts exact hosted check names from explicit declarations such as
+`required status checks:`, `require these status checks:`, or structured
+required-check lists under governance or branch-protection sections. Prose-only
+mentions, workflow filenames, historical notes, command examples, and generic
+local validation guidance remain `unknown` instead of producing hosted-check
+drift.
 
 ## Safety Model
 

@@ -47,7 +47,17 @@ class RepoSettingsAuditTests(unittest.TestCase):
             _write(repo / "AGENTS.md", "Use pull requests. Target `main`.\n")
             _write(repo / "docs" / "governance-ci.md", "Required status checks: `old matrix`.\n")
             _git(repo, "add", ".")
-            _git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+            _git(
+                repo,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--no-gpg-sign",
+                "-m",
+                "initial",
+            )
             _write(repo / "docs" / "governance-ci.md", "Required status checks: `working tree edit`.\n")
 
             report = audit_repo_settings(
@@ -79,6 +89,175 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("old matrix", item.expected)
         self.assertEqual("new matrix", item.actual)
         self.assertIn("source-of-truth governance docs", item.follow_up)
+
+    def test_required_checks_parse_explicit_section_list(self) -> None:
+        responses = _responses(required_check="build")
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "## Hosted Branch Protection\n\n"
+            "The intended hosted branch protection for `main` is:\n\n"
+            "- require pull requests before merge;\n"
+            "- require these status checks:\n"
+            "  - `build`\n"
+            "  - `lint / docs`\n"
+        )
+        responses["/repos/ctrl-alt-keith/sample/branches/main/protection"][
+            "required_status_checks"
+        ] = {
+            "strict": True,
+            "contexts": ["build", "lint / docs"],
+            "checks": [],
+        }
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("build, lint / docs", item.expected)
+
+    def test_prose_required_check_mentions_do_not_define_expectations(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "Use `make check` before review. Required CI canaries are separate from local checks.\n"
+            "Do not rename workflow jobs without checking branch protection later.\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("unknown", item.status)
+        self.assertEqual("no required-check expectation found", item.expected)
+
+    def test_historical_required_check_references_do_not_define_expectations(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "PR #26 added the workflow file, then left branch protection and required status checks "
+            "as a hosted GitHub follow-up.\n"
+            "As of May 14, 2026, hosted inspection was still pending.\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("unknown", item.status)
+        self.assertEqual("no required-check expectation found", item.expected)
+
+    def test_example_command_blocks_do_not_define_required_checks(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "Inspect required status checks with a read-only command:\n\n"
+            "```sh\n"
+            "gh pr view 26 --json statusCheckRollup\n"
+            "gh api repos/ctrl-alt-keith/sample/branches/main/protection\n"
+            "```\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("unknown", item.status)
+        self.assertEqual("no required-check expectation found", item.expected)
+
+    def test_linode_backup_lab_style_governance_ignores_manifest_prose_noise(self) -> None:
+        responses = _responses(required_check="make check (Python 3.10)")
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "## Current Workflows\n\n"
+            "- `.github/workflows/check.yml` runs on pull requests. Its required status\n"
+            "  check names are:\n"
+            "  - `make check (Python 3.10)`\n"
+            "  - `make check (Python 3.11)`\n"
+            "- `.github/workflows/authoritative-source-check.yml` runs on pull requests.\n"
+            "  Its required status check name is\n"
+            "  `authoritative-source-check / authoritative-source-check`.\n\n"
+            "## Hosted Branch Protection\n\n"
+            "- require these status checks:\n"
+            "  - `make check (Python 3.10)`\n"
+            "  - `make check (Python 3.11)`\n"
+            "  - `authoritative-source-check / authoritative-source-check`\n\n"
+            "| `passed_with_unverified_provider_state` | `plan` | snapshot-label checks passed, "
+            "but a fresh `inspect` is required before mutation. |\n"
+        )
+        responses["/repos/ctrl-alt-keith/sample/branches/main/protection"][
+            "required_status_checks"
+        ] = {
+            "strict": True,
+            "contexts": [
+                "make check (Python 3.10)",
+                "make check (Python 3.11)",
+                "authoritative-source-check / authoritative-source-check",
+            ],
+            "checks": [],
+        }
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual(
+            "authoritative-source-check / authoritative-source-check, "
+            "make check (Python 3.10), make check (Python 3.11)",
+            item.expected,
+        )
+        self.assertNotIn("inspect", item.expected)
+        self.assertNotIn("passed_with_unverified_provider_state", item.expected)
+        self.assertNotIn("plan", item.expected)
+
+    def test_no_explicit_required_check_section_returns_unknown(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("CI runs the repository validation workflow and local `make check` remains canonical.\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("unknown", item.status)
+        self.assertEqual("no required-check expectation found", item.expected)
 
     def test_generic_private_language_is_not_visibility_expectation(self) -> None:
         responses = _responses()

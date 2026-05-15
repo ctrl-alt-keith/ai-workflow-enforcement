@@ -306,8 +306,6 @@ def _expectations(remote: RemoteSnapshot) -> ExpectedSettings:
     normalized = text.lower()
     required_checks = _documented_required_checks(text)
     canonical_validation = _canonical_validation(remote)
-    if canonical_validation and not required_checks:
-        required_checks = ("at least one hosted check for canonical validation",)
     return ExpectedSettings(
         visibility=_documented_visibility(normalized),
         default_branch=_documented_default_branch(normalized),
@@ -358,20 +356,12 @@ def _branch_rules_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
 
 def _required_checks_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     actual_checks = _required_checks(state)
-    if expected.required_checks and expected.required_checks != ("at least one hosted check for canonical validation",):
-        missing = [check for check in expected.required_checks if check not in actual_checks]
-        status = "match" if not missing else "drift"
+    if expected.required_checks:
+        status = "match" if expected.required_checks == actual_checks else "drift"
         follow_up = (
             "Update branch protection/rulesets or the source-of-truth governance docs so required check names match."
-            if missing
+            if status == "drift"
             else "Confirm these required checks still map to the canonical validation path."
-        )
-    elif expected.required_checks:
-        status = "match" if actual_checks else "drift"
-        follow_up = (
-            "Document exact hosted check names for stricter comparison."
-            if actual_checks
-            else "Require the hosted validation check that corresponds to the canonical local validation path."
         )
     else:
         status = "unknown"
@@ -842,15 +832,147 @@ def _documented_default_branch(normalized: str) -> str:
 
 def _documented_required_checks(text: str) -> tuple[str, ...]:
     checks: list[str] = []
-    for line in text.splitlines():
-        normalized = line.lower()
-        if "required" not in normalized or "check" not in normalized:
+    lines = text.splitlines()
+    in_fenced_block = False
+    scoped_section = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if _is_fence(line):
+            in_fenced_block = not in_fenced_block
+            index += 1
             continue
-        for value in re.findall(r"`([^`]+)`", line):
-            clean = value.strip()
-            if clean and clean not in {"make check", "check"}:
-                checks.append(clean)
+        if not in_fenced_block and _is_heading(line):
+            scoped_section = _is_required_check_section_scope(line)
+        if in_fenced_block or not _is_required_check_declaration(line, scoped_section):
+            index += 1
+            continue
+
+        block_checks, next_index = _collect_required_check_declaration(lines, index)
+        checks.extend(block_checks)
+        index = next_index
     return tuple(sorted(set(checks)))
+
+
+def _is_fence(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("```") or stripped.startswith("~~~")
+
+
+def _is_required_check_declaration(line: str, scoped_section: bool) -> bool:
+    normalized = line.strip().lower()
+    if not normalized:
+        return False
+    if "require these status checks" in normalized:
+        return True
+    if _is_heading(line) and "required status check" in normalized:
+        return True
+    if "required status check" in normalized and _looks_like_declaration(normalized):
+        return True
+    if scoped_section and _scoped_required_checks_declaration(normalized):
+        return True
+    return False
+
+
+def _looks_like_declaration(normalized: str) -> bool:
+    return (
+        ":" in normalized
+        or normalized.endswith(" is")
+        or normalized.endswith(" are")
+        or " name is" in normalized
+        or " names are" in normalized
+    )
+
+
+def _is_required_check_section_scope(line: str) -> bool:
+    normalized = line.strip("# ").lower()
+    return any(marker in normalized for marker in ("governance", "branch protection", "ruleset"))
+
+
+def _scoped_required_checks_declaration(normalized: str) -> bool:
+    stripped = normalized.lstrip("-* ").strip()
+    return stripped.startswith("required checks:") or stripped.startswith("require checks:")
+
+
+def _collect_required_check_declaration(lines: list[str], declaration_index: int) -> tuple[list[str], int]:
+    checks = _declaration_check_values(lines[declaration_index])
+    declaration_indent = _indent_width(lines[declaration_index])
+    declaration_is_bullet = lines[declaration_index].strip().startswith(("-", "*"))
+    index = declaration_index + 1
+    while index < len(lines):
+        line = lines[index]
+        if _is_fence(line):
+            break
+        if not line.strip():
+            if checks:
+                break
+            index += 1
+            continue
+        if _is_heading(line):
+            break
+        line_indent = _indent_width(line)
+        if line_indent < declaration_indent:
+            break
+        if declaration_is_bullet and line_indent <= declaration_indent:
+            break
+
+        values = _structured_check_values(line)
+        if values:
+            checks.extend(values)
+            index += 1
+            continue
+
+        if checks:
+            break
+        index += 1
+    return checks, index
+
+
+def _is_heading(line: str) -> bool:
+    return line.lstrip().startswith("#")
+
+
+def _structured_check_values(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith(("-", "*")):
+        bullet_value = stripped[1:].strip()
+        if re.fullmatch(r"`[^`]+`[.;,]?", bullet_value):
+            return _check_values(bullet_value)
+        return []
+    if re.fullmatch(r"`[^`]+`[.;,]?", stripped):
+        return _check_values(line)
+    return []
+
+
+def _indent_width(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _check_values(line: str) -> list[str]:
+    values: list[str] = []
+    for value in re.findall(r"`([^`]+)`", line):
+        clean = value.strip()
+        if _is_hosted_check_name(clean):
+            values.append(clean)
+    return values
+
+
+def _declaration_check_values(line: str) -> list[str]:
+    lower = line.lower()
+    for marker in ("require these status checks", "required status check", "required checks", "require checks"):
+        marker_index = lower.find(marker)
+        if marker_index == -1:
+            continue
+        declaration_tail = line[marker_index:]
+        colon_index = declaration_tail.find(":")
+        if colon_index != -1:
+            declaration_tail = declaration_tail[colon_index + 1 :]
+        return _check_values(declaration_tail)
+    return []
+
+
+def _is_hosted_check_name(value: str) -> bool:
+    return bool(value)
 
 
 def _canonical_validation(remote: RemoteSnapshot) -> str:
