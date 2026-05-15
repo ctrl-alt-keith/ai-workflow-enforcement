@@ -5,10 +5,12 @@
     "default_branch": "main",
     "require_pull_requests": true,
     "require_status_checks": true,
-    "strict_required_checks": true,
+    "strict_required_checks": false,
     "force_pushes": "disabled",
     "branch_deletions": "disabled",
     "merge_policy": "squash-only",
+    "auto_merge": "disabled",
+    "delete_branch_on_merge": "enabled",
     "required_approving_reviews": 0,
     "administrator_bypass": "enabled",
     "dependabot": {
@@ -22,7 +24,10 @@
   },
   "repositories": {
     "ctrl-alt-keith/ai-workflow-incubator": {
-      "visibility": "private"
+      "visibility": "private",
+      "required_checks": [
+        "markdownlint"
+      ]
     },
     "ctrl-alt-keith/knowledge-vault": {
       "visibility": "private"
@@ -31,6 +36,11 @@
       "visibility": "private",
       "required_checks": [
         "check"
+      ]
+    },
+    "ctrl-alt-keith/.github": {
+      "required_checks": [
+        "markdownlint"
       ]
     },
     "ctrl-alt-keith/ai-workflow-playbook": {

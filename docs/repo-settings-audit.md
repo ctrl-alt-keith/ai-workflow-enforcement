@@ -1,10 +1,10 @@
 # Repo Settings Audit
 
 `enforcement.repo_settings_audit` is a read-only GitHub repository settings
-audit. It compares hosted settings with the central repo-family policy in
-`config/repo-settings-policy.json`, repo-specific central overrides, and any
-explicit repo-local governance declarations read from one GitHub
-source-of-truth ref, defaulting to `main`.
+audit. It compares effective hosted governance behavior with the central
+repo-family policy in `config/repo-settings-policy.json`, repo-specific central
+overrides, and any explicit repo-local governance declarations read from one
+GitHub source-of-truth ref, defaulting to `main`.
 
 Run an audit for one repository:
 
@@ -64,10 +64,12 @@ The central baseline currently means:
 - default branch: `main`
 - pull requests required before merge
 - status checks required before merge
-- required status checks are strict/up-to-date
+- strict/up-to-date required checks disabled by default
 - force pushes on `main` disabled
 - branch deletions on `main` disabled
 - merge policy: squash-only
+- auto-merge disabled
+- delete branch on merge enabled
 - required approving reviews: `0`
 - administrator/owner self-merge allowed
 - Dependabot expected weekly when a supported ecosystem is present
@@ -81,19 +83,25 @@ status checks, but exact check-name comparison happens only when
 `required_checks` is set in central repo overrides or exact checks are declared
 in repo-local governance docs.
 
+Maintained repositories are expected to have at least one meaningful validation
+check. Docs-only, org-profile, and lightweight stub repositories can satisfy
+that baseline with markdown/docs validation instead of application tests.
+
 ## Audited Surfaces
 
 The audit reports expected, actual, status, source, and suggested human
-follow-up for:
+follow-up for effective governance behavior, regardless of whether GitHub
+currently enforces that behavior through classic branch protection or rulesets:
 
 - repository visibility
 - default branch
-- default branch protection or active branch rulesets
+- default branch enforcement through classic branch protection or active
+  branch rulesets
 - required status checks, including exact documented check names when clearly
   declared in central overrides or explicit required-status-check governance
   sections
 - required pull request settings
-- branch up-to-date or strict status-check requirements
+- branch up-to-date or strict status-check posture
 - force-push and default-branch deletion restrictions
 - required approving review count and administrator bypass policy, when
   supported by branch-protection or ruleset-detail inspection
@@ -135,6 +143,84 @@ status checks:`, or structured required-check lists under governance or
 branch-protection sections. Prose-only mentions, workflow filenames, historical
 notes, command examples, and generic local validation guidance do not become
 exact check-name expectations.
+
+## Mechanism-Neutral Interpretation
+
+Classic branch protection and GitHub rulesets are treated as interchangeable
+hosted enforcement mechanisms when they produce equivalent effective behavior.
+Policy describes the intended outcome, not the GitHub implementation style.
+
+The audit normalizes these surfaces across both mechanisms:
+
+- pull-request requirement
+- required status check names
+- strict/up-to-date status-check posture
+- required approving review count
+- administrator bypass or self-merge
+- force-push restrictions
+- default-branch deletion restrictions
+
+When more than one mechanism is active, the effective result is the strongest
+applicable hosted behavior. For example, any active non-fast-forward rule or
+disabled classic force pushes means force pushes are effectively restricted;
+any active deletion rule or disabled classic deletions means branch deletions
+are effectively restricted; the maximum required review count is used; and
+administrator bypass is considered enabled only when all active mechanisms
+allow the relevant bypass.
+
+Human follow-up text may mention that hosted implementation differs by
+mechanism, but drift classification is based on effective policy behavior.
+
+## Strict Checks Policy
+
+The central solo-operator baseline disables strict/up-to-date required checks
+by default. Requiring a pull request, requiring hosted checks, protecting the
+default branch from force pushes and deletion, and using squash-only merges are
+the baseline governance controls.
+
+Strict checks can still be useful for high-concurrency repositories because
+they require a pull request branch to be current with `main` before merge. In
+this repo family they are disabled by default because most repositories are
+maintained by a solo operator and the extra update/retry loop adds routine
+maintenance friction without materially changing the required validation gate.
+
+Repos may still opt into strict checks with an explicit repo-local governance
+declaration such as `require branches up to date before merge: yes`. When a
+repo explicitly declares that requirement, the audit treats disabled hosted
+strict checks as drift.
+
+## Minimum Validation
+
+The minimum maintained-repo validation baseline is one lightweight, meaningful
+hosted check. For documentation-only repositories, the repo-family default is a
+markdown validation workflow with required check name `markdownlint`.
+
+The existing repo-family pattern is the playbook's Markdown Lint workflow: run
+on pull requests and pushes to `main`, use read-only contents permissions, set
+up Node, install `markdownlint-cli2`, and run `make check`. The corresponding
+Makefile target may use `markdownlint-cli2 "**/*.md" "#dist"` or an equivalent
+markdownlint invocation.
+
+Maintained repositories without application tests should add this markdown/docs
+validation rather than carry a required-check exception. A central exception is
+reserved for repositories that are explicitly archived, unmanaged, or otherwise
+accepted as not maintained under the repo-family governance baseline.
+
+## Solo-Operator Merge Hygiene
+
+The central baseline keeps auto-merge disabled and enables delete branch on
+merge.
+
+Auto-merge stays disabled because it can move a pull request from reviewed to
+merged without a final explicit operator action once checks pass. That is useful
+for some high-throughput team queues, but it works against the repo family's
+human-controlled merge posture.
+
+Delete-branch-on-merge is baseline-enabled because the repo family uses
+squash-only pull requests and short-lived topic branches. Deleting merged
+branches reduces routine cleanup without changing review, validation, or merge
+authority. Repos that need long-lived merged branches should document and carry
+a central policy exception.
 
 ## Central Overrides
 
