@@ -108,6 +108,24 @@ Statuses are advisory:
 - `unknown`: no documented expectation was found or a partial hosted surface
   could not be inspected
 
+Before reporting hosted-state unknowns, the audit performs one bounded
+read-only retry for optional hosted API surfaces that commonly affect branch
+protection classification. This includes branch protection, branch rulesets,
+required status checks, pull-request review settings, force-push/deletion
+details, administrator enforcement, and Actions workflow state. A missing
+branch-protection endpoint reported as GitHub `404` is treated as absent hosted
+protection, not as transient unknown; if policy expects protection, that
+absence is reported as drift.
+
+Unknown report text distinguishes the broad cause where feasible:
+
+- `unknown_policy`: the effective central/repo-local policy does not declare an
+  expectation for that setting
+- `unknown_unavailable`: a hosted response was readable but did not expose the
+  needed field
+- `unknown_after_retry`: the audit retried the relevant read-only hosted call
+  and the surface was still unavailable or incomplete
+
 Required-status-check name comparison is intentionally conservative. The audit
 extracts exact hosted check names from central repo overrides or explicit
 repo-local declarations such as `required status checks:`, `require these

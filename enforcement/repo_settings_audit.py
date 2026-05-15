@@ -85,6 +85,29 @@ class HostedState:
     branch_protection: dict[str, object] | None
     rulesets: tuple[dict[str, object], ...] | None
     workflows: tuple[dict[str, object], ...] | None
+    branch_protection_error: str = ""
+    branch_protection_incomplete: tuple[str, ...] = ()
+    branch_protection_retried: bool = False
+    rulesets_error: str = ""
+    rulesets_retried: bool = False
+    workflows_error: str = ""
+    workflows_retried: bool = False
+
+
+@dataclass(frozen=True)
+class OptionalObjectResult:
+    value: dict[str, object] | None = None
+    error: str = ""
+    retried: bool = False
+    absent: bool = False
+
+
+@dataclass(frozen=True)
+class OptionalCollectionResult:
+    value: tuple[dict[str, object], ...] | None = None
+    error: str = ""
+    retried: bool = False
+    absent: bool = False
 
 
 @dataclass(frozen=True)
@@ -385,9 +408,20 @@ def _expectations(repo_data: dict[str, object], remote: RemoteSnapshot) -> Expec
 
 def _branch_rules_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     present = _branch_rules_present(state)
+    unknown_reason = _hosted_rule_unknown_reason(state)
+    if expected.branch_rules and present is None:
+        status = "unknown"
+        follow_up = f"Retry completed, but hosted branch protection/ruleset state is still unavailable: {unknown_reason}."
+    else:
+        status = _compare_if_known(expected.branch_rules, present)
+        follow_up = (
+            "Review hosted branch protection/rulesets manually; this audit will not enable them."
+            if expected.branch_rules and not present
+            else "Document branch protection expectations before treating this setting as drift."
+        )
     return AuditItem(
         setting="default branch protection or ruleset",
-        status=_compare_if_known(expected.branch_rules, present),
+        status=status,
         expected=(
             "default branch protection or an active branch ruleset is documented"
             if expected.branch_rules
@@ -395,46 +429,72 @@ def _branch_rules_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
         ),
         actual=_describe_branch_rules(state),
         source=_source(remote),
-        follow_up=(
-            "Review hosted branch protection/rulesets manually; this audit will not enable them."
-            if expected.branch_rules and not present
-            else "Document branch protection expectations before treating this setting as drift."
-        ),
+        follow_up=follow_up,
     )
 
 
 def _required_checks_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     actual_checks = _required_checks(state)
+    unknown_reason = _hosted_rule_unknown_reason(state)
     if expected.required_checks:
-        status = "match" if expected.required_checks == actual_checks else "drift"
+        if actual_checks and expected.required_checks != actual_checks:
+            status = "drift"
+        elif unknown_reason:
+            status = "unknown"
+        else:
+            status = "match" if expected.required_checks == actual_checks else "drift"
         follow_up = (
             "Update branch protection/rulesets or the source-of-truth governance docs so required check names match."
             if status == "drift"
+            else f"Retry completed, but hosted required-check state is still unavailable: {unknown_reason}."
+            if status == "unknown"
             else "Confirm these required checks still map to the canonical validation path."
         )
         expected_text = ", ".join(expected.required_checks)
     elif expected.require_status_checks is True:
-        status = "match" if actual_checks else "drift"
+        if actual_checks:
+            status = "match"
+        elif unknown_reason:
+            status = "unknown"
+        else:
+            status = "drift"
         follow_up = (
             "Document exact hosted check names for stricter comparison."
             if actual_checks
+            else f"Retry completed, but hosted required-check state is still unavailable: {unknown_reason}."
+            if status == "unknown"
             else "Require the hosted validation checks declared by source-of-truth governance docs."
         )
         expected_text = "hosted required status checks are explicitly required; exact names are not documented"
     elif expected.require_status_checks is False:
-        status = "match" if not actual_checks else "drift"
-        follow_up = "Align hosted required checks with the explicit source-of-truth governance declaration."
+        if actual_checks:
+            status = "drift"
+        elif unknown_reason:
+            status = "unknown"
+        else:
+            status = "match"
+        follow_up = (
+            f"Retry completed, but hosted required-check state is still unavailable: {unknown_reason}."
+            if status == "unknown"
+            else "Align hosted required checks with the explicit source-of-truth governance declaration."
+        )
         expected_text = "no hosted required status checks"
     else:
         status = "unknown"
-        follow_up = "Document required hosted checks before treating check configuration as drift."
-        expected_text = "no required-check expectation found"
+        follow_up = "unknown_policy: document required hosted checks before treating check configuration as drift."
+        expected_text = "unknown_policy: no required-check expectation found"
 
     return AuditItem(
         setting="required status checks",
         status=status,
         expected=expected_text,
-        actual=", ".join(actual_checks) if actual_checks else "no required hosted status checks detected",
+        actual=(
+            f"hosted required status checks unavailable ({unknown_reason})"
+            if status == "unknown" and unknown_reason
+            else ", ".join(actual_checks)
+            if actual_checks
+            else "no required hosted status checks detected"
+        ),
         source=_source(remote),
         follow_up=follow_up,
     )
@@ -442,20 +502,27 @@ def _required_checks_item(remote: RemoteSnapshot, state: HostedState, expected: 
 
 def _pull_request_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     actual = _pull_request_required(state)
+    unknown_reason = _hosted_rule_unknown_reason(state) if actual is None else ""
     return AuditItem(
         setting="required pull requests",
         status=_compare_bool_if_known(expected.required_prs, actual),
         expected=(
             f"pull requests before merge: {_enabled_disabled(expected.required_prs)}"
             if expected.required_prs is not None
-            else "no pull-request requirement found in source-of-truth docs"
+            else "unknown_policy: no pull-request requirement found in source-of-truth docs"
         ),
-        actual=_yes_no(actual),
+        actual=(
+            f"required pull-request state unavailable ({unknown_reason})"
+            if unknown_reason
+            else _yes_no_unknown(actual)
+        ),
         source=_source(remote),
         follow_up=(
-            "Require pull requests through branch protection/rulesets only after explicit human approval."
-            if expected.required_prs and not actual
-            else "Document pull-request expectations before treating this setting as drift."
+            f"Retry completed, but hosted pull-request state is still unavailable: {unknown_reason}."
+            if unknown_reason
+            else "Require pull requests through branch protection/rulesets only after explicit human approval."
+            if expected.required_prs and actual is False
+            else "unknown_policy: document pull-request expectations before treating this setting as drift."
         ),
     )
 
@@ -463,6 +530,7 @@ def _pull_request_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
 def _review_admin_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     actual_reviews = _required_approving_reviews(state)
     actual_admin_bypass = _admin_bypass_enabled(state)
+    unknown_reason = _review_admin_unknown_reason(state, actual_reviews, actual_admin_bypass)
     expected_parts: list[tuple[str, object | None, object | None]] = [
         ("required approving reviews", expected.required_approving_reviews, actual_reviews),
         ("administrator bypass", expected.admin_bypass, actual_admin_bypass),
@@ -480,37 +548,47 @@ def _review_admin_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
         expected=(
             "; ".join(_review_admin_part(label, value) for label, value, _ in known_parts)
             if known_parts
-            else "no review/admin expectation found in source-of-truth docs"
+            else "unknown_policy: no review/admin expectation found in source-of-truth docs"
         ),
         actual=(
             f"required approving reviews: {_unknown_or_value(actual_reviews)}; "
             f"administrator bypass: {_enabled_disabled_unknown(actual_admin_bypass)}"
+            f"{f' ({unknown_reason})' if status == 'unknown' and unknown_reason else ''}"
         ),
         source=_source(remote),
         follow_up=(
             "Align hosted review/admin settings or source-of-truth governance docs."
             if status == "drift"
-            else "Document review-count and administrator-bypass expectations before treating these settings as drift."
+            else f"Retry completed, but hosted review/admin state is still unavailable: {unknown_reason}."
+            if status == "unknown" and unknown_reason
+            else "unknown_policy: document review-count and administrator-bypass expectations before treating these settings as drift."
         ),
     )
 
 
 def _strict_checks_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     actual = _strict_status_checks(state)
+    unknown_reason = _hosted_rule_unknown_reason(state) if actual is None else ""
     return AuditItem(
         setting="branch up-to-date requirement",
         status=_compare_bool_if_known(expected.strict_checks, actual),
         expected=(
             f"branches up to date before merge: {_enabled_disabled(expected.strict_checks)}"
             if expected.strict_checks is not None
-            else "no up-to-date requirement found in source-of-truth docs"
+            else "unknown_policy: no up-to-date requirement found in source-of-truth docs"
         ),
-        actual=_yes_no_unknown(actual),
+        actual=(
+            f"up-to-date requirement unavailable ({unknown_reason})"
+            if unknown_reason
+            else _yes_no_unknown(actual)
+        ),
         source=_source(remote),
         follow_up=(
             "Enable strict required checks only through an explicit hosted-settings change."
             if expected.strict_checks and actual is False
-            else "Document whether branches must be up to date before merge."
+            else f"Retry completed, but hosted up-to-date state is still unavailable: {unknown_reason}."
+            if unknown_reason
+            else "unknown_policy: document whether branches must be up to date before merge."
         ),
     )
 
@@ -518,6 +596,7 @@ def _strict_checks_item(remote: RemoteSnapshot, state: HostedState, expected: Ex
 def _force_delete_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     force_allowed = _force_pushes_allowed(state)
     delete_allowed = _deletions_allowed(state)
+    unknown_reason = _force_delete_unknown_reason(state, force_allowed, delete_allowed)
     expected_parts: list[tuple[str, bool | None, bool | None]] = [
         ("force pushes allowed", expected.force_pushes_allowed, force_allowed),
         ("deletions allowed", expected.deletions_allowed, delete_allowed),
@@ -539,14 +618,20 @@ def _force_delete_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
                 if value is not None
             )
             if known_parts
-            else "no force-push/deletion restriction expectation found"
+            else "unknown_policy: no force-push/deletion restriction expectation found"
         ),
-        actual=f"force pushes allowed: {_yes_no_unknown(force_allowed)}; deletions allowed: {_yes_no_unknown(delete_allowed)}",
+        actual=(
+            f"force pushes allowed: {_yes_no_unknown(force_allowed)}; "
+            f"deletions allowed: {_yes_no_unknown(delete_allowed)}"
+            f"{f' ({unknown_reason})' if status == 'unknown' and unknown_reason else ''}"
+        ),
         source=_source(remote),
         follow_up=(
             "Review hosted protection/ruleset restrictions manually; this audit is report-only."
             if status == "drift"
-            else "Document force-push/deletion expectations before treating this as drift."
+            else f"Retry completed, but hosted force-push/deletion state is still unavailable: {unknown_reason}."
+            if status == "unknown" and unknown_reason
+            else "unknown_policy: document force-push/deletion expectations before treating this as drift."
         ),
     )
 
@@ -557,7 +642,7 @@ def _actions_item(remote: RemoteSnapshot, state: HostedState) -> AuditItem:
     inactive = [path for path in remote.workflow_paths if hosted.get(path) not in (None, "active")]
     if state.workflows is None:
         status = "unknown"
-        actual = "hosted workflow state unavailable"
+        actual = f"hosted workflow state unavailable ({state.workflows_error})" if state.workflows_error else "hosted workflow state unavailable"
     else:
         status = "match" if not missing and not inactive else "drift"
         actual = _describe_workflows(hosted)
@@ -578,14 +663,14 @@ def _dependabot_item(remote: RemoteSnapshot, expected: ExpectedSettings) -> Audi
         expected=(
             "Dependabot config is expected because source-of-truth docs mention Dependabot"
             if expected.dependabot
-            else "no Dependabot expectation found in source-of-truth docs"
+            else "unknown_policy: no Dependabot expectation found in source-of-truth docs"
         ),
         actual=remote.dependabot_path or "not present in source-of-truth ref",
         source=_source(remote),
         follow_up=(
             "Add Dependabot config in a normal PR only if dependency-update automation is intended."
             if expected.dependabot and not remote.dependabot_path
-            else "Hosted Dependabot/security toggles may still require separate org-admin inspection."
+            else "unknown_policy: hosted Dependabot/security toggles may still require separate org-admin inspection."
         ),
     )
 
@@ -712,21 +797,42 @@ def _fetch_hosted_state(
 ) -> HostedState:
     default_branch = str(repo_data.get("default_branch") or DEFAULT_SOURCE_REF)
     branch = quote(default_branch, safe="")
-    protection = _fetch_optional_object(runner, f"/repos/{repo}/branches/{branch}/protection", errors)
-    rulesets = _fetch_optional_collection(runner, f"/repos/{repo}/rulesets?targets=branch", errors)
-    workflows_response = _fetch_optional_object(runner, f"/repos/{repo}/actions/workflows", errors)
+    protection_endpoint = f"/repos/{repo}/branches/{branch}/protection"
+    protection_fetch = _fetch_optional_object(runner, protection_endpoint, errors)
+    protection = protection_fetch.value
+    protection_retried = protection_fetch.retried
+    protection_incomplete: tuple[str, ...] = ()
+    if protection is not None:
+        protection, protection_incomplete, read_depth_retried = _retry_incomplete_branch_protection(
+            runner,
+            protection_endpoint,
+            protection,
+            errors,
+        )
+        protection_retried = protection_retried or read_depth_retried
+    rulesets_fetch = _fetch_optional_collection(runner, f"/repos/{repo}/rulesets?targets=branch", errors)
+    workflows_fetch = _fetch_optional_object(runner, f"/repos/{repo}/actions/workflows", errors)
     workflows = None
-    if workflows_response is not None:
-        items = workflows_response.get("workflows")
+    workflows_error = workflows_fetch.error
+    if workflows_fetch.value is not None:
+        items = workflows_fetch.value.get("workflows")
         if isinstance(items, list):
             workflows = tuple(item for item in items if isinstance(item, dict))
         else:
-            errors.append("actions workflows response did not include a workflows list")
+            workflows_error = "unknown_unavailable: actions workflows response did not include a workflows list"
+            errors.append(workflows_error)
     return HostedState(
         repo=repo_data,
         branch_protection=protection,
-        rulesets=rulesets,
+        rulesets=rulesets_fetch.value,
         workflows=workflows,
+        branch_protection_error=protection_fetch.error,
+        branch_protection_incomplete=protection_incomplete,
+        branch_protection_retried=protection_retried,
+        rulesets_error=rulesets_fetch.error,
+        rulesets_retried=rulesets_fetch.retried,
+        workflows_error=workflows_error,
+        workflows_retried=workflows_fetch.retried,
     )
 
 
@@ -788,46 +894,111 @@ def _fetch_optional_object(
     runner: Runner,
     endpoint: str,
     errors: list[str],
-) -> dict[str, object] | None:
+) -> OptionalObjectResult:
+    result = _fetch_optional_object_once(runner, endpoint)
+    if not result.error:
+        return result
+    retry = _fetch_optional_object_once(runner, endpoint)
+    if not retry.error:
+        return OptionalObjectResult(
+            value=retry.value,
+            retried=True,
+            absent=retry.absent,
+        )
+    error = f"unknown_after_retry: {endpoint} {retry.error}"
+    errors.append(error)
+    return OptionalObjectResult(error=error, retried=True)
+
+
+def _fetch_optional_object_once(
+    runner: Runner,
+    endpoint: str,
+) -> OptionalObjectResult:
     command = runner(("gh", "api", endpoint))
     if command.returncode != 0:
         detail = (command.stderr or command.stdout or f"exit {command.returncode}").splitlines()[0]
-        if "404" in detail or "Not Found" in detail:
-            return None
-        errors.append(f"{endpoint} inaccessible: {detail}")
-        return None
+        if _not_found(detail):
+            return OptionalObjectResult(absent=True)
+        return OptionalObjectResult(error=f"inaccessible: {detail}")
     try:
         data = json.loads(command.stdout or "{}")
     except json.JSONDecodeError as exc:
-        errors.append(f"{endpoint} returned invalid JSON: {exc}")
-        return None
+        return OptionalObjectResult(error=f"returned invalid JSON: {exc}")
     if not isinstance(data, dict):
-        errors.append(f"{endpoint} did not return an object")
-        return None
-    return data
+        return OptionalObjectResult(error="did not return an object")
+    return OptionalObjectResult(value=data)
 
 
 def _fetch_optional_collection(
     runner: Runner,
     endpoint: str,
     errors: list[str],
-) -> tuple[dict[str, object], ...] | None:
+) -> OptionalCollectionResult:
+    result = _fetch_optional_collection_once(runner, endpoint)
+    if not result.error:
+        return result
+    retry = _fetch_optional_collection_once(runner, endpoint)
+    if not retry.error:
+        return OptionalCollectionResult(
+            value=retry.value,
+            retried=True,
+            absent=retry.absent,
+        )
+    error = f"unknown_after_retry: {endpoint} {retry.error}"
+    errors.append(error)
+    return OptionalCollectionResult(error=error, retried=True)
+
+
+def _fetch_optional_collection_once(
+    runner: Runner,
+    endpoint: str,
+) -> OptionalCollectionResult:
     command = runner(("gh", "api", endpoint))
     if command.returncode != 0:
         detail = (command.stderr or command.stdout or f"exit {command.returncode}").splitlines()[0]
-        if "404" in detail or "Not Found" in detail:
-            return ()
-        errors.append(f"{endpoint} inaccessible: {detail}")
-        return None
+        if _not_found(detail):
+            return OptionalCollectionResult(value=(), absent=True)
+        return OptionalCollectionResult(error=f"inaccessible: {detail}")
     try:
         data = json.loads(command.stdout or "[]")
     except json.JSONDecodeError as exc:
-        errors.append(f"{endpoint} returned invalid JSON: {exc}")
-        return None
+        return OptionalCollectionResult(error=f"returned invalid JSON: {exc}")
     if not isinstance(data, list):
-        errors.append(f"{endpoint} did not return a list")
-        return None
-    return tuple(item for item in data if isinstance(item, dict))
+        return OptionalCollectionResult(error="did not return a list")
+    return OptionalCollectionResult(value=tuple(item for item in data if isinstance(item, dict)))
+
+
+def _retry_incomplete_branch_protection(
+    runner: Runner,
+    endpoint: str,
+    protection: dict[str, object],
+    errors: list[str],
+) -> tuple[dict[str, object], tuple[str, ...], bool]:
+    missing = _missing_branch_protection_read_depth_fields(protection)
+    if not missing:
+        return protection, (), False
+    retry = _fetch_optional_object_once(runner, endpoint)
+    if not retry.error and retry.value is not None:
+        missing = _missing_branch_protection_read_depth_fields(retry.value)
+        if missing:
+            errors.append(
+                f"unknown_after_retry: {endpoint} response missing {', '.join(missing)} after retry"
+            )
+        return retry.value, missing, True
+    errors.append(
+        f"unknown_after_retry: {endpoint} response missing {', '.join(missing)}; "
+        f"retry {retry.error or 'did not return branch protection'}"
+    )
+    return protection, missing, True
+
+
+def _missing_branch_protection_read_depth_fields(protection: dict[str, object]) -> tuple[str, ...]:
+    fields = ("allow_deletions", "allow_force_pushes", "enforce_admins")
+    return tuple(field for field in fields if field not in protection)
+
+
+def _not_found(detail: str) -> bool:
+    return "404" in detail or "Not Found" in detail
 
 
 def _gh(argv: tuple[str, ...]) -> GhCommand:
@@ -1309,8 +1480,12 @@ def _default_branch(state: HostedState) -> str:
     return str(state.repo.get("default_branch") or "")
 
 
-def _branch_rules_present(state: HostedState) -> bool:
-    return state.branch_protection is not None or bool(_active_branch_rulesets(state.rulesets))
+def _branch_rules_present(state: HostedState) -> bool | None:
+    if state.branch_protection is not None or bool(_active_branch_rulesets(state.rulesets)):
+        return True
+    if _hosted_rule_unknown_reason(state):
+        return None
+    return False
 
 
 def _active_branch_rulesets(rulesets: tuple[dict[str, object], ...] | None) -> tuple[dict[str, object], ...]:
@@ -1371,10 +1546,14 @@ def _required_checks(state: HostedState) -> tuple[str, ...]:
     return tuple(sorted(set(checks)))
 
 
-def _pull_request_required(state: HostedState) -> bool:
+def _pull_request_required(state: HostedState) -> bool | None:
     if state.branch_protection and isinstance(state.branch_protection.get("required_pull_request_reviews"), dict):
         return True
-    return "pull_request" in _rule_types(state.rulesets)
+    if "pull_request" in _rule_types(state.rulesets):
+        return True
+    if _hosted_rule_unknown_reason(state):
+        return None
+    return False
 
 
 def _strict_status_checks(state: HostedState) -> bool | None:
@@ -1391,27 +1570,39 @@ def _strict_status_checks(state: HostedState) -> bool | None:
             parameters = rule.get("parameters")
             if isinstance(parameters, dict) and isinstance(parameters.get("strict_required_status_checks_policy"), bool):
                 return bool(parameters["strict_required_status_checks_policy"])
-    return None
+    if _required_checks(state):
+        return None
+    if _hosted_rule_unknown_reason(state):
+        return None
+    return False
 
 
 def _force_pushes_allowed(state: HostedState) -> bool | None:
+    if "non_fast_forward" in _rule_types(state.rulesets):
+        return False
     if state.branch_protection:
         value = state.branch_protection.get("allow_force_pushes")
         if isinstance(value, dict) and isinstance(value.get("enabled"), bool):
             return bool(value["enabled"])
-    if "non_fast_forward" in _rule_types(state.rulesets):
-        return False
-    return None
+        if "allow_force_pushes" in state.branch_protection_incomplete:
+            return None
+    if _hosted_rule_unknown_reason(state):
+        return None
+    return True
 
 
 def _deletions_allowed(state: HostedState) -> bool | None:
+    if "deletion" in _rule_types(state.rulesets):
+        return False
     if state.branch_protection:
         value = state.branch_protection.get("allow_deletions")
         if isinstance(value, dict) and isinstance(value.get("enabled"), bool):
             return bool(value["enabled"])
-    if "deletion" in _rule_types(state.rulesets):
-        return False
-    return None
+        if "allow_deletions" in state.branch_protection_incomplete:
+            return None
+    if _hosted_rule_unknown_reason(state):
+        return None
+    return True
 
 
 def _required_approving_reviews(state: HostedState) -> int | None:
@@ -1431,7 +1622,10 @@ def _required_approving_reviews(state: HostedState) -> int | None:
             parameters = rule.get("parameters")
             if isinstance(parameters, dict) and isinstance(parameters.get("required_approving_review_count"), int):
                 return int(parameters["required_approving_review_count"])
-    return 0 if _pull_request_required(state) else None
+    pull_requests = _pull_request_required(state)
+    if pull_requests is None:
+        return None
+    return 0
 
 
 def _admin_bypass_enabled(state: HostedState) -> bool | None:
@@ -1439,7 +1633,71 @@ def _admin_bypass_enabled(state: HostedState) -> bool | None:
         enforce_admins = state.branch_protection.get("enforce_admins")
         if isinstance(enforce_admins, dict) and isinstance(enforce_admins.get("enabled"), bool):
             return not bool(enforce_admins["enabled"])
-    return None
+        if "enforce_admins" in state.branch_protection_incomplete:
+            return None
+    if bool(_active_branch_rulesets(state.rulesets)):
+        return None
+    if _hosted_rule_unknown_reason(state):
+        return None
+    return True
+
+
+def _hosted_rule_unknown_reason(state: HostedState) -> str:
+    reasons = []
+    if state.branch_protection is None and state.branch_protection_error:
+        reasons.append(state.branch_protection_error)
+    if state.rulesets is None and state.rulesets_error:
+        reasons.append(state.rulesets_error)
+    return "; ".join(reasons)
+
+
+def _branch_protection_field_unknown_reason(state: HostedState, fields: Iterable[str]) -> str:
+    missing = [field for field in fields if field in state.branch_protection_incomplete]
+    if not missing:
+        return ""
+    return f"unknown_after_retry: branch protection response missing {', '.join(missing)} after retry"
+
+
+def _review_admin_unknown_reason(
+    state: HostedState,
+    actual_reviews: int | None,
+    actual_admin_bypass: bool | None,
+) -> str:
+    reasons = []
+    if actual_reviews is None:
+        reason = _hosted_rule_unknown_reason(state)
+        if reason:
+            reasons.append(reason)
+    if actual_admin_bypass is None:
+        reason = _branch_protection_field_unknown_reason(state, ("enforce_admins",))
+        if reason:
+            reasons.append(reason)
+        elif bool(_active_branch_rulesets(state.rulesets)):
+            reasons.append("unknown_unavailable: administrator bypass for branch rulesets is not parsed")
+        else:
+            hosted_reason = _hosted_rule_unknown_reason(state)
+            if hosted_reason:
+                reasons.append(hosted_reason)
+    return "; ".join(dict.fromkeys(reasons))
+
+
+def _force_delete_unknown_reason(
+    state: HostedState,
+    force_allowed: bool | None,
+    delete_allowed: bool | None,
+) -> str:
+    reasons = []
+    if force_allowed is None:
+        reason = _branch_protection_field_unknown_reason(state, ("allow_force_pushes",))
+        if reason:
+            reasons.append(reason)
+    if delete_allowed is None:
+        reason = _branch_protection_field_unknown_reason(state, ("allow_deletions",))
+        if reason:
+            reasons.append(reason)
+    if (force_allowed is None or delete_allowed is None) and _hosted_rule_unknown_reason(state):
+        reasons.append(_hosted_rule_unknown_reason(state))
+    return "; ".join(dict.fromkeys(reasons))
 
 
 def _workflow_actual(state: HostedState) -> dict[str, str]:
@@ -1455,15 +1713,27 @@ def _workflow_actual(state: HostedState) -> dict[str, str]:
 
 
 def _describe_branch_rules(state: HostedState) -> str:
-    parts = ["branch protection present" if state.branch_protection else "branch protection absent"]
+    if state.branch_protection:
+        protection = "branch protection present"
+        if state.branch_protection_incomplete:
+            protection += f" (partial after retry: missing {', '.join(state.branch_protection_incomplete)})"
+        if state.branch_protection_retried:
+            protection += " (retried)"
+        parts = [protection]
+    elif state.branch_protection_error:
+        parts = [f"branch protection unknown ({state.branch_protection_error})"]
+    else:
+        parts = ["branch protection absent"]
     rulesets = _active_branch_rulesets(state.rulesets)
     if rulesets:
         names = ", ".join(str(ruleset.get("name") or ruleset.get("id")) for ruleset in rulesets)
-        parts.append(f"active branch rulesets: {names}")
+        retry_note = " (retried)" if state.rulesets_retried else ""
+        parts.append(f"active branch rulesets{retry_note}: {names}")
     elif state.rulesets is None:
-        parts.append("active branch rulesets: unknown")
+        parts.append(f"active branch rulesets: unknown ({state.rulesets_error})")
     else:
-        parts.append("active branch rulesets: none detected")
+        retry_note = " (retried)" if state.rulesets_retried else ""
+        parts.append(f"active branch rulesets{retry_note}: none detected")
     return "; ".join(parts)
 
 

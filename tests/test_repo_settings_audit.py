@@ -616,6 +616,116 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("match", _item(report, "branch up-to-date requirement").status)
         self.assertEqual("match", _item(report, "force-push and deletion restrictions").status)
 
+    def test_optional_hosted_call_succeeds_on_retry(self) -> None:
+        responses = _responses()
+        endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        responses[endpoint] = (
+            GhCommand(argv=("gh", "api", endpoint), returncode=1, stdout="", stderr="HTTP 502"),
+            responses[endpoint],
+        )
+        gh = FakeGh(responses)
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=gh,
+        )
+
+        self.assertEqual(2, _command_count(gh, endpoint))
+        self.assertEqual((), report.errors)
+        self.assertEqual("match", _item(report, "default branch protection or ruleset").status)
+        self.assertEqual("match", _item(report, "required status checks").status)
+
+    def test_optional_hosted_call_unavailable_after_retry_reports_reason(self) -> None:
+        responses = _responses()
+        endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        responses[endpoint] = (
+            GhCommand(argv=("gh", "api", endpoint), returncode=1, stdout="", stderr="HTTP 403"),
+            GhCommand(argv=("gh", "api", endpoint), returncode=1, stdout="", stderr="HTTP 403"),
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        branch_item = _item(report, "default branch protection or ruleset")
+        checks_item = _item(report, "required status checks")
+
+        self.assertEqual("unknown", branch_item.status)
+        self.assertIn("unknown_after_retry", branch_item.actual)
+        self.assertEqual("unknown", checks_item.status)
+        self.assertIn("unknown_after_retry", checks_item.actual)
+        self.assertTrue(any("unknown_after_retry" in error for error in report.errors))
+
+    def test_missing_branch_protection_reports_drift_when_policy_expects_protection(self) -> None:
+        responses = _responses()
+        endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        responses[endpoint] = GhCommand(
+            argv=("gh", "api", endpoint),
+            returncode=1,
+            stdout="",
+            stderr="HTTP 404 Not Found",
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        self.assertEqual("drift", _item(report, "default branch protection or ruleset").status)
+        self.assertEqual("drift", _item(report, "required status checks").status)
+        self.assertEqual("drift", _item(report, "required pull requests").status)
+        self.assertEqual("drift", _item(report, "branch up-to-date requirement").status)
+        self.assertEqual("drift", _item(report, "force-push and deletion restrictions").status)
+
+    def test_admin_bypass_unknown_after_retry_stays_unknown(self) -> None:
+        responses = _responses()
+        endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        partial = dict(responses[endpoint])
+        partial.pop("enforce_admins")
+        responses[endpoint] = (partial, dict(partial))
+        gh = FakeGh(responses)
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=gh,
+        )
+
+        item = _item(report, "review and administrator policy")
+
+        self.assertEqual(2, _command_count(gh, endpoint))
+        self.assertEqual("unknown", item.status)
+        self.assertIn("unknown_after_retry", item.actual)
+        self.assertIn("administrator bypass: unknown", item.actual)
+
+    def test_required_checks_absent_with_policy_requiring_checks_reports_drift(self) -> None:
+        responses = _responses()
+        endpoint = "/repos/ctrl-alt-keith/sample/branches/main/protection"
+        protection = dict(responses[endpoint])
+        protection.pop("required_status_checks")
+        responses[endpoint] = protection
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "required status checks")
+
+        self.assertEqual("drift", item.status)
+        self.assertEqual("make check", item.expected)
+        self.assertEqual("no required hosted status checks detected", item.actual)
+
     def test_json_report_marks_audit_read_only(self) -> None:
         report = audit_repo_settings(
             "ctrl-alt-keith/sample",
@@ -642,6 +752,9 @@ class FakeGh:
         self.commands.append(argv)
         endpoint = argv[-1]
         response = self.responses[endpoint]
+        if isinstance(response, tuple):
+            response = response[0]
+            self.responses[endpoint] = self.responses[endpoint][1:]
         if isinstance(response, GhCommand):
             return response
         return GhCommand(argv=argv, returncode=0, stdout=json.dumps(response), stderr="")
@@ -732,6 +845,10 @@ def _item(report, setting: str):
         if item.setting == setting:
             return item
     raise AssertionError(f"missing audit item: {setting}")
+
+
+def _command_count(gh: FakeGh, endpoint: str) -> int:
+    return sum(1 for command in gh.commands if command[-1] == endpoint)
 
 
 def _init_repo(repo: Path) -> None:
