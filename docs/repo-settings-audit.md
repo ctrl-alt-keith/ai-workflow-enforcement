@@ -64,10 +64,12 @@ The central baseline currently means:
 - default branch: `main`
 - pull requests required before merge
 - status checks required before merge
-- required status checks are strict/up-to-date
+- strict/up-to-date required checks are optional by default
 - force pushes on `main` disabled
 - branch deletions on `main` disabled
 - merge policy: squash-only
+- auto-merge disabled
+- delete branch on merge enabled
 - required approving reviews: `0`
 - administrator/owner self-merge allowed
 - Dependabot expected weekly when a supported ecosystem is present
@@ -95,7 +97,7 @@ currently enforces that behavior through classic branch protection or rulesets:
   declared in central overrides or explicit required-status-check governance
   sections
 - required pull request settings
-- branch up-to-date or strict status-check requirements
+- branch up-to-date or strict status-check posture
 - force-push and default-branch deletion restrictions
 - required approving review count and administrator bypass policy, when
   supported by branch-protection or ruleset-detail inspection
@@ -148,7 +150,7 @@ The audit normalizes these surfaces across both mechanisms:
 
 - pull-request requirement
 - required status check names
-- strict/up-to-date status checks
+- strict/up-to-date status-check posture
 - required approving review count
 - administrator bypass or self-merge
 - force-push restrictions
@@ -164,6 +166,41 @@ allow the relevant bypass.
 
 Human follow-up text may mention that hosted implementation differs by
 mechanism, but drift classification is based on effective policy behavior.
+
+## Strict Checks Posture
+
+The central solo-operator baseline treats strict/up-to-date required checks as
+optional. Requiring a pull request, requiring hosted checks, protecting the
+default branch from force pushes and deletion, and using squash-only merges are
+the baseline governance controls.
+
+Strict checks can still be useful for high-concurrency repositories because
+they require a pull request branch to be current with `main` before merge. In
+this repo family they are not baseline drift when disabled because most
+repositories are maintained by a solo operator and the extra update/retry loop
+adds routine maintenance friction without materially changing the required
+validation gate.
+
+Repos may still opt into strict checks with an explicit repo-local governance
+declaration such as `require branches up to date before merge: yes`. When a
+repo explicitly declares that requirement, the audit treats disabled hosted
+strict checks as drift.
+
+## Solo-Operator Merge Hygiene
+
+The central baseline keeps auto-merge disabled and enables delete branch on
+merge.
+
+Auto-merge stays disabled because it can move a pull request from reviewed to
+merged without a final explicit operator action once checks pass. That is useful
+for some high-throughput team queues, but it works against the repo family's
+human-controlled merge posture.
+
+Delete-branch-on-merge is baseline-enabled because the repo family uses
+squash-only pull requests and short-lived topic branches. Deleting merged
+branches reduces routine cleanup without changing review, validation, or merge
+authority. Repos that need long-lived merged branches should document and carry
+a central policy exception.
 
 ## Central Overrides
 

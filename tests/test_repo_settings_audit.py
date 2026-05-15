@@ -521,6 +521,29 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("match", _item(report, "merge method settings").status)
         self.assertEqual("match", _item(report, "review and administrator policy").status)
 
+    def test_baseline_strict_required_checks_are_optional(self) -> None:
+        responses = _responses()
+        responses["/repos/ctrl-alt-keith/sample/branches/main/protection"][
+            "required_status_checks"
+        ] = {
+            "strict": False,
+            "contexts": ["make check"],
+            "checks": [],
+        }
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "branch up-to-date requirement")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("branches up to date before merge: optional", item.expected)
+        self.assertEqual("no", item.actual)
+
     def test_central_private_override_matches_hosted_private_repo(self) -> None:
         repo = "ctrl-alt-keith/ai-workflow-incubator"
         responses = _responses(repo=repo, private=True)
@@ -651,6 +674,8 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertIn("merge commits: disabled", item.expected)
         self.assertIn("squash merges: enabled", item.expected)
         self.assertIn("rebase merges: disabled", item.expected)
+        self.assertIn("auto-merge: disabled", item.expected)
+        self.assertIn("delete branch on merge: enabled", item.expected)
 
     def test_squash_only_merge_policy_drifts_when_merge_or_rebase_is_enabled(self) -> None:
         responses = _responses(
@@ -676,6 +701,50 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertIn("rebase merges: disabled", item.expected)
         self.assertIn("merge commits: yes", item.actual)
         self.assertIn("rebase merges: yes", item.actual)
+
+    def test_merge_hygiene_baseline_drifts_when_auto_merge_or_branch_cleanup_differs(self) -> None:
+        responses = _responses(
+            allow_merge_commit=False,
+            allow_squash_merge=True,
+            allow_rebase_merge=False,
+            allow_auto_merge=True,
+            delete_branch_on_merge=False,
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("drift", item.status)
+        self.assertIn("auto-merge: disabled", item.expected)
+        self.assertIn("delete branch on merge: enabled", item.expected)
+        self.assertIn("auto-merge: yes", item.actual)
+        self.assertIn("delete branch on merge: no", item.actual)
+
+    def test_merge_hygiene_baseline_matches_disabled_auto_merge_and_branch_cleanup(self) -> None:
+        responses = _responses(
+            allow_merge_commit=False,
+            allow_squash_merge=True,
+            allow_rebase_merge=False,
+            allow_auto_merge=False,
+            delete_branch_on_merge=True,
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("match", item.status)
 
     def test_explicit_zero_review_solo_operator_policy_matches_hosted_settings(self) -> None:
         responses = _responses(required_review_count=0, enforce_admins=False)
@@ -764,6 +833,32 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("match", _item(report, "required pull requests").status)
         self.assertEqual("match", _item(report, "branch up-to-date requirement").status)
         self.assertEqual("match", _item(report, "force-push and deletion restrictions").status)
+
+    def test_explicit_up_to_date_policy_still_drifts_when_hosted_strict_checks_are_off(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- require branches up to date before merge: yes\n")
+        responses["/repos/ctrl-alt-keith/sample/branches/main/protection"][
+            "required_status_checks"
+        ] = {
+            "strict": False,
+            "contexts": ["make check"],
+            "checks": [],
+        }
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "branch up-to-date requirement")
+
+        self.assertEqual("drift", item.status)
+        self.assertEqual("branches up to date before merge: enabled", item.expected)
+        self.assertEqual("no", item.actual)
 
     def test_classic_branch_protection_matches_baseline_effective_policy(self) -> None:
         report = audit_repo_settings(
@@ -1214,7 +1309,7 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("drift", _item(report, "default branch protection or ruleset").status)
         self.assertEqual("drift", _item(report, "required status checks").status)
         self.assertEqual("drift", _item(report, "required pull requests").status)
-        self.assertEqual("drift", _item(report, "branch up-to-date requirement").status)
+        self.assertEqual("match", _item(report, "branch up-to-date requirement").status)
         self.assertEqual("drift", _item(report, "force-push and deletion restrictions").status)
 
     def test_admin_bypass_unknown_after_retry_stays_unknown(self) -> None:
@@ -1303,6 +1398,8 @@ def _responses(
     allow_merge_commit: bool = True,
     allow_squash_merge: bool = True,
     allow_rebase_merge: bool = False,
+    allow_auto_merge: bool = False,
+    delete_branch_on_merge: bool = True,
     required_review_count: int = 0,
     enforce_admins: bool = False,
     include_workflow: bool = True,
@@ -1341,8 +1438,8 @@ def _responses(
             "allow_merge_commit": allow_merge_commit,
             "allow_squash_merge": allow_squash_merge,
             "allow_rebase_merge": allow_rebase_merge,
-            "allow_auto_merge": False,
-            "delete_branch_on_merge": True,
+            "allow_auto_merge": allow_auto_merge,
+            "delete_branch_on_merge": delete_branch_on_merge,
         },
         f"/repos/{repo}/commits/{source_ref}": {"sha": "remote-sha"},
         f"/repos/{repo}/git/trees/remote-sha?recursive=1": {"tree": tree},
