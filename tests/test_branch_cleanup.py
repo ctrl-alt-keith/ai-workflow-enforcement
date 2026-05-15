@@ -229,13 +229,16 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("preserved", action.action)
         self.assertEqual("ambiguous remote ref name", action.reason)
 
-    def test_dot_github_is_conservative(self) -> None:
+    def test_dot_github_participates_in_normal_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp), name=".github")
+            _commit_and_merge_branch(repo, "done")
 
             report = cleanup_branches(BranchCleanupConfig(repositories=(RepoTarget(".github", repo),)))
 
-        self.assertEqual("conservative repository requires explicit human handling", report.repos[0].skipped)
+        action = _action(report, "done", "local", "normal_cleanup")
+        self.assertEqual("", report.repos[0].skipped)
+        self.assertEqual("would_delete", action.action)
 
     def test_dirty_repo_is_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

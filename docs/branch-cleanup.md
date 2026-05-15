@@ -30,9 +30,8 @@ The tool uses five phases:
 
 Dry-run is the default. Mutation is limited to `--apply`.
 
-The tool skips dirty repos, conservative repos such as `.github`, missing
-default remote refs, protected branches, symbolic remote refs, and ambiguous
-branch names.
+The tool skips dirty repos, missing default remote refs, protected branches,
+symbolic remote refs, and ambiguous branch names.
 
 For local branches checked out in linked worktrees, normal cleanup is allowed
 only when Git proves the branch is an ancestor of the remote default branch and
@@ -53,10 +52,6 @@ Codex command enforcement for this workflow should allow the direct Git argv
 forms needed for safe cleanup: `git worktree list --porcelain`, `git status
 --porcelain=v1 -z --untracked-files=all`, `git worktree remove <path>`, and
 the existing branch deletion forms such as `git branch -d -- <branch>`.
-
-Conservative repositories are skipped when config sets `"conservative": true`,
-when the repo name is `.github`, or when the configured repo path itself is
-named `.github`.
 
 Normal cleanup stays separate from stale cleanup. Normal cleanup uses Git
 ancestor proof. Stale cleanup requires config approval plus evidence such as a

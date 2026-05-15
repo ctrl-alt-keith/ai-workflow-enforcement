@@ -128,8 +128,7 @@ into a remediation platform. Dry-run mode does not fetch or prune; apply mode
 fetches/prunes first, so action lists may differ if remote refs changed.
 Clean linked worktrees for normally merged local branches are removed before
 branch deletion; linked worktrees with uncommitted or untracked changes are
-preserved. Conservative repositories are skipped by explicit config or
-`.github` repo/path naming. See `docs/branch-cleanup.md`.
+preserved. See `docs/branch-cleanup.md`.
 
 ## Org PR And Issue Scan
 
