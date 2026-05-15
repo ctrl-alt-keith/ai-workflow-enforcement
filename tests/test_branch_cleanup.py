@@ -13,6 +13,7 @@ from enforcement.branch_cleanup import (
     RepoTarget,
     StaleApproval,
     cleanup_branches,
+    cleanup_branches_with_retries,
     load_config,
     remote_branch_name,
 )
@@ -201,6 +202,59 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("deleted", action.action)
         self.assertNotEqual(0, ref_check.returncode)
 
+    def test_retry_normal_cleanup_deletes_remote_exposed_after_worktree_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "push", "origin", "done")
+            _git(repo, "fetch", "origin")
+            _git(repo, "worktree", "add", str(linked), "done")
+
+            report = cleanup_branches_with_retries(_config(repo), apply=True, max_apply_passes=3)
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/done")
+            remote_check = _git(repo, "ls-remote", "--heads", "origin", "done")
+
+        self.assertEqual("no normal_cleanup would_delete refs remain", report.stopped_reason)
+        self.assertGreaterEqual(len(report.reports), 5)
+        self.assertEqual("deleted", _action(report.reports[1], "done", "local", "normal_cleanup").action)
+        self.assertEqual("deleted", _action(report.reports[3], "done", "remote", "normal_cleanup").action)
+        self.assertNotEqual(0, ref_check.returncode)
+        self.assertEqual("", remote_check.stdout.strip())
+
+    def test_retry_normal_cleanup_preserves_approved_stale_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
+            oid = _git(repo, "rev-parse", "refs/heads/stale").stdout.strip()
+            approval = StaleApproval(
+                repo="sample",
+                scope="local",
+                branch="stale",
+                approved_by="keith",
+                reason="PR merged and local branch is stale",
+                evidence={
+                    "kind": "github_merged_pr",
+                    "pr_number": 456,
+                    "state": "MERGED",
+                    "merged_at": "2026-05-08T00:00:00Z",
+                    "head_oid": oid,
+                },
+            )
+
+            report = cleanup_branches_with_retries(
+                BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
+                apply=True,
+                max_apply_passes=2,
+            )
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/stale")
+
+        action = _action(report.reports[1], "stale", "local", "stale_cleanup")
+        self.assertEqual("preserved", action.action)
+        self.assertIn("stale cleanup requires single-pass --apply", action.reason)
+        self.assertEqual(0, ref_check.returncode)
+
     def test_ambiguous_ref_names_are_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
@@ -376,6 +430,82 @@ class BranchCleanupTests(unittest.TestCase):
         action = _action(report, "stale-patch", "local", "stale_cleanup")
         self.assertEqual("deleted", action.action)
         self.assertNotEqual(0, ref_check.returncode)
+
+    def test_stale_audit_reports_patch_equivalent_candidate_without_deleting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            _commit_branch(repo, "stale-patch", "patch.txt", "same change\n")
+            _git(repo, "switch", "main")
+            (repo / "patch.txt").write_text("same change\n", encoding="utf-8")
+            _git(repo, "add", "patch.txt")
+            _git(repo, "commit", "-m", "Add equivalent patch")
+            _git(repo, "push", "origin", "main")
+
+            report = cleanup_branches(_config(repo), audit_stale=True)
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/stale-patch")
+
+        action = _action(report, "stale-patch", "local", "stale_candidate_patch_equivalent")
+        self.assertEqual("report_only", action.action)
+        self.assertIn("git cherry", "\n".join(action.evidence))
+        self.assertEqual(0, ref_check.returncode)
+
+    def test_stale_audit_reports_dirty_worktree_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
+            _git(repo, "worktree", "add", str(linked), "stale")
+            (linked / "scratch.txt").write_text("pending\n", encoding="utf-8")
+
+            report = cleanup_branches(_config(repo), audit_stale=True)
+
+        action = _action(report, "stale", "local", "blocked_dirty_worktree")
+        self.assertEqual("report_only", action.action)
+        self.assertIn("untracked", action.reason)
+
+    def test_stale_audit_reports_merged_pr_exact_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
+            oid = _git(repo, "rev-parse", "refs/heads/stale").stdout.strip()
+
+            with mock.patch.object(
+                branch_cleanup,
+                "_gh",
+                return_value=branch_cleanup.GitCommand(
+                    ("gh",),
+                    0,
+                    f'[{{"number": 1, "state": "MERGED", "mergedAt": "2026-05-08T00:00:00Z", "headRefOid": "{oid}", "title": "Merged", "url": "https://example.test/pr/1"}}]',
+                    "",
+                ),
+            ):
+                report = cleanup_branches(_config(repo), audit_stale=True, audit_github_prs=True)
+
+        action = _action(report, "stale", "local", "stale_candidate_merged_pr_exact_head")
+        self.assertEqual("report_only", action.action)
+        self.assertIn("head SHA matches", action.reason)
+
+    def test_stale_audit_preserves_closed_unmerged_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
+
+            with mock.patch.object(
+                branch_cleanup,
+                "_gh",
+                return_value=branch_cleanup.GitCommand(
+                    ("gh",),
+                    0,
+                    '[{"number": 2, "state": "CLOSED", "mergedAt": null, "headRefOid": "abc", "title": "Closed", "url": "https://example.test/pr/2"}]',
+                    "",
+                ),
+            ):
+                report = cleanup_branches(_config(repo), audit_stale=True, audit_github_prs=True)
+
+        action = _action(report, "stale", "local", "closed_unmerged_preserve")
+        self.assertEqual("report_only", action.action)
+        self.assertIn("closed without merge", action.reason)
 
     def test_remote_branch_names_starting_with_dash_are_deleted_safely(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

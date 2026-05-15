@@ -100,6 +100,18 @@ class BranchCleanupReport:
     repos: tuple[RepoReport, ...]
 
 
+@dataclass(frozen=True)
+class BranchCleanupSequenceReport:
+    schema_version: int
+    report_type: str
+    dry_run: bool
+    started_at: str
+    finished_at: str
+    max_apply_passes: int
+    stopped_reason: str
+    reports: tuple[BranchCleanupReport, ...]
+
+
 def load_config(path: Path) -> BranchCleanupConfig:
     """Load branch cleanup JSON config, resolving repo paths near the config."""
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -116,10 +128,27 @@ def load_config(path: Path) -> BranchCleanupConfig:
     )
 
 
-def cleanup_branches(config: BranchCleanupConfig, *, apply: bool = False) -> BranchCleanupReport:
+def cleanup_branches(
+    config: BranchCleanupConfig,
+    *,
+    apply: bool = False,
+    audit_stale: bool = False,
+    audit_github_prs: bool = False,
+    apply_normal_only: bool = False,
+) -> BranchCleanupReport:
     """Run discover, audit, normal cleanup, approved stale cleanup, and report phases."""
     started = _utc_now()
-    repo_reports = tuple(_cleanup_repo(config, target, apply=apply) for target in config.repositories)
+    repo_reports = tuple(
+        _cleanup_repo(
+            config,
+            target,
+            apply=apply,
+            audit_stale=audit_stale,
+            audit_github_prs=audit_github_prs,
+            apply_normal_only=apply_normal_only,
+        )
+        for target in config.repositories
+    )
     finished = _utc_now()
     return BranchCleanupReport(
         schema_version=1,
@@ -130,10 +159,81 @@ def cleanup_branches(config: BranchCleanupConfig, *, apply: bool = False) -> Bra
     )
 
 
+def cleanup_branches_with_retries(
+    config: BranchCleanupConfig,
+    *,
+    apply: bool = False,
+    max_apply_passes: int = 3,
+    audit_stale: bool = False,
+    audit_github_prs: bool = False,
+) -> BranchCleanupSequenceReport:
+    """Run cleanup with bounded re-scans after successful normal cleanup applies."""
+    if max_apply_passes < 1:
+        raise ValueError("max apply passes must be at least 1")
+    started = _utc_now()
+    reports: list[BranchCleanupReport] = []
+    first = cleanup_branches(config, apply=False, audit_stale=audit_stale, audit_github_prs=audit_github_prs)
+    reports.append(first)
+    stopped_reason = "dry-run only; apply mode not requested"
+    if apply:
+        stopped_reason = "no normal_cleanup would_delete refs remain"
+        for pass_number in range(max_apply_passes):
+            if pass_number > 0 and not _has_normal_would_delete(reports[-1]):
+                break
+            reports.append(
+                cleanup_branches(
+                    config,
+                    apply=True,
+                    audit_stale=audit_stale,
+                    audit_github_prs=audit_github_prs,
+                    apply_normal_only=True,
+                )
+            )
+            rescan = cleanup_branches(config, apply=False, audit_stale=audit_stale, audit_github_prs=audit_github_prs)
+            reports.append(rescan)
+            if not _has_normal_would_delete(rescan):
+                break
+        else:
+            if _has_normal_would_delete(reports[-1]):
+                stopped_reason = f"max apply passes reached ({max_apply_passes})"
+    finished = _utc_now()
+    return BranchCleanupSequenceReport(
+        schema_version=1,
+        report_type="branch_cleanup_sequence",
+        dry_run=not apply,
+        started_at=started,
+        finished_at=finished,
+        max_apply_passes=max_apply_passes,
+        stopped_reason=stopped_reason,
+        reports=tuple(reports),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Plan or apply evidence-gated Git branch cleanup.")
     parser.add_argument("--config", required=True, type=Path, help="JSON branch cleanup configuration.")
     parser.add_argument("--apply", action="store_true", help="Mutate refs. Omit for dry-run planning.")
+    parser.add_argument(
+        "--retry-normal-cleanup",
+        action="store_true",
+        help="Run a bounded dry-run/apply/re-scan sequence for Git-proven normal cleanup only.",
+    )
+    parser.add_argument(
+        "--max-apply-passes",
+        type=int,
+        default=3,
+        help="Maximum apply passes for --retry-normal-cleanup. Default: 3.",
+    )
+    parser.add_argument(
+        "--audit-stale",
+        action="store_true",
+        help="Append report-only stale/non-ancestor validation classifications.",
+    )
+    parser.add_argument(
+        "--audit-github-prs",
+        action="store_true",
+        help="When auditing stale refs, query gh for associated PR state and head SHA evidence.",
+    )
     parser.add_argument(
         "--output-format",
         choices=("text", "json"),
@@ -146,16 +246,46 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        report = cleanup_branches(load_config(args.config), apply=args.apply)
+        config = load_config(args.config)
+        if args.retry_normal_cleanup:
+            report = cleanup_branches_with_retries(
+                config,
+                apply=args.apply,
+                max_apply_passes=args.max_apply_passes,
+                audit_stale=args.audit_stale,
+                audit_github_prs=args.audit_github_prs,
+            )
+        else:
+            report = cleanup_branches(config, apply=args.apply, audit_stale=args.audit_stale, audit_github_prs=args.audit_github_prs)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     if args.output_format == "json":
         print(render_json_report(report))
+    elif isinstance(report, BranchCleanupSequenceReport):
+        print(render_sequence_text_report(report))
     else:
         print(render_text_report(report))
     return 0
+
+
+def render_sequence_text_report(report: BranchCleanupSequenceReport) -> str:
+    mode = "dry-run" if report.dry_run else "apply"
+    lines = [
+        "Branch cleanup sequence report",
+        f"Mode: {mode}",
+        f"Started: {report.started_at}",
+        f"Finished: {report.finished_at}",
+        f"Max apply passes: {report.max_apply_passes}",
+        f"Stopped: {report.stopped_reason}",
+        "",
+    ]
+    for index, pass_report in enumerate(report.reports, start=1):
+        lines.append(f"== Pass {index}: {'dry-run' if pass_report.dry_run else 'apply'} ==")
+        lines.append(render_text_report(pass_report))
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def render_text_report(report: BranchCleanupReport) -> str:
@@ -191,7 +321,13 @@ def render_text_report(report: BranchCleanupReport) -> str:
     return "\n".join(lines).rstrip()
 
 
-def render_json_report(report: BranchCleanupReport) -> str:
+def render_json_report(report: BranchCleanupReport | BranchCleanupSequenceReport) -> str:
+    if isinstance(report, BranchCleanupSequenceReport):
+        return json.dumps(_sequence_report_to_json(report), indent=2, sort_keys=True)
+    return json.dumps(_cleanup_report_to_json(report), indent=2, sort_keys=True)
+
+
+def _cleanup_report_to_json(report: BranchCleanupReport) -> dict[str, object]:
     data = {
         "schema_version": report.schema_version,
         "report_type": "branch_cleanup",
@@ -221,7 +357,20 @@ def render_json_report(report: BranchCleanupReport) -> str:
             for repo in report.repos
         ],
     }
-    return json.dumps(data, indent=2, sort_keys=True)
+    return data
+
+
+def _sequence_report_to_json(report: BranchCleanupSequenceReport) -> dict[str, object]:
+    return {
+        "schema_version": report.schema_version,
+        "report_type": report.report_type,
+        "dry_run": report.dry_run,
+        "started_at": report.started_at,
+        "finished_at": report.finished_at,
+        "max_apply_passes": report.max_apply_passes,
+        "stopped_reason": report.stopped_reason,
+        "reports": [_cleanup_report_to_json(item) for item in report.reports],
+    }
 
 
 def remote_branch_name(refname: str, remote: str = "origin") -> str | None:
@@ -234,7 +383,15 @@ def remote_branch_name(refname: str, remote: str = "origin") -> str | None:
     return branch
 
 
-def _cleanup_repo(config: BranchCleanupConfig, target: RepoTarget, *, apply: bool) -> RepoReport:
+def _cleanup_repo(
+    config: BranchCleanupConfig,
+    target: RepoTarget,
+    *,
+    apply: bool,
+    audit_stale: bool,
+    audit_github_prs: bool,
+    apply_normal_only: bool,
+) -> RepoReport:
     report = RepoReport(repo=target.name, path=str(target.path))
     path = target.path
     if not path.exists():
@@ -291,8 +448,25 @@ def _cleanup_repo(config: BranchCleanupConfig, target: RepoTarget, *, apply: boo
     )
     report.actions.extend(normal)
     report.actions.extend(stale)
+    if audit_stale:
+        report.actions.extend(
+            _audit_stale_validation(
+                target,
+                default_branch,
+                default_ref,
+                config.protected_branches,
+                normal_keys,
+                local_refs,
+                remote_refs,
+                worktree_branches,
+                audit_github_prs=audit_github_prs,
+            )
+        )
     if apply:
-        report.actions = [_apply_action(path, target.remote, default_ref, action) for action in report.actions]
+        report.actions = [
+            _apply_action(path, target.remote, default_ref, action, normal_only=apply_normal_only)
+            for action in report.actions
+        ]
     return report
 
 
@@ -428,6 +602,175 @@ def _audit_stale_cleanup(
     return actions
 
 
+def _audit_stale_validation(
+    target: RepoTarget,
+    default_branch: str,
+    default_ref: str,
+    protected_branches: Iterable[str],
+    normal_keys: set[tuple[str, str]],
+    local_refs: tuple[RefInfo, ...],
+    remote_refs: tuple[RefInfo, ...],
+    worktree_branches: dict[str, str],
+    *,
+    audit_github_prs: bool,
+) -> list[BranchAction]:
+    actions: list[BranchAction] = []
+    path = target.path
+    for ref in local_refs:
+        branch = ref.branch
+        if ("local", branch) in normal_keys:
+            continue
+        if _branch_skip_reason(path, branch, default_branch, protected_branches):
+            continue
+        actions.append(
+            _stale_validation_action(
+                target,
+                "local",
+                branch,
+                ref.refname,
+                ref.oid,
+                default_ref,
+                worktree_branches,
+                audit_github_prs=audit_github_prs,
+            )
+        )
+
+    for ref in remote_refs:
+        branch = remote_branch_name(ref.refname, target.remote)
+        if branch is None or ("remote", branch) in normal_keys:
+            continue
+        if _branch_skip_reason(path, branch, default_branch, protected_branches):
+            continue
+        actions.append(
+            _stale_validation_action(
+                target,
+                "remote",
+                branch,
+                ref.refname,
+                ref.oid,
+                default_ref,
+                worktree_branches,
+                audit_github_prs=audit_github_prs,
+            )
+        )
+    return actions
+
+
+def _stale_validation_action(
+    target: RepoTarget,
+    scope: str,
+    branch: str,
+    refname: str,
+    oid: str,
+    default_ref: str,
+    worktree_branches: dict[str, str],
+    *,
+    audit_github_prs: bool,
+) -> BranchAction:
+    evidence = [f"tip={oid}", f"not auto-deleted: ref is not an ancestor of {default_ref}"]
+    worktree_path = worktree_branches.get(branch)
+    if worktree_path:
+        clean, reason = _worktree_is_clean(Path(worktree_path))
+        evidence.append(f"worktree={worktree_path}")
+        if clean:
+            evidence.append("worktree clean")
+        else:
+            evidence.append(reason)
+            return BranchAction(target.name, "blocked_dirty_worktree", scope, branch, "report_only", reason, tuple(evidence))
+
+    pr_evidence = _audit_pr_evidence(target.path, branch, oid) if audit_github_prs else _no_pr_audit_evidence()
+    evidence.extend(pr_evidence.evidence)
+    cherry = _git(target.path, "cherry", default_ref, refname)
+    cherry_lines = [line for line in cherry.stdout.splitlines() if line]
+    if cherry.returncode == 0:
+        evidence.append(f"git cherry lines={len(cherry_lines)}")
+        for line in cherry_lines:
+            evidence.append(f"git cherry {line}")
+    else:
+        evidence.append(f"git cherry failed: {cherry.stderr or cherry.stdout or cherry.returncode}")
+
+    if pr_evidence.classification == "closed_unmerged_preserve":
+        return BranchAction(target.name, "closed_unmerged_preserve", scope, branch, "report_only", pr_evidence.reason, tuple(evidence))
+    if pr_evidence.classification == "stale_candidate_merged_pr_exact_head":
+        return BranchAction(target.name, pr_evidence.classification, scope, branch, "report_only", pr_evidence.reason, tuple(evidence))
+    if cherry.returncode == 0 and cherry_lines and all(line.startswith("-") for line in cherry_lines):
+        return BranchAction(
+            target.name,
+            "stale_candidate_patch_equivalent",
+            scope,
+            branch,
+            "report_only",
+            f"git cherry reports branch patches are already present in {default_ref}",
+            tuple(evidence),
+        )
+    return BranchAction(
+        target.name,
+        "needs_human_review",
+        scope,
+        branch,
+        "report_only",
+        "non-ancestor ref is not proven safe by stale audit evidence",
+        tuple(evidence),
+    )
+
+
+@dataclass(frozen=True)
+class _PrEvidence:
+    classification: str
+    reason: str
+    evidence: tuple[str, ...]
+
+
+def _no_pr_audit_evidence() -> _PrEvidence:
+    return _PrEvidence("needs_human_review", "GitHub PR audit was not requested", ("GitHub PR audit not requested",))
+
+
+def _audit_pr_evidence(path: Path, branch: str, oid: str) -> _PrEvidence:
+    result = _gh(
+        path,
+        "pr",
+        "list",
+        "--state",
+        "all",
+        "--head",
+        branch,
+        "--json",
+        "number,state,mergedAt,headRefOid,title,url",
+        "--limit",
+        "10",
+    )
+    if result.returncode != 0:
+        detail = result.stderr or result.stdout or f"exit {result.returncode}"
+        return _PrEvidence("needs_human_review", "GitHub PR evidence is unavailable", (f"GitHub PR lookup failed: {detail}",))
+    try:
+        prs = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        return _PrEvidence("needs_human_review", "GitHub PR evidence is unavailable", (f"GitHub PR JSON parse failed: {exc}",))
+    if not prs:
+        return _PrEvidence("needs_human_review", "no associated GitHub PR found", ("GitHub PR lookup found no matching head branch",))
+    evidence: list[str] = []
+    closed_unmerged = False
+    for pr in prs:
+        number = pr.get("number")
+        state = str(pr.get("state", ""))
+        merged_at = str(pr.get("mergedAt") or "")
+        head_oid = str(pr.get("headRefOid") or "")
+        title = str(pr.get("title") or "")
+        url = str(pr.get("url") or "")
+        evidence.append(f"GitHub PR #{number} state={state} merged_at={merged_at or 'none'} head_oid={head_oid} title={title} url={url}")
+        if state == "MERGED" and merged_at and head_oid == oid:
+            return _PrEvidence(
+                "stale_candidate_merged_pr_exact_head",
+                f"GitHub merged PR #{number} head SHA matches branch tip",
+                tuple(evidence),
+            )
+        if state == "CLOSED" and not merged_at:
+            closed_unmerged = True
+    if closed_unmerged:
+        return _PrEvidence("closed_unmerged_preserve", "associated GitHub PR is closed without merge", tuple(evidence))
+    return _PrEvidence("needs_human_review", "GitHub PR evidence does not prove the branch tip was merged", tuple(evidence))
+
+
 def _stale_action(
     config: BranchCleanupConfig,
     target: RepoTarget,
@@ -461,9 +804,22 @@ def _stale_action(
     )
 
 
-def _apply_action(path: Path, remote: str, default_ref: str, action: BranchAction) -> BranchAction:
+def _apply_action(
+    path: Path,
+    remote: str,
+    default_ref: str,
+    action: BranchAction,
+    *,
+    normal_only: bool = False,
+) -> BranchAction:
     if action.action != "would_delete":
         return action
+    if normal_only and action.phase != "normal_cleanup":
+        return _replace_action(
+            action,
+            "preserved",
+            "not applied during retry-normal-cleanup; stale cleanup requires single-pass --apply",
+        )
     if action.scope == "local" and action.phase == "normal_cleanup":
         worktree_error = _remove_worktree_for_branch(path, action.branch, default_ref)
         if worktree_error:
@@ -510,6 +866,14 @@ def _validate_stale_approval(
             return True, (f"git cherry proves patch-equivalence to {default_ref}",)
         return False, (f"patch-equivalence evidence did not match {refname}",)
     return False, (f"unsupported stale evidence kind: {kind or 'missing'}",)
+
+
+def _has_normal_would_delete(report: BranchCleanupReport) -> bool:
+    return any(
+        action.phase == "normal_cleanup" and action.action == "would_delete"
+        for repo in report.repos
+        for action in repo.actions
+    )
 
 
 def _branch_skip_reason(
@@ -688,6 +1052,23 @@ def _git(cwd: Path, *argv: str) -> GitCommand:
     )
     return GitCommand(
         argv=("git",) + tuple(argv),
+        returncode=process.returncode,
+        stdout=process.stdout.strip(),
+        stderr=process.stderr.strip(),
+    )
+
+
+def _gh(cwd: Path, *argv: str) -> GitCommand:
+    process = subprocess.run(
+        ("gh",) + tuple(argv),
+        cwd=str(cwd),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+    )
+    return GitCommand(
+        argv=("gh",) + tuple(argv),
         returncode=process.returncode,
         stdout=process.stdout.strip(),
         stderr=process.stderr.strip(),
