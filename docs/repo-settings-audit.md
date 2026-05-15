@@ -57,6 +57,8 @@ follow-up for:
 - required pull request settings
 - branch up-to-date or strict status-check requirements, when documented
 - force-push and default-branch deletion restrictions, when documented
+- required approving review count and administrator bypass policy, when
+  documented
 - Actions workflow presence and hosted workflow state
 - Dependabot config presence, when documented
 - merge method settings as hosted values; prose-only policy mentions remain
@@ -77,6 +79,59 @@ required-check lists under governance or branch-protection sections. Prose-only
 mentions, workflow filenames, historical notes, command examples, and generic
 local validation guidance remain `unknown` instead of producing hosted-check
 drift.
+
+## Explicit Governance Declarations
+
+The audit classifies hosted policy only from explicit declarations. Ambiguous
+or prose-only governance remains `unknown` so maintainers can improve docs
+without the tool inventing expectations.
+
+Supported declaration formats include:
+
+- `repository visibility: private` or `repository visibility: public`
+- `default branch: main`
+- `require pull requests before merge: yes`
+- `require status checks before merge: yes`
+- `required status checks:` followed by a structured list of exact hosted check
+  names
+- `require branches up to date before merge: yes`
+- `required approving reviews: 0`
+- `administrator bypass: enabled`
+- `force pushes on main: disabled`
+- `deletions on main: disabled`
+- `merge policy: squash-only` or `merge methods: squash-only`
+- `squash merge: enabled`
+- `merge commits: disabled`
+- `rebase merge: disabled`
+- `solo-operator review policy: enabled`
+
+`solo-operator review policy: enabled` is shorthand for the solo-maintainer
+review posture used by this repo family:
+
+- pull requests are required before merge
+- status checks are required before merge
+- required approving reviews are intentionally `0`
+- administrator/owner self-merge is allowed
+
+It does not declare exact required check names. Add an explicit
+`required status checks:` list when exact hosted check comparison is intended.
+
+Example governance block:
+
+```md
+## Hosted Repository Settings
+
+- repository visibility: private
+- default branch: main
+- require pull requests before merge: yes
+- require status checks before merge: yes
+- require branches up to date before merge: yes
+- required approving reviews: 0
+- administrator bypass: enabled
+- force pushes on main: disabled
+- deletions on main: disabled
+- merge policy: squash-only
+```
 
 ## Safety Model
 

@@ -277,6 +277,63 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("unknown", item.status)
         self.assertIn("no visibility expectation", item.expected)
 
+    def test_private_visibility_expectation_matches_hosted_private_repo(self) -> None:
+        responses = _responses(private=True)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- repository visibility: private\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "repository visibility")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("private", item.expected)
+        self.assertEqual("private", item.actual)
+
+    def test_public_visibility_expectation_matches_hosted_public_repo(self) -> None:
+        responses = _responses(private=False)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- visibility: public\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "repository visibility")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("public", item.expected)
+        self.assertEqual("public", item.actual)
+
+    def test_visibility_drift_when_hosted_visibility_differs(self) -> None:
+        responses = _responses(private=False)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- repository visibility: private\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "repository visibility")
+
+        self.assertEqual("drift", item.status)
+        self.assertEqual("private", item.expected)
+        self.assertEqual("public", item.actual)
+
     def test_default_branch_protection_phrase_does_not_define_default_branch(self) -> None:
         responses = _responses()
         responses["/repos/ctrl-alt-keith/sample/contents/AGENTS.md?ref=remote-sha"] = _content(
@@ -295,8 +352,8 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
         item = _item(report, "default branch")
 
-        self.assertEqual("unknown", item.status)
-        self.assertIn("no default-branch expectation", item.expected)
+        self.assertEqual("match", item.status)
+        self.assertEqual("main", item.expected)
 
     def test_workflow_state_is_compared_to_remote_ref_files(self) -> None:
         responses = _responses()
@@ -345,6 +402,143 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertIn("squash merges: yes", item.actual)
         self.assertIn("Compare allowed merge methods manually", item.follow_up)
 
+    def test_squash_only_merge_policy_matches_hosted_settings(self) -> None:
+        responses = _responses(
+            allow_merge_commit=False,
+            allow_squash_merge=True,
+            allow_rebase_merge=False,
+        )
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- merge policy: squash-only\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("match", item.status)
+        self.assertIn("merge commits: disabled", item.expected)
+        self.assertIn("squash merges: enabled", item.expected)
+        self.assertIn("rebase merges: disabled", item.expected)
+
+    def test_squash_only_merge_policy_drifts_when_merge_or_rebase_is_enabled(self) -> None:
+        responses = _responses(
+            allow_merge_commit=True,
+            allow_squash_merge=True,
+            allow_rebase_merge=True,
+        )
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("- merge methods: squash-only\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("drift", item.status)
+        self.assertIn("merge commits: disabled", item.expected)
+        self.assertIn("rebase merges: disabled", item.expected)
+        self.assertIn("merge commits: yes", item.actual)
+        self.assertIn("rebase merges: yes", item.actual)
+
+    def test_explicit_zero_review_solo_operator_policy_matches_hosted_settings(self) -> None:
+        responses = _responses(required_review_count=0, enforce_admins=False)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "## Hosted Repository Settings\n\n"
+            "- solo-operator review policy: enabled\n"
+            "- require status checks before merge: yes\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        review_item = _item(report, "review and administrator policy")
+        pr_item = _item(report, "required pull requests")
+        checks_item = _item(report, "required status checks")
+
+        self.assertEqual("match", review_item.status)
+        self.assertEqual("required approving reviews: 0; administrator bypass: enabled", review_item.expected)
+        self.assertEqual("match", pr_item.status)
+        self.assertEqual("match", checks_item.status)
+
+    def test_review_admin_policy_drifts_when_hosted_settings_differ(self) -> None:
+        responses = _responses(required_review_count=1, enforce_admins=True)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "- required approving reviews: 0\n"
+            "- administrator bypass: enabled\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "review and administrator policy")
+
+        self.assertEqual("drift", item.status)
+        self.assertEqual("required approving reviews: 0; administrator bypass: enabled", item.expected)
+        self.assertEqual("required approving reviews: 1; administrator bypass: disabled", item.actual)
+
+    def test_ambiguous_review_admin_prose_remains_unknown(self) -> None:
+        responses = _responses(required_review_count=0, enforce_admins=False)
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content("The solo operator can review hosted settings when needed.\n")
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "review and administrator policy")
+
+        self.assertEqual("unknown", item.status)
+        self.assertIn("no review/admin expectation", item.expected)
+
+    def test_explicit_branch_protection_policy_matches_hosted_settings(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "- require pull requests before merge: yes\n"
+            "- require branches up to date before merge: yes\n"
+            "- force pushes on main: disabled\n"
+            "- deletions on main: disabled\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        self.assertEqual("match", _item(report, "required pull requests").status)
+        self.assertEqual("match", _item(report, "branch up-to-date requirement").status)
+        self.assertEqual("match", _item(report, "force-push and deletion restrictions").status)
+
     def test_json_report_marks_audit_read_only(self) -> None:
         report = audit_repo_settings(
             "ctrl-alt-keith/sample",
@@ -381,6 +575,12 @@ def _responses(
     source_ref: str = "main",
     required_check: str = "make check",
     hosted_check: str | None = None,
+    private: bool = False,
+    allow_merge_commit: bool = True,
+    allow_squash_merge: bool = True,
+    allow_rebase_merge: bool = False,
+    required_review_count: int = 0,
+    enforce_admins: bool = False,
 ) -> dict[str, object]:
     hosted_check = hosted_check or required_check
     governance_doc = (
@@ -403,11 +603,11 @@ def _responses(
         "/repos/ctrl-alt-keith/sample": {
             "name": "sample",
             "full_name": "ctrl-alt-keith/sample",
-            "private": False,
+            "private": private,
             "default_branch": "main",
-            "allow_merge_commit": True,
-            "allow_squash_merge": True,
-            "allow_rebase_merge": False,
+            "allow_merge_commit": allow_merge_commit,
+            "allow_squash_merge": allow_squash_merge,
+            "allow_rebase_merge": allow_rebase_merge,
             "allow_auto_merge": False,
             "delete_branch_on_merge": True,
         },
@@ -419,7 +619,10 @@ def _responses(
                 "contexts": [hosted_check],
                 "checks": [],
             },
-            "required_pull_request_reviews": {},
+            "required_pull_request_reviews": {
+                "required_approving_review_count": required_review_count,
+            },
+            "enforce_admins": {"enabled": enforce_admins},
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False},
         },

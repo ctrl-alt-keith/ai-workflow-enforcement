@@ -276,6 +276,7 @@ def _hosted_items(repo_root: Path, remote: RemoteSnapshot, state: HostedState) -
         _branch_rules_item(remote, state, expected),
         _required_checks_item(remote, state, expected),
         _pull_request_item(remote, state, expected),
+        _review_admin_item(remote, state, expected),
         _strict_checks_item(remote, state, expected),
         _force_delete_item(remote, state, expected),
         _actions_item(remote, state),
@@ -293,10 +294,15 @@ class ExpectedSettings:
     default_branch: str
     branch_rules: bool
     required_checks: tuple[str, ...]
-    required_prs: bool
-    strict_checks: bool
-    restrict_force_push_delete: bool
+    require_status_checks: bool | None
+    required_prs: bool | None
+    strict_checks: bool | None
+    force_pushes_allowed: bool | None
+    deletions_allowed: bool | None
+    required_approving_reviews: int | None
+    admin_bypass: bool | None
     dependabot: bool
+    merge_methods: dict[str, bool]
     merge_methods_documented: bool
     canonical_validation: str
 
@@ -304,28 +310,44 @@ class ExpectedSettings:
 def _expectations(remote: RemoteSnapshot) -> ExpectedSettings:
     text = remote.governance_text
     normalized = text.lower()
+    declarations = _explicit_declarations(text)
     required_checks = _documented_required_checks(text)
     canonical_validation = _canonical_validation(remote)
+    solo_operator = _bool_declaration(declarations, "solo-operator review policy")
+    required_prs = _documented_required_prs(declarations)
+    require_status_checks = _documented_require_status_checks(declarations)
+    required_reviews = _int_declaration(declarations, "required approving reviews")
+    admin_bypass = _bool_declaration(declarations, "administrator bypass")
+    if solo_operator is True:
+        required_prs = True if required_prs is None else required_prs
+        require_status_checks = True if require_status_checks is None else require_status_checks
+        required_reviews = 0 if required_reviews is None else required_reviews
+        admin_bypass = True if admin_bypass is None else admin_bypass
+    force_pushes_allowed = _bool_declaration(declarations, "force pushes on main")
+    deletions_allowed = _bool_declaration(declarations, "deletions on main")
     return ExpectedSettings(
-        visibility=_documented_visibility(normalized),
-        default_branch=_documented_default_branch(normalized),
-        branch_rules=_mentions_any(normalized, ("branch protection", "ruleset")),
+        visibility=_documented_visibility(declarations),
+        default_branch=_documented_default_branch(declarations) or "main",
+        branch_rules=bool(
+            required_prs
+            or require_status_checks
+            or required_checks
+            or _documented_strict_checks(declarations) is not None
+            or force_pushes_allowed is not None
+            or deletions_allowed is not None
+            or required_reviews is not None
+            or admin_bypass is not None
+        ),
         required_checks=required_checks,
-        required_prs="pull request" in normalized or "pull requests" in normalized,
-        strict_checks=_mentions_any(
-            normalized,
-            (
-                "up-to-date",
-                "up to date",
-                "strict required status",
-                "require branches to be up to date",
-            ),
-        ),
-        restrict_force_push_delete=_mentions_any(
-            normalized,
-            ("force push", "force-push", "deletion restriction", "branch deletion"),
-        ),
+        require_status_checks=require_status_checks,
+        required_prs=required_prs,
+        strict_checks=_documented_strict_checks(declarations),
+        force_pushes_allowed=force_pushes_allowed,
+        deletions_allowed=deletions_allowed,
+        required_approving_reviews=required_reviews,
+        admin_bypass=admin_bypass,
         dependabot="dependabot" in normalized,
+        merge_methods=_documented_merge_methods(declarations),
         merge_methods_documented=_mentions_any(
             normalized,
             ("squash merge", "merge commit", "rebase merge", "auto-merge"),
@@ -363,14 +385,28 @@ def _required_checks_item(remote: RemoteSnapshot, state: HostedState, expected: 
             if status == "drift"
             else "Confirm these required checks still map to the canonical validation path."
         )
+        expected_text = ", ".join(expected.required_checks)
+    elif expected.require_status_checks is True:
+        status = "match" if actual_checks else "drift"
+        follow_up = (
+            "Document exact hosted check names for stricter comparison."
+            if actual_checks
+            else "Require the hosted validation checks declared by source-of-truth governance docs."
+        )
+        expected_text = "hosted required status checks are explicitly required; exact names are not documented"
+    elif expected.require_status_checks is False:
+        status = "match" if not actual_checks else "drift"
+        follow_up = "Align hosted required checks with the explicit source-of-truth governance declaration."
+        expected_text = "no hosted required status checks"
     else:
         status = "unknown"
         follow_up = "Document required hosted checks before treating check configuration as drift."
+        expected_text = "no required-check expectation found"
 
     return AuditItem(
         setting="required status checks",
         status=status,
-        expected=", ".join(expected.required_checks) if expected.required_checks else "no required-check expectation found",
+        expected=expected_text,
         actual=", ".join(actual_checks) if actual_checks else "no required hosted status checks detected",
         source=_source(remote),
         follow_up=follow_up,
@@ -381,10 +417,10 @@ def _pull_request_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
     actual = _pull_request_required(state)
     return AuditItem(
         setting="required pull requests",
-        status=_compare_if_known(expected.required_prs, actual),
+        status=_compare_bool_if_known(expected.required_prs, actual),
         expected=(
-            "pull requests are documented for changes"
-            if expected.required_prs
+            f"pull requests before merge: {_enabled_disabled(expected.required_prs)}"
+            if expected.required_prs is not None
             else "no pull-request requirement found in source-of-truth docs"
         ),
         actual=_yes_no(actual),
@@ -397,14 +433,49 @@ def _pull_request_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
     )
 
 
+def _review_admin_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
+    actual_reviews = _required_approving_reviews(state)
+    actual_admin_bypass = _admin_bypass_enabled(state)
+    expected_parts: list[tuple[str, object | None, object | None]] = [
+        ("required approving reviews", expected.required_approving_reviews, actual_reviews),
+        ("administrator bypass", expected.admin_bypass, actual_admin_bypass),
+    ]
+    known_parts = [part for part in expected_parts if part[1] is not None]
+    if known_parts and any(actual is None for _, _, actual in known_parts):
+        status = "unknown"
+    elif known_parts:
+        status = "match" if all(expected_value == actual for _, expected_value, actual in known_parts) else "drift"
+    else:
+        status = "unknown"
+    return AuditItem(
+        setting="review and administrator policy",
+        status=status,
+        expected=(
+            "; ".join(_review_admin_part(label, value) for label, value, _ in known_parts)
+            if known_parts
+            else "no review/admin expectation found in source-of-truth docs"
+        ),
+        actual=(
+            f"required approving reviews: {_unknown_or_value(actual_reviews)}; "
+            f"administrator bypass: {_enabled_disabled_unknown(actual_admin_bypass)}"
+        ),
+        source=_source(remote),
+        follow_up=(
+            "Align hosted review/admin settings or source-of-truth governance docs."
+            if status == "drift"
+            else "Document review-count and administrator-bypass expectations before treating these settings as drift."
+        ),
+    )
+
+
 def _strict_checks_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     actual = _strict_status_checks(state)
     return AuditItem(
         setting="branch up-to-date requirement",
-        status=_compare_if_known(expected.strict_checks, actual),
+        status=_compare_bool_if_known(expected.strict_checks, actual),
         expected=(
-            "source-of-truth docs require up-to-date/strict status checks"
-            if expected.strict_checks
+            f"branches up to date before merge: {_enabled_disabled(expected.strict_checks)}"
+            if expected.strict_checks is not None
             else "no up-to-date requirement found in source-of-truth docs"
         ),
         actual=_yes_no_unknown(actual),
@@ -420,20 +491,34 @@ def _strict_checks_item(remote: RemoteSnapshot, state: HostedState, expected: Ex
 def _force_delete_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     force_allowed = _force_pushes_allowed(state)
     delete_allowed = _deletions_allowed(state)
-    restricted = force_allowed is False and delete_allowed is False
+    expected_parts: list[tuple[str, bool | None, bool | None]] = [
+        ("force pushes allowed", expected.force_pushes_allowed, force_allowed),
+        ("deletions allowed", expected.deletions_allowed, delete_allowed),
+    ]
+    known_parts = [part for part in expected_parts if part[1] is not None]
+    if known_parts and any(actual is None for _, _, actual in known_parts):
+        status = "unknown"
+    elif known_parts:
+        status = "match" if all(expected_value == actual for _, expected_value, actual in known_parts) else "drift"
+    else:
+        status = "unknown"
     return AuditItem(
         setting="force-push and deletion restrictions",
-        status=_compare_if_known(expected.restrict_force_push_delete, restricted),
+        status=status,
         expected=(
-            "source-of-truth docs mention force-push or deletion restrictions"
-            if expected.restrict_force_push_delete
+            "; ".join(
+                f"{label}: {_enabled_disabled(value)}"
+                for label, value, _ in known_parts
+                if value is not None
+            )
+            if known_parts
             else "no force-push/deletion restriction expectation found"
         ),
         actual=f"force pushes allowed: {_yes_no_unknown(force_allowed)}; deletions allowed: {_yes_no_unknown(delete_allowed)}",
         source=_source(remote),
         follow_up=(
             "Review hosted protection/ruleset restrictions manually; this audit is report-only."
-            if expected.restrict_force_push_delete and not restricted
+            if status == "drift"
             else "Document force-push/deletion expectations before treating this as drift."
         ),
     )
@@ -479,10 +564,19 @@ def _dependabot_item(remote: RemoteSnapshot, expected: ExpectedSettings) -> Audi
 
 
 def _merge_methods_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
+    actual = _merge_methods_actual(state)
+    known = expected.merge_methods
+    if known:
+        status = "match" if all(actual.get(method) == value for method, value in known.items()) else "drift"
+    else:
+        status = "unknown"
     return AuditItem(
         setting="merge method settings",
-        status="unknown",
+        status=status,
         expected=(
+            _describe_expected_merge_methods(known)
+            if known
+            else
             "source-of-truth docs mention merge methods, but no concrete expected settings are parsed"
             if expected.merge_methods_documented
             else "no concrete merge method expectation found in source-of-truth docs"
@@ -490,6 +584,9 @@ def _merge_methods_item(remote: RemoteSnapshot, state: HostedState, expected: Ex
         actual=_describe_merge_methods(state),
         source=_source(remote),
         follow_up=(
+            "Align hosted merge methods with explicit source-of-truth governance docs."
+            if status == "drift"
+            else
             "Compare allowed merge methods manually if the policy is prose-only, or document concrete merge-method expectations before enforcing this check."
             if expected.merge_methods_documented
             else "Document concrete merge-method expectations before treating these hosted settings as drift."
@@ -799,35 +896,126 @@ def _git_stdout(repo_root: Path, argv: tuple[str, ...]) -> str:
     return result.stdout.strip()
 
 
-def _documented_visibility(normalized: str) -> str:
-    match = re.search(
-        r"\b(?:repository|repo|hosted)?\s*visibility\s*(?::|=|is|should be)\s*`?(public|private)\b",
-        normalized,
-    )
-    if match:
-        return match.group(1)
-    match = re.search(
-        r"\bthis repository is (?:a )?`?(public|private)`? repository\b",
-        normalized,
-    )
-    if match:
-        return match.group(1)
+DeclarationMap = dict[str, tuple[str, ...]]
+
+
+def _explicit_declarations(text: str) -> DeclarationMap:
+    declarations: dict[str, list[str]] = {}
+    in_fenced_block = False
+    for line in text.splitlines():
+        if _is_fence(line):
+            in_fenced_block = not in_fenced_block
+            continue
+        if in_fenced_block or ":" not in line:
+            continue
+        stripped = line.strip().lstrip("-*").strip()
+        key, value = stripped.split(":", 1)
+        normalized_key = _normalize_declaration_key(key)
+        if normalized_key not in _supported_declaration_keys():
+            continue
+        clean_value = _clean_declaration_value(value)
+        if not clean_value:
+            continue
+        declarations.setdefault(normalized_key, []).append(clean_value)
+    return {key: tuple(values) for key, values in declarations.items()}
+
+
+def _supported_declaration_keys() -> set[str]:
+    return {
+        "administrator bypass",
+        "default branch",
+        "deletions on main",
+        "force pushes on main",
+        "merge commits",
+        "merge methods",
+        "merge policy",
+        "pull requests before merge",
+        "rebase merge",
+        "repository visibility",
+        "require branches up to date before merge",
+        "require pull requests before merge",
+        "require status checks before merge",
+        "required approving reviews",
+        "squash merge",
+        "solo-operator review policy",
+        "visibility",
+    }
+
+
+def _normalize_declaration_key(key: str) -> str:
+    return re.sub(r"\s+", " ", key.strip().lower())
+
+
+def _clean_declaration_value(value: str) -> str:
+    return value.strip().strip("`").strip().rstrip(".;").strip().strip("`").lower()
+
+
+def _last_declaration(declarations: DeclarationMap, *keys: str) -> str:
+    for key in keys:
+        values = declarations.get(key)
+        if values:
+            return values[-1]
     return ""
 
 
-def _documented_default_branch(normalized: str) -> str:
-    if "origin/main" in normalized or "target `main`" in normalized or "target main" in normalized:
-        return "main"
-    for pattern in (
-        r"\b(?:default branch|target|base branch)\s*(?::|=|is|should be)\s*`?([a-z0-9._/-]+)`?",
-        r"\b(?:target|base branch)\s+`([a-z0-9._/-]+)`",
-    ):
-        match = re.search(pattern, normalized)
-        if match:
-            branch = match.group(1).removeprefix("origin/")
-            if branch not in {"branch", "branches", "protection"}:
-                return branch
-    return ""
+def _documented_visibility(declarations: DeclarationMap) -> str:
+    value = _last_declaration(declarations, "repository visibility", "visibility")
+    return value if value in {"public", "private"} else ""
+
+
+def _documented_default_branch(declarations: DeclarationMap) -> str:
+    return _last_declaration(declarations, "default branch").removeprefix("origin/")
+
+
+def _documented_required_prs(declarations: DeclarationMap) -> bool | None:
+    return _bool_declaration(declarations, "require pull requests before merge", "pull requests before merge")
+
+
+def _documented_require_status_checks(declarations: DeclarationMap) -> bool | None:
+    return _bool_declaration(declarations, "require status checks before merge")
+
+
+def _documented_strict_checks(declarations: DeclarationMap) -> bool | None:
+    return _bool_declaration(declarations, "require branches up to date before merge")
+
+
+def _documented_merge_methods(declarations: DeclarationMap) -> dict[str, bool]:
+    policy = _last_declaration(declarations, "merge policy", "merge methods")
+    methods: dict[str, bool] = {}
+    if policy == "squash-only":
+        methods.update(
+            {
+                "allow_squash_merge": True,
+                "allow_merge_commit": False,
+                "allow_rebase_merge": False,
+            }
+        )
+    squash = _bool_declaration(declarations, "squash merge")
+    merge_commit = _bool_declaration(declarations, "merge commits")
+    rebase = _bool_declaration(declarations, "rebase merge")
+    if squash is not None:
+        methods["allow_squash_merge"] = squash
+    if merge_commit is not None:
+        methods["allow_merge_commit"] = merge_commit
+    if rebase is not None:
+        methods["allow_rebase_merge"] = rebase
+    return methods
+
+
+def _bool_declaration(declarations: DeclarationMap, *keys: str) -> bool | None:
+    value = _last_declaration(declarations, *keys)
+    if value in {"yes", "true", "enabled", "required", "require"}:
+        return True
+    if value in {"no", "false", "disabled", "not required"}:
+        return False
+    return None
+
+
+def _int_declaration(declarations: DeclarationMap, key: str) -> int | None:
+    value = _last_declaration(declarations, key)
+    if not re.fullmatch(r"\d+", value):
+        return None
+    return int(value)
 
 
 def _documented_required_checks(text: str) -> tuple[str, ...]:
@@ -997,6 +1185,12 @@ def _compare_if_known(expected: object, actual: object) -> str:
     return "match" if expected == actual else "drift"
 
 
+def _compare_bool_if_known(expected: bool | None, actual: bool | None) -> str:
+    if expected is None or actual is None:
+        return "unknown"
+    return "match" if expected == actual else "drift"
+
+
 def _visibility(state: HostedState) -> str:
     return "private" if bool(state.repo.get("private")) else "public"
 
@@ -1068,7 +1262,7 @@ def _required_checks(state: HostedState) -> tuple[str, ...]:
 
 
 def _pull_request_required(state: HostedState) -> bool:
-    if state.branch_protection and state.branch_protection.get("required_pull_request_reviews"):
+    if state.branch_protection and isinstance(state.branch_protection.get("required_pull_request_reviews"), dict):
         return True
     return "pull_request" in _rule_types(state.rulesets)
 
@@ -1107,6 +1301,34 @@ def _deletions_allowed(state: HostedState) -> bool | None:
             return bool(value["enabled"])
     if "deletion" in _rule_types(state.rulesets):
         return False
+    return None
+
+
+def _required_approving_reviews(state: HostedState) -> int | None:
+    reviews = state.branch_protection.get("required_pull_request_reviews") if state.branch_protection else None
+    if isinstance(reviews, dict):
+        count = reviews.get("required_approving_review_count")
+        if isinstance(count, int):
+            return count
+        return 0
+    for ruleset in _active_branch_rulesets(state.rulesets):
+        rules = ruleset.get("rules")
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            if not isinstance(rule, dict) or rule.get("type") != "pull_request":
+                continue
+            parameters = rule.get("parameters")
+            if isinstance(parameters, dict) and isinstance(parameters.get("required_approving_review_count"), int):
+                return int(parameters["required_approving_review_count"])
+    return 0 if _pull_request_required(state) else None
+
+
+def _admin_bypass_enabled(state: HostedState) -> bool | None:
+    if state.branch_protection:
+        enforce_admins = state.branch_protection.get("enforce_admins")
+        if isinstance(enforce_admins, dict) and isinstance(enforce_admins.get("enabled"), bool):
+            return not bool(enforce_admins["enabled"])
     return None
 
 
@@ -1166,6 +1388,34 @@ def _describe_merge_methods(state: HostedState) -> str:
     return "; ".join(f"{label}: {_yes_no_unknown(state.repo.get(field))}" for label, field in fields)
 
 
+def _merge_methods_actual(state: HostedState) -> dict[str, bool]:
+    methods: dict[str, bool] = {}
+    for field in ("allow_merge_commit", "allow_squash_merge", "allow_rebase_merge"):
+        value = state.repo.get(field)
+        if isinstance(value, bool):
+            methods[field] = value
+    return methods
+
+
+def _describe_expected_merge_methods(methods: dict[str, bool]) -> str:
+    labels = {
+        "allow_merge_commit": "merge commits",
+        "allow_squash_merge": "squash merges",
+        "allow_rebase_merge": "rebase merges",
+    }
+    return "; ".join(f"{labels[key]}: {_enabled_disabled(value)}" for key, value in sorted(methods.items()))
+
+
+def _review_admin_part(label: str, value: object) -> str:
+    if isinstance(value, bool):
+        return f"{label}: {_enabled_disabled(value)}"
+    return f"{label}: {value}"
+
+
+def _unknown_or_value(value: object) -> str:
+    return "unknown" if value is None else str(value)
+
+
 def _yes_no(value: bool) -> str:
     return "yes" if value else "no"
 
@@ -1174,6 +1424,18 @@ def _yes_no_unknown(value: object) -> str:
     if isinstance(value, bool):
         return "yes" if value else "no"
     return "unknown"
+
+
+def _enabled_disabled(value: bool | None) -> str:
+    if value is True:
+        return "enabled"
+    if value is False:
+        return "disabled"
+    return "unknown"
+
+
+def _enabled_disabled_unknown(value: bool | None) -> str:
+    return _enabled_disabled(value)
 
 
 def _source(remote: RemoteSnapshot) -> str:
