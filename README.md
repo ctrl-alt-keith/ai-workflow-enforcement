@@ -159,11 +159,12 @@ It fetches governance docs and config from a single GitHub source-of-truth ref,
 defaulting to `main`, then compares hosted settings such as default branch,
 branch protection or rulesets, required status checks, pull-request settings,
 up-to-date requirements, force-push/deletion restrictions, Actions workflows,
-Dependabot config presence, and merge method settings where the source docs
-document expectations. Local checkout state is reported separately so stale
-working-tree or local-branch docs do not silently define hosted expectations.
-Machine-readable JSON is available with `--output-format json`. See
-`docs/repo-settings-audit.md`.
+Dependabot config presence, and hosted merge method values. Prose-only merge
+method policy mentions remain advisory `unknown` until concrete expected
+settings are documented and parsed. Local checkout state is reported separately
+so stale working-tree or local-branch docs do not silently define hosted
+expectations. Machine-readable JSON is available with `--output-format json`.
+See `docs/repo-settings-audit.md`.
 
 ## Workflow Contracts
 

@@ -58,7 +58,8 @@ follow-up for:
 - force-push and default-branch deletion restrictions, when documented
 - Actions workflow presence and hosted workflow state
 - Dependabot config presence, when documented
-- merge method settings, when documented
+- merge method settings as hosted values; prose-only policy mentions remain
+  `unknown` until concrete expected settings are documented and parsed
 - repo-local governance docs and canonical local validation
 
 Statuses are advisory:

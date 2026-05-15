@@ -144,6 +144,28 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertIn("disabled_manually", item.actual)
         self.assertIn("Review disabled hosted workflows", item.follow_up)
 
+    def test_prose_merge_method_mention_reports_unknown_not_match(self) -> None:
+        responses = _responses()
+        responses[
+            "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
+        ] = _content(
+            "Use pull requests. Compare squash merge and merge commit settings during governance review.\n"
+        )
+
+        report = audit_repo_settings(
+            "ctrl-alt-keith/sample",
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("unknown", item.status)
+        self.assertIn("no concrete expected settings are parsed", item.expected)
+        self.assertIn("squash merges: yes", item.actual)
+        self.assertIn("Compare allowed merge methods manually", item.follow_up)
+
     def test_json_report_marks_audit_read_only(self) -> None:
         report = audit_repo_settings(
             "ctrl-alt-keith/sample",

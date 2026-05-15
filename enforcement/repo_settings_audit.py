@@ -491,18 +491,18 @@ def _dependabot_item(remote: RemoteSnapshot, expected: ExpectedSettings) -> Audi
 def _merge_methods_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     return AuditItem(
         setting="merge method settings",
-        status="unknown" if not expected.merge_methods_documented else "match",
+        status="unknown",
         expected=(
-            "source-of-truth docs mention merge method policy"
+            "source-of-truth docs mention merge methods, but no concrete expected settings are parsed"
             if expected.merge_methods_documented
-            else "no merge method expectation found in source-of-truth docs"
+            else "no concrete merge method expectation found in source-of-truth docs"
         ),
         actual=_describe_merge_methods(state),
         source=_source(remote),
         follow_up=(
-            "Compare allowed merge methods with documented policy."
+            "Compare allowed merge methods manually if the policy is prose-only, or document concrete merge-method expectations before enforcing this check."
             if expected.merge_methods_documented
-            else "Document merge method expectations before treating these hosted settings as drift."
+            else "Document concrete merge-method expectations before treating these hosted settings as drift."
         ),
     )
 
