@@ -5,7 +5,7 @@
     "default_branch": "main",
     "require_pull_requests": true,
     "require_status_checks": true,
-    "strict_required_checks": "optional",
+    "strict_required_checks": false,
     "force_pushes": "disabled",
     "branch_deletions": "disabled",
     "merge_policy": "squash-only",

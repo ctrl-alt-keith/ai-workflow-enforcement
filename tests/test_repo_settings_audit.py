@@ -521,7 +521,7 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("match", _item(report, "merge method settings").status)
         self.assertEqual("match", _item(report, "review and administrator policy").status)
 
-    def test_baseline_strict_required_checks_are_optional(self) -> None:
+    def test_baseline_strict_required_checks_are_disabled(self) -> None:
         responses = _responses()
         responses["/repos/ctrl-alt-keith/sample/branches/main/protection"][
             "required_status_checks"
@@ -541,7 +541,7 @@ class RepoSettingsAuditTests(unittest.TestCase):
         item = _item(report, "branch up-to-date requirement")
 
         self.assertEqual("match", item.status)
-        self.assertEqual("branches up to date before merge: optional", item.expected)
+        self.assertEqual("branches up to date before merge: disabled", item.expected)
         self.assertEqual("no", item.actual)
 
     def test_central_private_override_matches_hosted_private_repo(self) -> None:
@@ -814,6 +814,13 @@ class RepoSettingsAuditTests(unittest.TestCase):
 
     def test_explicit_branch_protection_policy_matches_hosted_settings(self) -> None:
         responses = _responses()
+        responses["/repos/ctrl-alt-keith/sample/branches/main/protection"][
+            "required_status_checks"
+        ] = {
+            "strict": True,
+            "contexts": ["make check"],
+            "checks": [],
+        }
         responses[
             "/repos/ctrl-alt-keith/sample/contents/docs/governance-ci.md?ref=remote-sha"
         ] = _content(
@@ -986,7 +993,7 @@ class RepoSettingsAuditTests(unittest.TestCase):
         ruleset_responses["/repos/ctrl-alt-keith/sample/rulesets/123"] = _ruleset_detail(
             current_user_can_bypass="always",
             include_deletion=True,
-            strict_checks=True,
+            strict_checks=False,
         )
         ruleset = audit_repo_settings(
             "ctrl-alt-keith/sample",
@@ -996,9 +1003,9 @@ class RepoSettingsAuditTests(unittest.TestCase):
         )
 
         self.assertEqual("match", _item(classic, "branch up-to-date requirement").status)
-        self.assertEqual("yes", _item(classic, "branch up-to-date requirement").actual)
+        self.assertEqual("no", _item(classic, "branch up-to-date requirement").actual)
         self.assertEqual("match", _item(ruleset, "branch up-to-date requirement").status)
-        self.assertEqual("yes", _item(ruleset, "branch up-to-date requirement").actual)
+        self.assertEqual("no", _item(ruleset, "branch up-to-date requirement").actual)
 
     def test_dependabot_github_actions_baseline_matches_weekly_config(self) -> None:
         responses = _responses(dependabot_config=_dependabot_config("github-actions"))
@@ -1445,7 +1452,7 @@ def _responses(
         f"/repos/{repo}/git/trees/remote-sha?recursive=1": {"tree": tree},
         f"/repos/{repo}/branches/main/protection": {
             "required_status_checks": {
-                "strict": True,
+                "strict": False,
                 "contexts": [hosted_check],
                 "checks": [],
             },
@@ -1493,7 +1500,7 @@ def _dependabot_config(*ecosystems: str, interval: str = "weekly") -> str:
 def _ruleset_detail(
     current_user_can_bypass: str,
     *,
-    strict_checks: bool = True,
+    strict_checks: bool = False,
     include_deletion: bool = False,
     bypass_actors: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:

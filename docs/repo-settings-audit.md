@@ -64,7 +64,7 @@ The central baseline currently means:
 - default branch: `main`
 - pull requests required before merge
 - status checks required before merge
-- strict/up-to-date required checks are optional by default
+- strict/up-to-date required checks disabled by default
 - force pushes on `main` disabled
 - branch deletions on `main` disabled
 - merge policy: squash-only
@@ -167,19 +167,18 @@ allow the relevant bypass.
 Human follow-up text may mention that hosted implementation differs by
 mechanism, but drift classification is based on effective policy behavior.
 
-## Strict Checks Posture
+## Strict Checks Policy
 
-The central solo-operator baseline treats strict/up-to-date required checks as
-optional. Requiring a pull request, requiring hosted checks, protecting the
+The central solo-operator baseline disables strict/up-to-date required checks
+by default. Requiring a pull request, requiring hosted checks, protecting the
 default branch from force pushes and deletion, and using squash-only merges are
 the baseline governance controls.
 
 Strict checks can still be useful for high-concurrency repositories because
 they require a pull request branch to be current with `main` before merge. In
-this repo family they are not baseline drift when disabled because most
-repositories are maintained by a solo operator and the extra update/retry loop
-adds routine maintenance friction without materially changing the required
-validation gate.
+this repo family they are disabled by default because most repositories are
+maintained by a solo operator and the extra update/retry loop adds routine
+maintenance friction without materially changing the required validation gate.
 
 Repos may still opt into strict checks with an explicit repo-local governance
 declaration such as `require branches up to date before merge: yes`. When a

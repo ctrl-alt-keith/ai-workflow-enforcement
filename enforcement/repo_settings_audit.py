@@ -323,7 +323,6 @@ class ExpectedSettings:
     require_status_checks: bool | None
     required_prs: bool | None
     strict_checks: bool | None
-    strict_checks_optional: bool
     force_pushes_allowed: bool | None
     deletions_allowed: bool | None
     required_approving_reviews: int | None
@@ -342,7 +341,6 @@ class CentralPolicy:
     require_status_checks: bool | None
     required_prs: bool | None
     strict_checks: bool | None
-    strict_checks_optional: bool
     force_pushes_allowed: bool | None
     deletions_allowed: bool | None
     required_approving_reviews: int | None
@@ -391,9 +389,7 @@ def _expectations(repo_data: dict[str, object], remote: RemoteSnapshot) -> Expec
     solo_operator = _bool_declaration(declarations, "solo-operator review policy")
     required_prs = _override_bool(policy.required_prs, _documented_required_prs(declarations))
     require_status_checks = _override_bool(policy.require_status_checks, _documented_require_status_checks(declarations))
-    documented_strict_checks = _documented_strict_checks(declarations)
-    strict_checks = _override_bool(policy.strict_checks, documented_strict_checks)
-    strict_checks_optional = policy.strict_checks_optional and documented_strict_checks is None
+    strict_checks = _override_bool(policy.strict_checks, _documented_strict_checks(declarations))
     required_reviews = _override_int(policy.required_approving_reviews, _int_declaration(declarations, "required approving reviews"))
     admin_bypass = _override_bool(policy.admin_bypass, _bool_declaration(declarations, "administrator bypass"))
     if solo_operator is True:
@@ -426,7 +422,6 @@ def _expectations(repo_data: dict[str, object], remote: RemoteSnapshot) -> Expec
         require_status_checks=require_status_checks,
         required_prs=required_prs,
         strict_checks=strict_checks,
-        strict_checks_optional=strict_checks_optional,
         force_pushes_allowed=force_pushes_allowed,
         deletions_allowed=deletions_allowed,
         required_approving_reviews=required_reviews,
@@ -604,24 +599,6 @@ def _review_admin_item(remote: RemoteSnapshot, state: HostedState, expected: Exp
 def _strict_checks_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     actual = _strict_status_checks(state)
     unknown_reason = _hosted_rule_unknown_reason(state) if actual is None else ""
-    if expected.strict_checks_optional:
-        status = "unknown" if unknown_reason else "match"
-        return AuditItem(
-            setting="branch up-to-date requirement",
-            status=status,
-            expected="branches up to date before merge: optional",
-            actual=(
-                f"up-to-date requirement unavailable ({unknown_reason})"
-                if unknown_reason
-                else _yes_no_unknown(actual)
-            ),
-            source=_source(remote),
-            follow_up=(
-                f"Retry completed, but hosted up-to-date state is still unavailable: {unknown_reason}."
-                if unknown_reason
-                else "Strict required checks are informational for the solo-operator baseline; keep or change them only after a repo-specific decision."
-            ),
-        )
     return AuditItem(
         setting="branch up-to-date requirement",
         status=_compare_bool_if_known(expected.strict_checks, actual),
@@ -1252,8 +1229,7 @@ def _central_policy(repo: str) -> CentralPolicy:
         required_checks=_policy_required_checks(merged.get("required_checks", ())),
         require_status_checks=_policy_bool(merged.get("require_status_checks")),
         required_prs=_policy_bool(merged.get("require_pull_requests")),
-        strict_checks=_policy_strict_checks(merged.get("strict_required_checks")),
-        strict_checks_optional=merged.get("strict_required_checks") in {"optional", "informational"},
+        strict_checks=_policy_bool(merged.get("strict_required_checks")),
         force_pushes_allowed=_enabled_policy_bool(merged.get("force_pushes")),
         deletions_allowed=_enabled_policy_bool(merged.get("branch_deletions")),
         required_approving_reviews=_policy_int(merged.get("required_approving_reviews")),
@@ -1287,10 +1263,6 @@ def _policy_string(policy: dict[str, object], key: str) -> str:
 
 
 def _policy_bool(value: object) -> bool | None:
-    return value if isinstance(value, bool) else None
-
-
-def _policy_strict_checks(value: object) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
