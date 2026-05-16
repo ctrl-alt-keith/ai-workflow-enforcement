@@ -445,6 +445,7 @@ def _cleanup_repo(
         local_refs,
         remote_refs,
         worktree_branches,
+        audit_github_prs=audit_github_prs,
     )
     report.actions.extend(normal)
     report.actions.extend(stale)
@@ -559,6 +560,8 @@ def _audit_stale_cleanup(
     local_refs: tuple[RefInfo, ...],
     remote_refs: tuple[RefInfo, ...],
     worktree_branches: dict[str, str],
+    *,
+    audit_github_prs: bool,
 ) -> list[BranchAction]:
     actions: list[BranchAction] = []
     path = target.path
@@ -577,7 +580,7 @@ def _audit_stale_cleanup(
         if reason:
             actions.append(_preserved(target.name, "stale_cleanup", "local", branch, reason))
             continue
-        actions.append(_stale_action(config, target, "local", branch, ref.refname, ref.oid, default_ref))
+        actions.append(_stale_action(config, target, "local", branch, ref.refname, ref.oid, default_ref, audit_github_prs=audit_github_prs))
 
     for ref in remote_refs:
         branch = remote_branch_name(ref.refname, target.remote)
@@ -598,7 +601,7 @@ def _audit_stale_cleanup(
         if remote_reason:
             actions.append(_preserved(target.name, "stale_cleanup", "remote", branch, remote_reason))
             continue
-        actions.append(_stale_action(config, target, "remote", branch, ref.refname, ref.oid, default_ref))
+        actions.append(_stale_action(config, target, "remote", branch, ref.refname, ref.oid, default_ref, audit_github_prs=audit_github_prs))
     return actions
 
 
@@ -779,6 +782,8 @@ def _stale_action(
     refname: str,
     oid: str,
     default_ref: str,
+    *,
+    audit_github_prs: bool,
 ) -> BranchAction:
     approval = _approval_for(config.stale_approvals, target.name, scope, branch)
     if approval is None:
@@ -790,16 +795,17 @@ def _stale_action(
             "non-ancestor ref requires explicit stale approval and evidence",
         )
 
-    valid, evidence = _validate_stale_approval(target.path, approval, refname, oid, default_ref)
+    valid, evidence = _validate_stale_approval(target.path, approval, refname, oid, default_ref, audit_github_prs=audit_github_prs)
     if not valid:
         return _preserved(target.name, "stale_cleanup", scope, branch, "stale approval evidence is incomplete or mismatched", evidence)
+    eligibility = evidence[0] if evidence else "approval evidence validated"
     return BranchAction(
         target.name,
         "stale_cleanup",
         scope,
         branch,
         "would_delete",
-        f"explicit stale approval from {approval.approved_by}: {approval.reason}",
+        f"explicit stale approval from {approval.approved_by}: {approval.reason}; eligible because {eligibility}",
         evidence,
     )
 
@@ -844,11 +850,21 @@ def _validate_stale_approval(
     refname: str,
     oid: str,
     default_ref: str,
+    *,
+    audit_github_prs: bool,
 ) -> tuple[bool, tuple[str, ...]]:
     evidence = approval.evidence
     kind = str(evidence.get("kind", ""))
     if not approval.approved_by or not approval.reason:
         return False, ("approval requires approved_by and reason",)
+    if kind == "github_merged_pr_exact_head":
+        if not audit_github_prs:
+            return False, ("live GitHub merged-PR exact-head approval requires --audit-github-prs",)
+        branch = approval.branch
+        pr_evidence = _audit_pr_evidence(path, branch, oid)
+        if pr_evidence.classification == "stale_candidate_merged_pr_exact_head":
+            return True, (pr_evidence.reason, *pr_evidence.evidence)
+        return False, (pr_evidence.reason, *pr_evidence.evidence)
     if kind == "github_merged_pr":
         state = str(evidence.get("state", ""))
         merged_at = str(evidence.get("merged_at", ""))
