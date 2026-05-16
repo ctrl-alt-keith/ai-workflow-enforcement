@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from enforcement.config import ScannerConfig
 from enforcement.drift_scanner import scan
@@ -1001,8 +1003,84 @@ class DriftScannerTests(unittest.TestCase):
 
         finding_paths = {finding.path.name for finding in result.advisory_findings}
         snippets = {finding.snippet for finding in result.advisory_findings}
-        self.assertIn("org-only", snippets)
+        self.assertIn("ctrl-alt-keith/org-only", snippets)
         self.assertIn("AGENTS.md", finding_paths)
+        self.assertNotIn("local-only", {finding.path.parent.name for finding in result.advisory_findings})
+
+    def test_workspace_scope_prefers_organization_enumeration_with_explicit_narrowing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            playbook = root / "playbook"
+            included = workspace / "included"
+            local_only = workspace / "local-only"
+            notes = root / "notes"
+            notes.mkdir()
+            playbook.mkdir()
+            included.mkdir(parents=True)
+            local_only.mkdir()
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (playbook / "baseline.md").write_text("workflow guidance", encoding="utf-8")
+            (included / "AGENTS.md").write_text("# AGENTS.md\n\nThin file.\n", encoding="utf-8")
+            (local_only / "AGENTS.md").write_text(
+                "# AGENTS.md\n\nPrefer direct git and gh commands.\n",
+                encoding="utf-8",
+            )
+            completed = subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout=(
+                    '[{"nameWithOwner":"ctrl-alt-keith/included"},'
+                    '{"nameWithOwner":"ctrl-alt-keith/org-only"}]'
+                ),
+                stderr="",
+            )
+
+            with patch("enforcement.drift_scanner.subprocess.run", return_value=completed) as run:
+                result = scan(
+                    ScannerConfig(
+                        notes_roots=(notes,),
+                        playbook_roots=(playbook,),
+                        workspace_root=workspace,
+                        organization="ctrl-alt-keith",
+                        organization_repositories=("ctrl-alt-keith/included", "ctrl-alt-keith/not-visible"),
+                    )
+                )
+
+        run.assert_called_once()
+        snippets = {finding.snippet for finding in result.advisory_findings}
+        finding_paths = {finding.path.name for finding in result.advisory_findings}
+        self.assertIn("ctrl-alt-keith/not-visible", snippets)
+        self.assertIn("AGENTS.md", finding_paths)
+        self.assertNotIn("local-only", {finding.path.parent.name for finding in result.advisory_findings})
+        self.assertNotIn("org-only", {finding.path.parent.name for finding in result.advisory_findings})
+
+    def test_workspace_scope_reports_unavailable_organization_inventory_without_filesystem_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            repo = workspace / "local-only"
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            repo.mkdir(parents=True)
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (playbook / "baseline.md").write_text("workflow guidance", encoding="utf-8")
+            (repo / "AGENTS.md").write_text("# AGENTS.md\n\nPrefer direct git and gh commands.\n", encoding="utf-8")
+
+            with patch("enforcement.drift_scanner.subprocess.run", side_effect=FileNotFoundError("gh")):
+                result = scan(
+                    ScannerConfig(
+                        notes_roots=(notes,),
+                        playbook_roots=(playbook,),
+                        workspace_root=workspace,
+                        organization="ctrl-alt-keith",
+                    )
+                )
+
+        self.assertEqual(("workspace_scope_inventory_unavailable",), tuple(f.kind for f in result.advisory_findings))
+        self.assertEqual("ctrl-alt-keith", result.advisory_findings[0].snippet)
         self.assertNotIn("local-only", {finding.path.parent.name for finding in result.advisory_findings})
 
 

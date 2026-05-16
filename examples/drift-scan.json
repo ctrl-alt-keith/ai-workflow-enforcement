@@ -2,6 +2,7 @@
   "notes_roots": ["../../ai-workflow-incubator"],
   "playbook_roots": ["../../ai-workflow-playbook/docs"],
   "workspace_root": "../..",
+  "organization": "ctrl-alt-keith",
   "organization_repositories": [
     "ctrl-alt-keith/.github",
     "ctrl-alt-keith/ai-workflow-incubator",

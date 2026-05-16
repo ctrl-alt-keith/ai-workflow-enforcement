@@ -25,6 +25,7 @@ class ScannerConfig:
     notes_roots: tuple[Path, ...]
     playbook_roots: tuple[Path, ...]
     workspace_root: Path | None = None
+    organization: str | None = None
     workspace_manifest: Path | None = None
     organization_repositories: tuple[str, ...] = ()
     ignore_patterns: tuple[str, ...] = DEFAULT_IGNORE_PATTERNS
@@ -53,6 +54,7 @@ def load_config(path: Path) -> ScannerConfig:
         notes_roots=_as_paths(data.get("notes_roots", ())),
         playbook_roots=_as_paths(data.get("playbook_roots", ())),
         workspace_root=_as_optional_path(data.get("workspace_root")),
+        organization=data.get("organization"),
         workspace_manifest=_as_optional_path(data.get("workspace_manifest")),
         organization_repositories=tuple(data.get("organization_repositories", ())),
         ignore_patterns=_combined_ignore_patterns(data.get("ignore", ())),
@@ -77,6 +79,7 @@ def merge_cli_config(
     min_phrase_matches: int | None,
     max_candidates: int | None,
     workspace_root: str | None = None,
+    organization: str | None = None,
     workspace_manifest: str | None = None,
     organization_repositories: Iterable[str] = (),
 ) -> ScannerConfig:
@@ -92,6 +95,8 @@ def merge_cli_config(
         )
     if workspace_root is not None:
         config = replace(config, workspace_root=Path(workspace_root))
+    if organization is not None:
+        config = replace(config, organization=organization)
     if workspace_manifest is not None:
         config = replace(config, workspace_manifest=Path(workspace_manifest))
     if organization_repositories:

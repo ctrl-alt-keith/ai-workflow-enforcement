@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fnmatch import fnmatch
+import json
 from pathlib import Path
 import re
+import subprocess
 
 from .config import ScannerConfig
 from .heuristics import (
@@ -395,62 +397,16 @@ def _load_documents(roots: tuple[Path, ...], ignore_patterns: tuple[str, ...]) -
 def _load_workspace_documents(config: ScannerConfig) -> _WorkspaceLoad:
     if config.workspace_root is None:
         return _WorkspaceLoad((), (), (), ())
-    organization_repositories = tuple(config.organization_repositories)
-    if config.workspace_manifest is None:
-        if organization_repositories:
-            active_repositories = organization_repositories
-            out_of_manifest: list[str] = []
-        else:
-            return _WorkspaceLoad(
-                (),
-                (),
-                (),
-                (
-                    AdvisoryFinding(
-                        kind="workspace_scope_missing_inventory",
-                        path=config.workspace_root,
-                        line=1,
-                        snippet="workspace root configured without explicit repository inventory",
-                        reasons=("raw local filesystem traversal is not authoritative workspace scope",),
-                        suggested_direction=(
-                            "Configure organization_repositories in the enforcement drift-scan config "
-                            "or pass an explicit workspace manifest owned by the caller."
-                        ),
-                    ),
-                ),
-            )
-    else:
-        manifest_repositories = _read_workspace_manifest(config.workspace_manifest)
-        organization_repository_names = _normalized_repository_names(organization_repositories)
-        if organization_repository_names:
-            active_repositories = tuple(
-                repo for repo in manifest_repositories if _repo_name(repo) in organization_repository_names
-            )
-            out_of_manifest = sorted(
-                organization_repository_names - {_repo_name(repo) for repo in manifest_repositories}
-            )
-        else:
-            active_repositories = manifest_repositories
-            out_of_manifest = []
+    inventory = _workspace_inventory(config)
+    if inventory.findings and not inventory.repositories:
+        return _WorkspaceLoad((), (), (), inventory.findings)
 
     documents: list[Document] = []
     agents_documents: list[Document] = []
     ignored_paths: list[Path] = []
-    findings: list[AdvisoryFinding] = []
-    if config.workspace_manifest is not None:
-        for repo in out_of_manifest:
-            findings.append(
-                AdvisoryFinding(
-                    kind="workspace_scope_inventory_mismatch",
-                    path=config.workspace_manifest,
-                    line=1,
-                    snippet=repo,
-                    reasons=("organization repository inventory is not present in workspace manifest",),
-                    suggested_direction="Reconcile scanner organization inventory with the configured workspace manifest.",
-                )
-            )
+    findings: list[AdvisoryFinding] = list(inventory.findings)
 
-    for repo in active_repositories:
+    for repo in inventory.repositories:
         repo_root = config.workspace_root / _repo_name(repo)
         if not repo_root.exists():
             findings.append(
@@ -472,6 +428,155 @@ def _load_workspace_documents(config: ScannerConfig) -> _WorkspaceLoad:
             agents_documents.append(Document(root=repo_root, path=agents_path, text=agents_path.read_text(encoding="utf-8")))
 
     return _WorkspaceLoad(tuple(documents), tuple(agents_documents), tuple(ignored_paths), tuple(findings))
+
+
+@dataclass(frozen=True)
+class _WorkspaceInventory:
+    repositories: tuple[str, ...]
+    findings: tuple[AdvisoryFinding, ...]
+
+
+def _workspace_inventory(config: ScannerConfig) -> _WorkspaceInventory:
+    explicit_repositories = tuple(config.organization_repositories)
+    manifest_repositories = _read_workspace_manifest(config.workspace_manifest) if config.workspace_manifest else ()
+    findings: list[AdvisoryFinding] = []
+
+    if config.organization:
+        organization_repositories, finding = _enumerate_organization_repositories(config.organization, config.workspace_root)
+        if finding is not None:
+            return _WorkspaceInventory((), (finding,))
+        active_repositories = organization_repositories
+        if explicit_repositories:
+            findings.extend(
+                _inventory_mismatch_findings(
+                    missing=_repositories_not_in(explicit_repositories, organization_repositories),
+                    path=config.workspace_root,
+                    reason="explicit repository inventory is not visible in organization enumeration",
+                    direction="Reconcile the scoped repository list with visible GitHub organization inventory.",
+                )
+            )
+            active_repositories = _intersect_repositories(active_repositories, explicit_repositories)
+        if manifest_repositories:
+            findings.extend(
+                _inventory_mismatch_findings(
+                    missing=_repositories_not_in(manifest_repositories, organization_repositories),
+                    path=config.workspace_manifest or config.workspace_root,
+                    reason="caller-owned manifest repository is not visible in organization enumeration",
+                    direction="Reconcile the caller-owned manifest with visible GitHub organization inventory.",
+                )
+            )
+            active_repositories = _intersect_repositories(active_repositories, manifest_repositories)
+        return _WorkspaceInventory(active_repositories, tuple(findings))
+
+    if explicit_repositories and manifest_repositories:
+        findings.extend(
+            _inventory_mismatch_findings(
+                missing=_repositories_not_in(explicit_repositories, manifest_repositories),
+                path=config.workspace_manifest or config.workspace_root,
+                reason="explicit repository inventory is not present in caller-owned workspace manifest",
+                direction="Reconcile explicit repository inventory with the configured caller-owned manifest.",
+            )
+        )
+        return _WorkspaceInventory(_intersect_repositories(manifest_repositories, explicit_repositories), tuple(findings))
+
+    if explicit_repositories:
+        return _WorkspaceInventory(explicit_repositories, ())
+    if manifest_repositories:
+        return _WorkspaceInventory(manifest_repositories, ())
+
+    return _WorkspaceInventory(
+        (),
+        (
+            AdvisoryFinding(
+                kind="workspace_scope_missing_inventory",
+                path=config.workspace_root,
+                line=1,
+                snippet="workspace root configured without authoritative repository inventory",
+                reasons=("raw local filesystem traversal is not authoritative workspace scope",),
+                suggested_direction=(
+                    "Configure a GitHub organization for enumeration, an explicit repository list, "
+                    "or a caller-owned workspace manifest before scanning workspace scope."
+                ),
+            ),
+        ),
+    )
+
+
+def _enumerate_organization_repositories(
+    organization: str,
+    workspace_root: Path,
+) -> tuple[tuple[str, ...], AdvisoryFinding | None]:
+    try:
+        completed = subprocess.run(
+            ("gh", "repo", "list", organization, "--json", "nameWithOwner", "--limit", "1000"),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return (), _inventory_unavailable_finding(organization, workspace_root, str(exc))
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"gh exited {completed.returncode}"
+        return (), _inventory_unavailable_finding(organization, workspace_root, detail)
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        return (), _inventory_unavailable_finding(organization, workspace_root, f"invalid gh JSON: {exc}")
+    if not isinstance(payload, list):
+        return (), _inventory_unavailable_finding(organization, workspace_root, "gh JSON was not a repository list")
+
+    repositories: list[str] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("nameWithOwner")
+        if isinstance(name, str) and name.strip():
+            repositories.append(name.strip())
+    return tuple(repositories), None
+
+
+def _inventory_unavailable_finding(organization: str, workspace_root: Path, detail: str) -> AdvisoryFinding:
+    return AdvisoryFinding(
+        kind="workspace_scope_inventory_unavailable",
+        path=workspace_root,
+        line=1,
+        snippet=organization,
+        reasons=(f"GitHub organization repository enumeration failed: {detail}",),
+        suggested_direction=(
+            "Retry with GitHub CLI access, or provide an explicit repository list "
+            "or caller-owned manifest for a scoped advisory scan."
+        ),
+    )
+
+
+def _inventory_mismatch_findings(
+    *,
+    missing: tuple[str, ...],
+    path: Path,
+    reason: str,
+    direction: str,
+) -> tuple[AdvisoryFinding, ...]:
+    return tuple(
+        AdvisoryFinding(
+            kind="workspace_scope_inventory_mismatch",
+            path=path,
+            line=1,
+            snippet=repo,
+            reasons=(reason,),
+            suggested_direction=direction,
+        )
+        for repo in missing
+    )
+
+
+def _repositories_not_in(repositories: tuple[str, ...], inventory: tuple[str, ...]) -> tuple[str, ...]:
+    inventory_names = _normalized_repository_names(inventory)
+    return tuple(sorted(repo for repo in repositories if _repo_name(repo) not in inventory_names))
+
+
+def _intersect_repositories(repositories: tuple[str, ...], allowed: tuple[str, ...]) -> tuple[str, ...]:
+    allowed_names = _normalized_repository_names(allowed)
+    return tuple(repo for repo in repositories if _repo_name(repo) in allowed_names)
 
 
 def _read_workspace_manifest(path: Path) -> tuple[str, ...]:
