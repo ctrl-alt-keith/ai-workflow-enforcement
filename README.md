@@ -125,14 +125,15 @@ refs with explicit `--apply`.
 python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json
 ```
 
-Stale cleanup requires config-supplied approval and evidence, such as merged PR
-metadata with a matching branch-tip OID. The tool does not call the GitHub API,
-write automation memory, schedule follow-up work, or broaden this repository
-into a remediation platform. Dry-run mode does not fetch or prune; apply mode
-fetches/prunes first, so action lists may differ if remote refs changed.
-Clean linked worktrees for normally merged local branches are removed before
-branch deletion; linked worktrees with uncommitted or untracked changes are
-preserved. See `docs/branch-cleanup.md`.
+Stale cleanup requires config-supplied approval and evidence, such as live
+GitHub merged-PR exact-head evidence with `--audit-github-prs` or recorded
+merged PR metadata with a matching branch-tip OID. The tool does not write
+automation memory, schedule follow-up work, or broaden this repository into a
+remediation platform. Dry-run mode does not fetch or prune; apply mode
+fetches/prunes first, so action lists may differ if remote refs changed. Clean
+linked worktrees for normally merged local branches are removed before branch
+deletion; linked worktrees with uncommitted or untracked changes are preserved.
+See `docs/branch-cleanup.md`.
 
 ## Org PR And Issue Scan
 
