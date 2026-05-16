@@ -12,6 +12,21 @@ Run an audit for one repository:
 python3 -m enforcement.repo_settings_audit --repo ctrl-alt-keith/example
 ```
 
+Run a hosted-only organization audit across visible repositories:
+
+```sh
+python3 -m enforcement.repo_settings_audit --org ctrl-alt-keith
+```
+
+Include local-source comparison only when the corresponding checkouts are
+available under one workspace root:
+
+```sh
+python3 -m enforcement.repo_settings_audit \
+  --org ctrl-alt-keith \
+  --workspace-root ~/src/ctrl-alt-keith
+```
+
 Use an explicit governance ref when `main` is not the intended source:
 
 ```sh
@@ -55,6 +70,13 @@ Instead, local state is reported separately:
 If local governance docs differ from the validated remote ref, the audit reports
 drift explicitly. This is meant to catch stale-local-state failures where a
 checkout is behind `origin/main` or has uncommitted governance edits.
+
+Organization-wide audits default to hosted-only reporting and do not run local
+checkout comparisons unless `--workspace-root` is supplied. When a workspace
+root is supplied, the audit maps each `owner/name` repository to
+`<workspace-root>/<name>` and only reads that path. It does not switch branches,
+clean worktrees, fetch refs, delete stale worktree metadata, or mutate local or
+hosted repository state.
 
 ## Central Baseline Policy
 
@@ -117,6 +139,12 @@ Statuses are advisory:
 - `drift`: state differs from the documented expectation
 - `unknown`: no documented expectation was found or a partial hosted surface
   could not be inspected
+
+Reports include both the legacy all-item `summary` and separate
+`hosted_governance_summary` and `local_source_summary` buckets. Use the hosted
+governance bucket for organization-level hosted drift conclusions. Local-source
+drift is still useful stale-checkout signal, but it does not mean the target
+repository's hosted governance has drifted.
 
 Before reporting hosted-state unknowns, the audit performs one bounded
 read-only retry for optional hosted API surfaces that commonly affect branch
@@ -362,7 +390,16 @@ or unable to read required metadata, the command fails clearly instead of
 guessing from local files.
 
 Use `--fail-on-drift` only when a caller intentionally wants a non-zero exit for
-drift findings. Unknowns remain advisory.
+hosted governance drift findings. Local-source drift and unknowns remain
+advisory.
+
+Use `--fail-on-error` for unattended automation that must fail when audit
+coverage is incomplete. In organization mode, per-repo runtime failures are
+aggregated into the org report's `errors` field so the report can still show
+which repositories succeeded; `--fail-on-error` turns those errors into a
+non-zero process exit. This is separate from drift classification: local-source
+drift remains advisory, and hosted governance drift is still controlled by
+`--fail-on-drift`.
 
 ## Automation Notes
 
@@ -374,8 +411,15 @@ Suggested maintenance automation identity:
 - Target scope: selected visible repositories where hosted governance settings
   should be compared with source-of-truth governance docs
 
-The automation prompt should name the repository set and source ref. It should
-not ask the tool or agent to remediate hosted settings. Hosted changes such as
-branch-protection updates, ruleset edits, visibility changes, and merge-method
-changes remain human/org-admin follow-up unless a separate, explicit task
-authorizes mutation.
+The automation prompt should name the repository set and source ref. For
+organization-wide reporting, prefer `--org` without `--workspace-root` when the
+goal is hosted governance drift reporting. Add `--workspace-root` only when the
+automation intentionally wants a separate advisory local-source freshness lane
+for matching local checkouts. Unattended org audits should use
+`--fail-on-error` so partial repository coverage cannot look operationally
+healthy.
+
+The prompt should not ask the tool or agent to remediate hosted settings.
+Hosted changes such as branch-protection updates, ruleset edits, visibility
+changes, and merge-method changes remain human/org-admin follow-up unless a
+separate, explicit task authorizes mutation.

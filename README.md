@@ -167,7 +167,20 @@ Dependabot config presence, and hosted merge method values. Prose-only merge
 method policy mentions remain advisory `unknown` until concrete expected
 settings are documented and parsed. Local checkout state is reported separately
 so stale working-tree or local-branch docs do not silently define hosted
-expectations. Machine-readable JSON is available with `--output-format json`.
+expectations.
+
+Organization-wide hosted reporting is available with `--org`. It suppresses
+local-source comparison by default so stale local checkouts do not look like
+hosted governance drift:
+
+```sh
+python3 -m enforcement.repo_settings_audit --org ctrl-alt-keith
+```
+
+When local checkouts are available, `--workspace-root` adds a separate
+read-only local-source lane by mapping each repo to
+`<workspace-root>/<repo-name>`. The audit does not switch branches or clean
+worktrees. Machine-readable JSON is available with `--output-format json`.
 See `docs/repo-settings-audit.md`.
 
 ## Workflow Contracts
