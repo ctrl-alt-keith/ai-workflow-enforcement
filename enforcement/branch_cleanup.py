@@ -576,11 +576,23 @@ def _audit_stale_cleanup(
             config.protected_branches,
         )
         if not reason:
-            reason = _worktree_branch_skip_reason(branch, worktree_branches)
+            reason = _worktree_delete_skip_reason(path, branch, worktree_branches)
         if reason:
             actions.append(_preserved(target.name, "stale_cleanup", "local", branch, reason))
             continue
-        actions.append(_stale_action(config, target, "local", branch, ref.refname, ref.oid, default_ref, audit_github_prs=audit_github_prs))
+        actions.append(
+            _stale_action(
+                config,
+                target,
+                "local",
+                branch,
+                ref.refname,
+                ref.oid,
+                default_ref,
+                worktree_branches,
+                audit_github_prs=audit_github_prs,
+            )
+        )
 
     for ref in remote_refs:
         branch = remote_branch_name(ref.refname, target.remote)
@@ -601,7 +613,19 @@ def _audit_stale_cleanup(
         if remote_reason:
             actions.append(_preserved(target.name, "stale_cleanup", "remote", branch, remote_reason))
             continue
-        actions.append(_stale_action(config, target, "remote", branch, ref.refname, ref.oid, default_ref, audit_github_prs=audit_github_prs))
+        actions.append(
+            _stale_action(
+                config,
+                target,
+                "remote",
+                branch,
+                ref.refname,
+                ref.oid,
+                default_ref,
+                worktree_branches,
+                audit_github_prs=audit_github_prs,
+            )
+        )
     return actions
 
 
@@ -782,6 +806,7 @@ def _stale_action(
     refname: str,
     oid: str,
     default_ref: str,
+    worktree_branches: dict[str, str],
     *,
     audit_github_prs: bool,
 ) -> BranchAction:
@@ -799,6 +824,10 @@ def _stale_action(
     if not valid:
         return _preserved(target.name, "stale_cleanup", scope, branch, "stale approval evidence is incomplete or mismatched", evidence)
     eligibility = evidence[0] if evidence else "approval evidence validated"
+    action_evidence = [f"tip={oid}", *evidence]
+    worktree_path = worktree_branches.get(branch)
+    if scope == "local" and worktree_path:
+        action_evidence.append(f"worktree={worktree_path} clean; apply will remove linked worktree before deleting branch")
     return BranchAction(
         target.name,
         "stale_cleanup",
@@ -806,7 +835,7 @@ def _stale_action(
         branch,
         "would_delete",
         f"explicit stale approval from {approval.approved_by}: {approval.reason}; eligible because {eligibility}",
-        evidence,
+        tuple(action_evidence),
     )
 
 
@@ -832,6 +861,9 @@ def _apply_action(
             return _replace_action(action, "failed", worktree_error)
         result = _git(path, "branch", "-d", "--", action.branch)
     elif action.scope == "local" and action.phase == "stale_cleanup":
+        worktree_error = _remove_stale_worktree_for_branch(path, action.branch, _action_tip_oid(action))
+        if worktree_error:
+            return _replace_action(action, "failed", worktree_error)
         result = _git(path, "branch", "-D", "--", action.branch)
     elif action.scope == "remote":
         result = _git(path, "push", remote, "--delete", "--", action.branch)
@@ -958,6 +990,36 @@ def _remove_worktree_for_branch(path: Path, branch: str, default_ref: str) -> st
     if result.returncode == 0:
         return ""
     return (result.stderr or result.stdout or "git worktree remove failed").splitlines()[0]
+
+
+def _remove_stale_worktree_for_branch(path: Path, branch: str, expected_oid: str) -> str:
+    worktree_branches = _worktree_branches(path)
+    raw_worktree_path = worktree_branches.get(branch)
+    if not raw_worktree_path:
+        return ""
+    if not expected_oid:
+        return "stale cleanup action is missing branch tip evidence"
+    reason = _worktree_delete_skip_reason(path, branch, worktree_branches)
+    if reason:
+        return reason
+    branch_ref = f"refs/heads/{branch}"
+    current = _git(path, "rev-parse", "--verify", branch_ref)
+    if current.returncode != 0:
+        return f"branch is no longer available: {branch_ref}"
+    current_oid = current.stdout.strip()
+    if current_oid != expected_oid:
+        return f"branch tip changed since stale approval planning: expected {expected_oid}, found {current_oid}"
+    result = _git(path, "worktree", "remove", raw_worktree_path)
+    if result.returncode == 0:
+        return ""
+    return (result.stderr or result.stdout or "git worktree remove failed").splitlines()[0]
+
+
+def _action_tip_oid(action: BranchAction) -> str:
+    for item in action.evidence:
+        if item.startswith("tip="):
+            return item.removeprefix("tip=")
+    return ""
 
 
 def _has_ambiguous_name(path: Path, branch: str) -> bool:

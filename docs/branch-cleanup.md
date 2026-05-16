@@ -52,6 +52,14 @@ clean linked worktree with `git worktree remove` before deleting the branch. It
 skips worktrees with uncommitted changes, untracked files, failed status
 inspection, or the configured target worktree itself.
 
+Approved stale cleanup mirrors that linked-worktree guard for local branches.
+If a non-ancestor local branch has explicit stale approval, matching evidence,
+and is checked out only in a clean linked worktree, dry-run reports it as
+`would_delete` and records that apply mode will remove the clean linked
+worktree before deleting the branch. Apply mode re-checks the worktree state
+and branch tip before removing the worktree. Dirty, uninspectable, target, and
+changed-tip worktrees remain preserve/fail closed.
+
 Built-in protected branches are always kept as a safety floor: `main`,
 `master`, `trunk`, and `develop`. Configured `protected_branches` add to that
 set; they do not replace it.
@@ -107,6 +115,11 @@ requires explicit `stale_approvals` entries in config, and apply mode deletes
 only stale refs whose configured approval evidence validates exactly.
 Closed-unmerged PR refs, dirty worktree refs, protected branches, ambiguous
 refs, and refs without matching evidence remain preserve-only.
+
+Remote stale refs stay conservative when a same-named local branch is checked
+out in any worktree, even if that linked worktree is clean. In that case the
+remote stale cleanup action is preserved so the local worktree can be handled
+first with a local approval or left intact intentionally.
 
 The library does not write automation memory or schedule work. GitHub PR audit
 evidence is retrieved only when `--audit-github-prs` is explicitly requested.

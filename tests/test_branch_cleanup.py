@@ -558,6 +558,121 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertIn("eligible because GitHub merged PR", action.reason)
         self.assertNotEqual(0, ref_check.returncode)
 
+    def test_approved_stale_local_branch_in_clean_linked_worktree_is_would_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
+            _git(repo, "worktree", "add", str(linked), "stale")
+            oid = _git(repo, "rev-parse", "refs/heads/stale").stdout.strip()
+            approval = StaleApproval(
+                repo="sample",
+                scope="local",
+                branch="stale",
+                approved_by="keith",
+                reason="merged PR exact-head evidence reviewed",
+                evidence={"kind": "github_merged_pr_exact_head"},
+            )
+
+            with mock.patch.object(branch_cleanup, "_gh", return_value=_merged_pr_command(oid)):
+                report = cleanup_branches(
+                    BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
+                    audit_stale=True,
+                    audit_github_prs=True,
+                )
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/stale")
+
+        action = _action(report, "stale", "local", "stale_cleanup")
+        self.assertEqual("would_delete", action.action)
+        self.assertIn("eligible because GitHub merged PR", action.reason)
+        self.assertIn("worktree=", "\n".join(action.evidence))
+        self.assertIn("apply will remove linked worktree", "\n".join(action.evidence))
+        self.assertEqual(0, ref_check.returncode)
+
+    def test_approved_stale_local_branch_in_clean_linked_worktree_apply_removes_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
+            _git(repo, "worktree", "add", str(linked), "stale")
+            oid = _git(repo, "rev-parse", "refs/heads/stale").stdout.strip()
+            approval = StaleApproval(
+                repo="sample",
+                scope="local",
+                branch="stale",
+                approved_by="keith",
+                reason="merged PR exact-head evidence reviewed",
+                evidence={"kind": "github_merged_pr_exact_head"},
+            )
+
+            with mock.patch.object(branch_cleanup, "_gh", return_value=_merged_pr_command(oid)):
+                report = cleanup_branches(
+                    BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
+                    apply=True,
+                    audit_stale=True,
+                    audit_github_prs=True,
+                )
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/stale")
+            linked_exists = linked.exists()
+
+        action = _action(report, "stale", "local", "stale_cleanup")
+        self.assertEqual("deleted", action.action)
+        self.assertFalse(linked_exists)
+        self.assertNotEqual(0, ref_check.returncode)
+
+    def test_stale_worktree_apply_revalidates_branch_tip_before_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
+            _git(repo, "worktree", "add", str(linked), "stale")
+            oid = _git(repo, "rev-parse", "refs/heads/stale").stdout.strip()
+            approval = StaleApproval(
+                repo="sample",
+                scope="local",
+                branch="stale",
+                approved_by="keith",
+                reason="merged PR exact-head evidence reviewed",
+                evidence={"kind": "github_merged_pr_exact_head"},
+            )
+            real_worktree_branches = branch_cleanup._worktree_branches
+            calls = 0
+
+            def worktree_branches_with_late_commit(path: Path) -> dict[str, str]:
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    (linked / "late.txt").write_text("late\n", encoding="utf-8")
+                    _git(linked, "add", "late.txt")
+                    _git(linked, "commit", "-m", "Late stale branch change")
+                return real_worktree_branches(path)
+
+            with (
+                mock.patch.object(branch_cleanup, "_gh", return_value=_merged_pr_command(oid)),
+                mock.patch.object(
+                    branch_cleanup,
+                    "_worktree_branches",
+                    side_effect=worktree_branches_with_late_commit,
+                ),
+            ):
+                report = cleanup_branches(
+                    BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
+                    apply=True,
+                    audit_stale=True,
+                    audit_github_prs=True,
+                )
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/stale")
+            linked_exists = linked.exists()
+
+        action = _action(report, "stale", "local", "stale_cleanup")
+        self.assertEqual("failed", action.action)
+        self.assertIn("branch tip changed since stale approval planning", action.reason)
+        self.assertTrue(linked_exists)
+        self.assertEqual(0, ref_check.returncode)
+
     def test_live_exact_head_approval_requires_github_pr_audit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
@@ -667,9 +782,45 @@ class BranchCleanupTests(unittest.TestCase):
         cleanup = _action(report, "stale", "local", "stale_cleanup")
         blocker = _action(report, "stale", "local", "blocked_dirty_worktree")
         self.assertEqual("preserved", cleanup.action)
-        self.assertIn("branch is checked out in worktree", cleanup.reason)
+        self.assertIn("worktree has untracked files", cleanup.reason)
         self.assertEqual("report_only", blocker.action)
         self.assertEqual(0, ref_check.returncode)
+
+    def test_remote_stale_ref_with_matching_clean_linked_worktree_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_branch(repo, "remote-stale", "remote-stale.txt", "unmerged\n")
+            _git(repo, "push", "origin", "remote-stale")
+            _git(repo, "fetch", "origin")
+            _git(repo, "worktree", "add", str(linked), "remote-stale")
+            oid = _git(repo, "rev-parse", "refs/remotes/origin/remote-stale").stdout.strip()
+            approval = StaleApproval(
+                repo="sample",
+                scope="remote",
+                branch="remote-stale",
+                approved_by="keith",
+                reason="merged PR exact-head evidence reviewed",
+                evidence={"kind": "github_merged_pr_exact_head"},
+            )
+
+            with mock.patch.object(branch_cleanup, "_gh", return_value=_merged_pr_command(oid)):
+                report = cleanup_branches(
+                    BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
+                    audit_stale=True,
+                    audit_github_prs=True,
+                )
+            remote_check = _git(repo, "ls-remote", "--heads", "origin", "remote-stale")
+            linked_exists = linked.exists()
+
+        cleanup = _action(report, "remote-stale", "remote", "stale_cleanup")
+        audit = _action(report, "remote-stale", "remote", "stale_candidate_merged_pr_exact_head")
+        self.assertEqual("preserved", cleanup.action)
+        self.assertIn("branch is checked out in worktree", cleanup.reason)
+        self.assertEqual("report_only", audit.action)
+        self.assertTrue(linked_exists)
+        self.assertIn("remote-stale", remote_check.stdout)
 
     def test_protected_stale_ref_is_preserved_even_with_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -787,6 +938,7 @@ def _make_repo(root: Path, name: str = "repo") -> Path:
     _git(repo, "init")
     _git(repo, "config", "user.email", "tests@example.com")
     _git(repo, "config", "user.name", "Tests")
+    _git(repo, "config", "commit.gpgsign", "false")
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-m", "Initial commit")
