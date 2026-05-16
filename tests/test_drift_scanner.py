@@ -201,7 +201,7 @@ class DriftScannerTests(unittest.TestCase):
         self.assertIn("agents_missing_canonical_playbook_reference", kinds)
         self.assertIn("weak_command_form_wording", kinds)
 
-    def test_agents_alignment_finds_missing_git_gh_execution_layer_guidance(self) -> None:
+    def test_agents_alignment_does_not_require_adapter_execution_layer_wording(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workspace = root / "workspace"
@@ -236,8 +236,7 @@ class DriftScannerTests(unittest.TestCase):
             finding for finding in result.advisory_findings
             if finding.kind == "agents_missing_command_form_guidance"
         ]
-        self.assertEqual(1, len(findings))
-        self.assertIn("git/gh execution-layer setting", findings[0].reasons)
+        self.assertEqual(0, len(findings))
 
     def test_agents_alignment_flags_large_canonical_duplication(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -647,6 +646,32 @@ class DriftScannerTests(unittest.TestCase):
             {finding.kind for finding in result.advisory_findings},
         )
 
+    def test_authority_language_skips_source_first_evidence_discussion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "staging.md").write_text(
+                "The assistant treated summaries as sufficiently authoritative.\n"
+                "Nearby derived state can outrank live retrievable\n"
+                "authoritative state. Stale repo summaries can become shadow authority surfaces.\n"
+                "- authoritative retrievable state: live repository, PR, issue, branch, CI, or source artifact state.\n"
+                "Stale uploaded operational summaries can become shadow authoritative surfaces.\n"
+                "Use live retrieval when authoritative sources are available.\n"
+                "Older notes were absorbed into canonical guidance or narrowed to provenance.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "noncanonical_authority_language",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
     def test_authority_language_skips_named_playbook_reference_explanations(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -919,6 +944,51 @@ class DriftScannerTests(unittest.TestCase):
             if "worktree" in finding.kind
         }
         self.assertEqual(set(), worktree_kinds)
+
+    def test_worktree_adapter_pointer_after_required_worktree_rule_is_not_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "guidance.md").write_text(
+                "Use the implementation-isolation rule: one repository, one branch, "
+                "one dedicated repo-local worktree, and one PR per change.\n"
+                "For Codex-specific worktree creation, reuse, cleanup, and parallel-batch "
+                "handling, follow the Codex adapter.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "worktree_creation_without_inspection_signal",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
+    def test_worktree_commands_run_records_are_not_guidance_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "audit.md").write_text(
+                "## Commands Run\n\n"
+                "- `git fetch origin main`\n"
+                "- `git worktree add .worktrees/example -b audit/example origin/main`\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "worktree_creation_without_inspection_signal",
+            {finding.kind for finding in result.advisory_findings},
+        )
 
     def test_branch_only_implementation_guidance_is_flagged_without_required_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

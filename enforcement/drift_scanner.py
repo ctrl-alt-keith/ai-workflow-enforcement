@@ -49,6 +49,9 @@ AUTHORITY_EXTERNAL_SOURCE_PHRASES = (
     "authoritative official",
     "ai workflow playbook as canonical",
     "ai workflow playbook is the canonical",
+    "absorbed into canonical guidance",
+    "authoritative retrievable state",
+    "authoritative sources are available",
     "can be authoritative for behavior claims",
     "canonical local validation",
     "canonical local blocking validation",
@@ -63,6 +66,7 @@ AUTHORITY_EXTERNAL_SOURCE_PHRASES = (
     "canonical validation",
     "github issues and prs remain authoritative",
     "implemented behavior",
+    "live retrievable authoritative state",
     "make check is the canonical",
     "official documentation",
     "playbook update task updates canonical guidance",
@@ -71,6 +75,7 @@ AUTHORITY_EXTERNAL_SOURCE_PHRASES = (
     "repository source of truth",
     "repository state",
     "risks acting like a second source of truth",
+    "when authoritative sources are available",
 )
 AUTHORITY_DISCUSSION_PHRASES = (
     "appear authoritative",
@@ -99,9 +104,11 @@ AUTHORITY_DISCUSSION_PHRASES = (
     "repo owns it as the canonical",
     "scratch artifacts are disposable",
     "shadow canonical risk",
+    "shadow authoritative surfaces",
     "source of truth language",
     "source of truth wording",
     "treating ai workflow incubator as canonical",
+    "sufficiently authoritative",
     "using canonical or source of truth language",
     "what would become canonical if promoted",
 )
@@ -186,6 +193,8 @@ WORKTREE_SELECTION_SIGNAL_RE = re.compile(
     r"\breuse\w*\b[^.\n]{0,100}\b(?:existing\s+)?(?:clean\s+)?(?:repo-local\s+)?worktree\b"
     r"|"
     r"\bexisting\s+(?:clean\s+)?(?:repo-local\s+)?worktree\b"
+    r"|"
+    r"\bone\s+dedicated\s+repo[-\s]+local\s+worktree\b"
     r"|"
     r"\b(?:select|choose|reuse|create|creating|use|using|set\s+up|setting\s+up)\w*\b"
     r"[^.\n]{0,160}\brepo-local\s+(?:git\s+)?worktree\b"
@@ -699,13 +708,13 @@ def _scan_agents_alignment(document: Document, playbook: tuple[Document, ...]) -
                 "Add a concise repo-local pointer to the playbook interaction-mode guidance.",
             )
         )
-    if not _has_full_command_form_guidance(normalized):
+    if not _has_full_command_form_guidance(normalized, require_execution_layer=False):
         findings.append(
             _finding(
                 "agents_missing_command_form_guidance",
                 document,
                 "Command-form guidance appears incomplete",
-                tuple(_command_form_gaps(normalized)),
+                tuple(_command_form_gaps(normalized, require_execution_layer=False)),
                 "Reinforce direct command form and wrapper-shell preflight without duplicating broad playbook policy.",
             )
         )
@@ -743,23 +752,26 @@ def _playbook_phrase_set(playbook: tuple[Document, ...]) -> set[str]:
     return phrases
 
 
-def _has_full_command_form_guidance(normalized: str) -> bool:
-    return not _command_form_gaps(normalized)
+def _has_full_command_form_guidance(normalized: str, *, require_execution_layer: bool = True) -> bool:
+    return not _command_form_gaps(normalized, require_execution_layer=require_execution_layer)
 
 
-def _command_form_gaps(normalized: str) -> list[str]:
-    required = (
+def _command_form_gaps(normalized: str, *, require_execution_layer: bool = True) -> list[str]:
+    required = [
         ("direct command execution", ("direct command", "direct git", "direct gh")),
         ("make command mention", ("make",)),
         ("python command mention", ("python",)),
         ("repo-local script or tool mention", ("repo local", "repo-local")),
         ("wrapper shell restriction", ("wrapper shell", "shell wrapper", "zsh lc", "bash lc", "sh c")),
         ("wrapper-shell preflight", ("preflight", "before using", "before choosing", "check whether")),
-        (
-            "git/gh execution-layer setting",
-            ("native argv", "shell false", "login false", "use shell false", "implicit shell", "login shell"),
-        ),
-    )
+    ]
+    if require_execution_layer:
+        required.append(
+            (
+                "git/gh execution-layer setting",
+                ("native argv", "shell false", "login false", "use shell false", "implicit shell", "login shell"),
+            )
+        )
     gaps: list[str] = []
     for label, options in required:
         if not any(option in normalized for option in options):
@@ -1123,6 +1135,8 @@ def _is_descriptive_worktree_record(line: str, context: str) -> bool:
     ):
         return True
     if "repository ran git worktree add in parallel" in normalized_line:
+        return True
+    if "commands run" in normalized_context and "git worktree add" in normalized_line:
         return True
     if re.match(r"^\s*\d+\.\s+[\w/-]*worktree creation\s*$", line):
         return True
