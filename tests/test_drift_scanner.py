@@ -124,15 +124,12 @@ class DriftScannerTests(unittest.TestCase):
             workspace = root / "workspace"
             playbook_root = workspace / "ai-workflow-playbook"
             playbook = playbook_root / "docs"
-            config_dir = playbook_root / "config"
             repo = workspace / "demo"
             notes = root / "notes"
             notes.mkdir()
             playbook.mkdir(parents=True)
-            config_dir.mkdir()
             repo.mkdir()
             (notes / "note.md").write_text("temporary note", encoding="utf-8")
-            (config_dir / "workspace-repos.txt").write_text("ctrl-alt-keith/demo\n", encoding="utf-8")
             (playbook / "repo-readiness.md").write_text(
                 "Before acting determine the interaction mode. Use implementation mode, "
                 "review/audit mode, or orchestration mode. For ordinary repository operations, "
@@ -163,7 +160,6 @@ class DriftScannerTests(unittest.TestCase):
                     notes_roots=(notes,),
                     playbook_roots=(playbook,),
                     workspace_root=workspace,
-                    workspace_manifest=config_dir / "workspace-repos.txt",
                     organization_repositories=("ctrl-alt-keith/demo",),
                 )
             )
@@ -176,15 +172,12 @@ class DriftScannerTests(unittest.TestCase):
             workspace = root / "workspace"
             playbook_root = workspace / "ai-workflow-playbook"
             playbook = playbook_root / "docs"
-            config_dir = playbook_root / "config"
             repo = workspace / "demo"
             notes = root / "notes"
             notes.mkdir()
             playbook.mkdir(parents=True)
-            config_dir.mkdir()
             repo.mkdir()
             (notes / "note.md").write_text("temporary note", encoding="utf-8")
-            (config_dir / "workspace-repos.txt").write_text("ctrl-alt-keith/demo\n", encoding="utf-8")
             (playbook / "start-here.md").write_text("ai-workflow-playbook guidance", encoding="utf-8")
             (repo / "AGENTS.md").write_text(
                 "# AGENTS.md\n\nPrefer direct git and gh commands.\n",
@@ -196,7 +189,7 @@ class DriftScannerTests(unittest.TestCase):
                     notes_roots=(notes,),
                     playbook_roots=(playbook,),
                     workspace_root=workspace,
-                    workspace_manifest=config_dir / "workspace-repos.txt",
+                    organization_repositories=("ctrl-alt-keith/demo",),
                 )
             )
 
@@ -212,15 +205,12 @@ class DriftScannerTests(unittest.TestCase):
             workspace = root / "workspace"
             playbook_root = workspace / "ai-workflow-playbook"
             playbook = playbook_root / "docs"
-            config_dir = playbook_root / "config"
             repo = workspace / "demo"
             notes = root / "notes"
             notes.mkdir()
             playbook.mkdir(parents=True)
-            config_dir.mkdir()
             repo.mkdir()
             (notes / "note.md").write_text("temporary note", encoding="utf-8")
-            (config_dir / "workspace-repos.txt").write_text("ctrl-alt-keith/demo\n", encoding="utf-8")
             (playbook / "start-here.md").write_text("ai-workflow-playbook guidance", encoding="utf-8")
             (repo / "AGENTS.md").write_text(
                 "# AGENTS.md\n\n"
@@ -236,7 +226,6 @@ class DriftScannerTests(unittest.TestCase):
                     notes_roots=(notes,),
                     playbook_roots=(playbook,),
                     workspace_root=workspace,
-                    workspace_manifest=config_dir / "workspace-repos.txt",
                     organization_repositories=("ctrl-alt-keith/demo",),
                 )
             )
@@ -254,12 +243,10 @@ class DriftScannerTests(unittest.TestCase):
             workspace = root / "workspace"
             playbook_root = workspace / "ai-workflow-playbook"
             playbook = playbook_root / "docs"
-            config_dir = playbook_root / "config"
             repo = workspace / "demo"
             notes = root / "notes"
             notes.mkdir()
             playbook.mkdir(parents=True)
-            config_dir.mkdir()
             repo.mkdir()
             repeated_policy = (
                 "Before acting determine the interaction mode and preserve implementation "
@@ -267,7 +254,6 @@ class DriftScannerTests(unittest.TestCase):
                 "git gh make python and repo-local scripts before choosing wrapper shells. "
             ) * 50
             (notes / "note.md").write_text("temporary note", encoding="utf-8")
-            (config_dir / "workspace-repos.txt").write_text("ctrl-alt-keith/demo\n", encoding="utf-8")
             (playbook / "repo-readiness.md").write_text(repeated_policy, encoding="utf-8")
             (repo / "AGENTS.md").write_text(
                 "# AGENTS.md\n\n"
@@ -284,7 +270,7 @@ class DriftScannerTests(unittest.TestCase):
                     notes_roots=(notes,),
                     playbook_roots=(playbook,),
                     workspace_root=workspace,
-                    workspace_manifest=config_dir / "workspace-repos.txt",
+                    organization_repositories=("ctrl-alt-keith/demo",),
                 )
             )
 
@@ -975,24 +961,25 @@ class DriftScannerTests(unittest.TestCase):
             {finding.kind for finding in result.advisory_findings},
         )
 
-    def test_workspace_scope_uses_manifest_and_organization_intersection(self) -> None:
+    def test_workspace_scope_uses_optional_manifest_and_organization_intersection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workspace = root / "workspace"
             playbook_root = workspace / "ai-workflow-playbook"
             playbook = playbook_root / "docs"
-            config_dir = playbook_root / "config"
+            inventory_dir = root / "inventory"
+            inventory_path = inventory_dir / "workspace-inventory.txt"
             included = workspace / "included"
             local_only = workspace / "local-only"
             notes = root / "notes"
             notes.mkdir()
             playbook.mkdir(parents=True)
-            config_dir.mkdir()
+            inventory_dir.mkdir()
             included.mkdir()
             local_only.mkdir()
             (notes / "note.md").write_text("temporary note", encoding="utf-8")
             (playbook / "baseline.md").write_text("workflow guidance", encoding="utf-8")
-            (config_dir / "workspace-repos.txt").write_text(
+            inventory_path.write_text(
                 "ctrl-alt-keith/included\nctrl-alt-keith/manifest-only\n",
                 encoding="utf-8",
             )
@@ -1007,7 +994,7 @@ class DriftScannerTests(unittest.TestCase):
                     notes_roots=(notes,),
                     playbook_roots=(playbook,),
                     workspace_root=workspace,
-                    workspace_manifest=config_dir / "workspace-repos.txt",
+                    workspace_manifest=inventory_path,
                     organization_repositories=("ctrl-alt-keith/included", "ctrl-alt-keith/org-only"),
                 )
             )

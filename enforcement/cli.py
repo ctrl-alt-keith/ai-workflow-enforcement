@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--notes-root", action="append", default=[], help="Filesystem root containing staging notes.")
     parser.add_argument("--playbook-root", action="append", default=[], help="Filesystem root containing canonical playbook guidance.")
     parser.add_argument("--workspace-root", type=str, help="Workspace root used with an explicit repository inventory.")
-    parser.add_argument("--workspace-manifest", type=str, help="Workspace repository manifest, such as config/workspace-repos.txt.")
+    parser.add_argument("--workspace-manifest", type=str, help="Optional caller-owned workspace repository manifest.")
     parser.add_argument(
         "--organization-repository",
         action="append",

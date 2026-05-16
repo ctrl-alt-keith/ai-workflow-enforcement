@@ -92,12 +92,12 @@ workflow-policy findings with kind, path, line, snippet, reasons, and suggested
 direction. It does not record workflow state, persist classifications, escalate
 findings, or describe remediation steps.
 
-For cross-repo advisory scans, provide an explicit workspace root and manifest.
-When organization repository inventory is available, pass it as
-`organization_repositories` in config or repeated `--organization-repository`
-CLI values. The scanner reconciles those inputs and scans only the active
-intersection. It does not treat raw local checkout layout as authoritative
-workspace scope.
+For cross-repo advisory scans, provide an explicit workspace root and scanner
+inventory. The example config owns its scope through `organization_repositories`;
+callers can also pass repeated `--organization-repository` CLI values. An
+optional caller-owned manifest can further narrow or reconcile that scope, but
+the scanner does not require a playbook-owned workspace manifest and does not
+treat raw local checkout layout as authoritative workspace scope.
 
 Render that JSON into a concise local review packet:
 

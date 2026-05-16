@@ -395,51 +395,60 @@ def _load_documents(roots: tuple[Path, ...], ignore_patterns: tuple[str, ...]) -
 def _load_workspace_documents(config: ScannerConfig) -> _WorkspaceLoad:
     if config.workspace_root is None:
         return _WorkspaceLoad((), (), (), ())
+    organization_repositories = tuple(config.organization_repositories)
     if config.workspace_manifest is None:
-        return _WorkspaceLoad(
-            (),
-            (),
-            (),
-            (
-                AdvisoryFinding(
-                    kind="workspace_scope_missing_inventory",
-                    path=config.workspace_root,
-                    line=1,
-                    snippet="workspace root configured without workspace manifest",
-                    reasons=("raw local filesystem traversal is not authoritative workspace scope",),
-                    suggested_direction=(
-                        "Configure the playbook workspace manifest and, when available, organization repository inventory."
+        if organization_repositories:
+            active_repositories = organization_repositories
+            out_of_manifest: list[str] = []
+        else:
+            return _WorkspaceLoad(
+                (),
+                (),
+                (),
+                (
+                    AdvisoryFinding(
+                        kind="workspace_scope_missing_inventory",
+                        path=config.workspace_root,
+                        line=1,
+                        snippet="workspace root configured without explicit repository inventory",
+                        reasons=("raw local filesystem traversal is not authoritative workspace scope",),
+                        suggested_direction=(
+                            "Configure organization_repositories in the enforcement drift-scan config "
+                            "or pass an explicit workspace manifest owned by the caller."
+                        ),
                     ),
                 ),
-            ),
-        )
-
-    manifest_repositories = _read_workspace_manifest(config.workspace_manifest)
-    organization_repositories = _normalized_repository_names(config.organization_repositories)
-    if organization_repositories:
-        active_repositories = tuple(
-            repo for repo in manifest_repositories if _repo_name(repo) in organization_repositories
-        )
-        out_of_manifest = sorted(organization_repositories - {_repo_name(repo) for repo in manifest_repositories})
+            )
     else:
-        active_repositories = manifest_repositories
-        out_of_manifest = []
+        manifest_repositories = _read_workspace_manifest(config.workspace_manifest)
+        organization_repository_names = _normalized_repository_names(organization_repositories)
+        if organization_repository_names:
+            active_repositories = tuple(
+                repo for repo in manifest_repositories if _repo_name(repo) in organization_repository_names
+            )
+            out_of_manifest = sorted(
+                organization_repository_names - {_repo_name(repo) for repo in manifest_repositories}
+            )
+        else:
+            active_repositories = manifest_repositories
+            out_of_manifest = []
 
     documents: list[Document] = []
     agents_documents: list[Document] = []
     ignored_paths: list[Path] = []
     findings: list[AdvisoryFinding] = []
-    for repo in out_of_manifest:
-        findings.append(
-            AdvisoryFinding(
-                kind="workspace_scope_inventory_mismatch",
-                path=config.workspace_manifest,
-                line=1,
-                snippet=repo,
-                reasons=("organization repository inventory is not present in workspace manifest",),
-                suggested_direction="Reconcile organization inventory with ai-workflow-playbook/config/workspace-repos.txt.",
+    if config.workspace_manifest is not None:
+        for repo in out_of_manifest:
+            findings.append(
+                AdvisoryFinding(
+                    kind="workspace_scope_inventory_mismatch",
+                    path=config.workspace_manifest,
+                    line=1,
+                    snippet=repo,
+                    reasons=("organization repository inventory is not present in workspace manifest",),
+                    suggested_direction="Reconcile scanner organization inventory with the configured workspace manifest.",
+                )
             )
-        )
 
     for repo in active_repositories:
         repo_root = config.workspace_root / _repo_name(repo)
