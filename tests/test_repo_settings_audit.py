@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 from pathlib import Path
 import subprocess
@@ -11,7 +13,11 @@ from unittest.mock import patch
 from enforcement import repo_settings_audit
 from enforcement.repo_settings_audit import (
     GhCommand,
+    audit_org_repo_settings,
     audit_repo_settings,
+    main,
+    render_org_json_report,
+    render_org_text_report,
     render_json_report,
     render_text_report,
 )
@@ -1377,6 +1383,196 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertIn("Read-only: yes", text)
         self.assertIn("Source-of-truth ref: main", text)
 
+    def test_json_report_separates_hosted_governance_from_local_source_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            _init_repo(repo)
+            _write(repo / "AGENTS.md", "Use pull requests. Target `main`.\n")
+            _git(repo, "add", ".")
+            _git(
+                repo,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--no-gpg-sign",
+                "-m",
+                "initial",
+            )
+
+            report = audit_repo_settings(
+                "ctrl-alt-keith/sample",
+                source_ref="main",
+                repo_root=repo,
+                runner=FakeGh(_clean_responses()),
+            )
+
+        data = json.loads(render_json_report(report))
+        text = render_text_report(report)
+
+        self.assertEqual(0, data["hosted_governance_summary"]["drift"])
+        self.assertGreater(data["local_source_summary"]["drift"], 0)
+        self.assertIn("Hosted governance summary: match=", text)
+        self.assertIn("Local source summary: match=", text)
+
+    def test_org_audit_without_workspace_root_is_hosted_only(self) -> None:
+        responses = {"__repo_list__": [{"nameWithOwner": "ctrl-alt-keith/sample"}]}
+        responses.update(_clean_responses())
+
+        report = audit_org_repo_settings("ctrl-alt-keith", runner=FakeGh(responses))
+
+        data = json.loads(render_org_json_report(report))
+        text = render_org_text_report(report)
+
+        self.assertEqual("org_repo_settings_audit", data["report_type"])
+        self.assertEqual("not_checked", data["local_source_mode"])
+        self.assertEqual({"match": 0, "drift": 0, "unknown": 0}, data["local_source_summary"])
+        self.assertEqual(0, data["hosted_governance_summary"]["drift"])
+        self.assertIn("Local source mode: not_checked", text)
+        self.assertIn("local repo root: not checked", text)
+
+    def test_org_audit_workspace_root_scopes_local_source_to_target_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            sample = workspace / "sample"
+            sample.mkdir()
+            _init_repo(sample)
+            _write(sample / "AGENTS.md", "Use pull requests. Target `main`.\n")
+            _git(sample, "add", ".")
+            _git(
+                sample,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--no-gpg-sign",
+                "-m",
+                "initial",
+            )
+            responses = {"__repo_list__": [{"nameWithOwner": "ctrl-alt-keith/sample"}]}
+            responses.update(_clean_responses())
+
+            report = audit_org_repo_settings(
+                "ctrl-alt-keith",
+                workspace_root=workspace,
+                runner=FakeGh(responses),
+            )
+
+        data = json.loads(render_org_json_report(report))
+        repo_report = data["reports"][0]
+
+        self.assertEqual("workspace_root", data["local_source_mode"])
+        self.assertEqual(str(sample), repo_report["local_repo_root"])
+        self.assertEqual(0, repo_report["hosted_governance_summary"]["drift"])
+        self.assertGreater(repo_report["local_source_summary"]["drift"], 0)
+
+    def test_org_audit_aggregates_per_repo_runtime_errors(self) -> None:
+        responses = {
+            "__repo_list__": [
+                {"nameWithOwner": "ctrl-alt-keith/sample"},
+                {"nameWithOwner": "ctrl-alt-keith/broken"},
+            ],
+            "/repos/ctrl-alt-keith/broken": GhCommand(
+                argv=("gh", "api", "/repos/ctrl-alt-keith/broken"),
+                returncode=1,
+                stdout="",
+                stderr="not found",
+            ),
+        }
+        responses.update(_clean_responses())
+
+        report = audit_org_repo_settings("ctrl-alt-keith", runner=FakeGh(responses))
+        data = json.loads(render_org_json_report(report))
+
+        self.assertEqual(("ctrl-alt-keith/broken", "ctrl-alt-keith/sample"), report.repositories)
+        self.assertEqual(("ctrl-alt-keith/sample",), tuple(repo.repository for repo in report.reports))
+        self.assertEqual(1, data["summary"]["audited_repository_count"])
+        self.assertEqual(2, data["summary"]["repository_count"])
+        self.assertEqual(1, len(data["errors"]))
+        self.assertIn("ctrl-alt-keith/broken", data["errors"][0])
+
+    def test_fail_on_error_exits_nonzero_for_org_runtime_errors(self) -> None:
+        responses = {
+            "__repo_list__": [
+                {"nameWithOwner": "ctrl-alt-keith/sample"},
+                {"nameWithOwner": "ctrl-alt-keith/broken"},
+            ],
+            "/repos/ctrl-alt-keith/broken": GhCommand(
+                argv=("gh", "api", "/repos/ctrl-alt-keith/broken"),
+                returncode=1,
+                stdout="",
+                stderr="not found",
+            ),
+        }
+        responses.update(_clean_responses())
+
+        code, stdout = _run_repo_settings_cli(
+            "--org",
+            "ctrl-alt-keith",
+            "--output-format",
+            "json",
+            "--fail-on-error",
+            runner=FakeGh(responses),
+        )
+        data = json.loads(stdout)
+
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(data["errors"]))
+        self.assertIn("ctrl-alt-keith/broken", data["errors"][0])
+
+    def test_fail_on_drift_ignores_local_source_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            _init_repo(repo)
+            _write(repo / "AGENTS.md", "Use pull requests. Target `main`.\n")
+            _git(repo, "add", ".")
+            _git(
+                repo,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--no-gpg-sign",
+                "-m",
+                "initial",
+            )
+
+            code, stdout = _run_repo_settings_cli(
+                "--repo",
+                "ctrl-alt-keith/sample",
+                "--repo-root",
+                str(repo),
+                "--output-format",
+                "json",
+                "--fail-on-drift",
+                runner=FakeGh(_clean_responses()),
+            )
+
+        data = json.loads(stdout)
+
+        self.assertEqual(0, code)
+        self.assertEqual(0, data["hosted_governance_summary"]["drift"])
+        self.assertGreater(data["local_source_summary"]["drift"], 0)
+
+    def test_fail_on_drift_exits_nonzero_for_hosted_governance_drift(self) -> None:
+        code, stdout = _run_repo_settings_cli(
+            "--repo",
+            "ctrl-alt-keith/sample",
+            "--repo-root",
+            "/does/not/exist",
+            "--output-format",
+            "json",
+            "--fail-on-drift",
+            runner=FakeGh(_responses()),
+        )
+        data = json.loads(stdout)
+
+        self.assertEqual(1, code)
+        self.assertGreater(data["hosted_governance_summary"]["drift"], 0)
+
 
 class FakeGh:
     def __init__(self, responses: dict[str, object]) -> None:
@@ -1385,11 +1581,11 @@ class FakeGh:
 
     def __call__(self, argv: tuple[str, ...]) -> GhCommand:
         self.commands.append(argv)
-        endpoint = argv[-1]
-        response = self.responses[endpoint]
+        key = "__repo_list__" if argv[:3] == ("gh", "repo", "list") else argv[-1]
+        response = self.responses[key]
         if isinstance(response, tuple):
             response = response[0]
-            self.responses[endpoint] = self.responses[endpoint][1:]
+            self.responses[key] = self.responses[key][1:]
         if isinstance(response, GhCommand):
             return response
         return GhCommand(argv=argv, returncode=0, stdout=json.dumps(response), stderr="")
@@ -1476,6 +1672,28 @@ def _responses(
     for path, text in files.items():
         responses[f"/repos/{repo}/contents/{path}?ref=remote-sha"] = _content(text)
     return responses
+
+
+def _clean_responses(repo: str = "ctrl-alt-keith/sample") -> dict[str, object]:
+    responses = _responses(
+        repo=repo,
+        allow_merge_commit=False,
+        dependabot_config=_dependabot_config("github-actions"),
+    )
+    responses[f"/repos/{repo}/contents/docs/governance-ci.md?ref=remote-sha"] = _content(
+        "Default branch `main` uses branch protection.\n"
+        "Required status checks: `make check`.\n"
+        "Pull requests are required.\n"
+        "Force-push and branch deletion restrictions are expected.\n"
+    )
+    return responses
+
+
+def _run_repo_settings_cli(*args: str, runner: FakeGh) -> tuple[int, str]:
+    stdout = StringIO()
+    with patch("enforcement.repo_settings_audit._gh", runner), redirect_stdout(stdout):
+        code = main(list(args))
+    return code, stdout.getvalue()
 
 
 def _content(text: str) -> dict[str, str]:

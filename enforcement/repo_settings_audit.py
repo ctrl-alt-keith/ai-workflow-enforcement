@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 DEFAULT_SOURCE_REF = "main"
 REPORT_TYPE = "repo_settings_audit"
+ORG_REPORT_TYPE = "org_repo_settings_audit"
 CENTRAL_POLICY_PATH = Path(__file__).resolve().parent.parent / "config" / "repo-settings-policy.json"
 WORKFLOW_SUFFIXES = (".yml", ".yaml")
 DEPENDABOT_PATHS = (".github/dependabot.yml", ".github/dependabot.yaml")
@@ -29,6 +30,12 @@ PYTHON_PACKAGE_METADATA_PATHS = ("pyproject.toml", "setup.cfg", "setup.py")
 LOCAL_GOVERNANCE_PREFIXES = ("docs/", ".github/workflows/")
 LOCAL_GOVERNANCE_NAMES = ("AGENTS.md", "README.md", "Makefile") + DEPENDABOT_PATHS
 SOURCE_METADATA_NAMES = PYTHON_PACKAGE_METADATA_PATHS
+LOCAL_SOURCE_SETTINGS = frozenset(
+    {
+        "local current branch vs source-of-truth ref",
+        "local governance docs vs source-of-truth ref",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -127,6 +134,22 @@ class RepoSettingsReport:
     errors: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class OrgRepoSettingsReport:
+    schema_version: int
+    report_type: str
+    read_only: bool
+    org: str
+    source_ref: str
+    local_source_mode: str
+    workspace_root: str
+    started_at: str
+    finished_at: str
+    repositories: tuple[str, ...]
+    reports: tuple[RepoSettingsReport, ...]
+    errors: tuple[str, ...] = ()
+
+
 Runner = Callable[[tuple[str, ...]], GhCommand]
 
 
@@ -134,7 +157,8 @@ def audit_repo_settings(
     repo: str,
     *,
     source_ref: str = DEFAULT_SOURCE_REF,
-    repo_root: Path = Path("."),
+    repo_root: Path | None = Path("."),
+    include_local_source: bool = True,
     runner: Runner | None = None,
 ) -> RepoSettingsReport:
     """Build a read-only settings report for one GitHub repository."""
@@ -147,10 +171,14 @@ def audit_repo_settings(
     remote = _fetch_remote_snapshot(gh, repo, source_ref, source_sha)
     hosted = _fetch_hosted_state(gh, repo, repo_data, errors)
 
+    local_items = []
+    if include_local_source:
+        local_root = repo_root or Path(".")
+        local_items = [_local_head_item(local_root, remote), _working_tree_item(local_root, remote)]
+
     items = [
-        _local_head_item(repo_root, remote),
-        _working_tree_item(repo_root, remote),
-        *_hosted_items(repo_root, remote, hosted),
+        *local_items,
+        *_hosted_items(remote, hosted),
     ]
     finished = _utc_now()
     return RepoSettingsReport(
@@ -160,7 +188,7 @@ def audit_repo_settings(
         repository=repo,
         source_ref=source_ref,
         source_sha=source_sha,
-        local_repo_root=str(repo_root),
+        local_repo_root=str(repo_root) if include_local_source and repo_root is not None else "",
         started_at=started,
         finished_at=finished,
         items=tuple(items),
@@ -168,9 +196,54 @@ def audit_repo_settings(
     )
 
 
+def audit_org_repo_settings(
+    org: str,
+    *,
+    source_ref: str = DEFAULT_SOURCE_REF,
+    workspace_root: Path | None = None,
+    runner: Runner | None = None,
+) -> OrgRepoSettingsReport:
+    """Build a read-only settings report for all visible repositories in an organization."""
+    started = _utc_now()
+    gh = runner or _gh
+    repositories, errors = _fetch_org_repositories(org, gh)
+    reports: list[RepoSettingsReport] = []
+    include_local_source = workspace_root is not None
+    for repo in repositories:
+        try:
+            reports.append(
+                audit_repo_settings(
+                    repo,
+                    source_ref=source_ref,
+                    repo_root=_org_local_repo_root(repo, workspace_root),
+                    include_local_source=include_local_source,
+                    runner=gh,
+                )
+            )
+        except RuntimeError as exc:
+            errors.append(f"{repo}: {exc}")
+    finished = _utc_now()
+    return OrgRepoSettingsReport(
+        schema_version=1,
+        report_type=ORG_REPORT_TYPE,
+        read_only=True,
+        org=org,
+        source_ref=source_ref,
+        local_source_mode="workspace_root" if include_local_source else "not_checked",
+        workspace_root=str(workspace_root) if workspace_root else "",
+        started_at=started,
+        finished_at=finished,
+        repositories=tuple(repositories),
+        reports=tuple(reports),
+        errors=tuple(errors),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Read-only GitHub repository settings audit.")
-    parser.add_argument("--repo", required=True, help="GitHub repository in owner/name form.")
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--repo", help="GitHub repository in owner/name form.")
+    target.add_argument("--org", help="GitHub organization whose visible repositories should be audited.")
     parser.add_argument(
         "--source-ref",
         default=DEFAULT_SOURCE_REF,
@@ -183,6 +256,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Local checkout used only for stale-local-state reporting.",
     )
     parser.add_argument(
+        "--workspace-root",
+        type=Path,
+        help=(
+            "Workspace root used in --org mode to scope local-source checks to "
+            "<workspace-root>/<repo-name>. Without this, org audits are hosted-only."
+        ),
+    )
+    parser.add_argument(
         "--output-format",
         choices=("text", "json"),
         default="text",
@@ -191,7 +272,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fail-on-drift",
         action="store_true",
-        help="Exit 1 if any audit item reports drift. Unknowns remain advisory.",
+        help="Exit 1 if hosted governance reports drift. Local-source drift remains advisory.",
+    )
+    parser.add_argument(
+        "--fail-on-error",
+        action="store_true",
+        help="Exit 1 if runtime errors or incomplete repository coverage are reported.",
     )
     return parser
 
@@ -199,11 +285,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        report = audit_repo_settings(
-            args.repo,
-            source_ref=args.source_ref,
-            repo_root=args.repo_root.resolve(),
-        )
+        if args.repo:
+            report = audit_repo_settings(
+                args.repo,
+                source_ref=args.source_ref,
+                repo_root=args.repo_root.resolve(),
+            )
+        else:
+            report = audit_org_repo_settings(
+                args.org,
+                source_ref=args.source_ref,
+                workspace_root=args.workspace_root.resolve() if args.workspace_root else None,
+            )
     except RuntimeError as exc:
         raise SystemExit(
             "repo-settings-audit: hosted inspection failed. "
@@ -212,16 +305,20 @@ def main(argv: list[str] | None = None) -> int:
         ) from exc
 
     if args.output_format == "json":
-        print(render_json_report(report))
+        print(render_json_report(report) if isinstance(report, RepoSettingsReport) else render_org_json_report(report))
     else:
-        print(render_text_report(report))
-    if args.fail_on_drift and any(item.status == "drift" for item in report.items):
+        print(render_text_report(report) if isinstance(report, RepoSettingsReport) else render_org_text_report(report))
+    if args.fail_on_error and _has_runtime_errors(report):
+        return 1
+    if args.fail_on_drift and _has_hosted_drift(report):
         return 1
     return 0
 
 
 def render_text_report(report: RepoSettingsReport) -> str:
     summary = _summary(report.items)
+    hosted_summary = _summary(_hosted_governance_items(report.items))
+    local_summary = _summary(_local_source_items(report.items))
     lines = [
         "Repository Settings Audit",
         f"Report type: {report.report_type}",
@@ -233,6 +330,14 @@ def render_text_report(report: RepoSettingsReport) -> str:
         f"Started: {report.started_at}",
         f"Finished: {report.finished_at}",
         f"Summary: match={summary['match']} drift={summary['drift']} unknown={summary['unknown']}",
+        (
+            "Hosted governance summary: "
+            f"match={hosted_summary['match']} drift={hosted_summary['drift']} unknown={hosted_summary['unknown']}"
+        ),
+        (
+            "Local source summary: "
+            f"match={local_summary['match']} drift={local_summary['drift']} unknown={local_summary['unknown']}"
+        ),
         "",
     ]
     for error in report.errors:
@@ -255,6 +360,8 @@ def render_text_report(report: RepoSettingsReport) -> str:
 
 
 def render_json_report(report: RepoSettingsReport) -> str:
+    hosted_items = _hosted_governance_items(report.items)
+    local_items = _local_source_items(report.items)
     data = {
         "schema_version": report.schema_version,
         "report_type": report.report_type,
@@ -266,13 +373,95 @@ def render_json_report(report: RepoSettingsReport) -> str:
         "started_at": report.started_at,
         "finished_at": report.finished_at,
         "summary": _summary(report.items),
+        "hosted_governance_summary": _summary(hosted_items),
+        "local_source_summary": _summary(local_items),
         "errors": list(report.errors),
         "items": [asdict(item) for item in report.items],
     }
     return json.dumps(data, indent=2, sort_keys=True)
 
 
-def _hosted_items(repo_root: Path, remote: RemoteSnapshot, state: HostedState) -> list[AuditItem]:
+def render_org_text_report(report: OrgRepoSettingsReport) -> str:
+    hosted_summary = _org_summary(report.reports, hosted=True)
+    local_summary = _org_summary(report.reports, hosted=False)
+    lines = [
+        "Organization Repository Settings Audit",
+        f"Report type: {report.report_type}",
+        "Read-only: yes",
+        f"Organization: {report.org}",
+        f"Source-of-truth ref: {report.source_ref}",
+        f"Local source mode: {report.local_source_mode}",
+        f"Workspace root: {report.workspace_root or 'not configured'}",
+        f"Started: {report.started_at}",
+        f"Finished: {report.finished_at}",
+        f"Repositories discovered: {len(report.repositories)}",
+        f"Repositories audited: {len(report.reports)}",
+        (
+            "Hosted governance summary: "
+            f"match={hosted_summary['match']} drift={hosted_summary['drift']} unknown={hosted_summary['unknown']}"
+        ),
+        (
+            "Local source summary: "
+            f"match={local_summary['match']} drift={local_summary['drift']} unknown={local_summary['unknown']}"
+        ),
+        "",
+    ]
+    for error in report.errors:
+        lines.append(f"ERROR: {error}")
+    if report.errors:
+        lines.append("")
+
+    for repo_report in report.reports:
+        hosted = _summary(_hosted_governance_items(repo_report.items))
+        local = _summary(_local_source_items(repo_report.items))
+        lines.extend(
+            [
+                f"- {repo_report.repository}",
+                f"  source SHA: {repo_report.source_sha}",
+                f"  hosted governance: match={hosted['match']} drift={hosted['drift']} unknown={hosted['unknown']}",
+                f"  local source: match={local['match']} drift={local['drift']} unknown={local['unknown']}",
+                f"  local repo root: {repo_report.local_repo_root or 'not checked'}",
+            ]
+        )
+        hosted_drift = [item.setting for item in _hosted_governance_items(repo_report.items) if item.status == "drift"]
+        hosted_unknown = [item.setting for item in _hosted_governance_items(repo_report.items) if item.status == "unknown"]
+        local_drift = [item.setting for item in _local_source_items(repo_report.items) if item.status == "drift"]
+        if hosted_drift:
+            lines.append(f"  hosted governance drift: {', '.join(hosted_drift)}")
+        if hosted_unknown:
+            lines.append(f"  hosted governance unknown: {', '.join(hosted_unknown)}")
+        if local_drift:
+            lines.append(f"  local source drift: {', '.join(local_drift)}")
+        for error in repo_report.errors:
+            lines.append(f"  audit note: {error}")
+    return "\n".join(lines).rstrip()
+
+
+def render_org_json_report(report: OrgRepoSettingsReport) -> str:
+    data = {
+        "schema_version": report.schema_version,
+        "report_type": report.report_type,
+        "read_only": report.read_only,
+        "org": report.org,
+        "source_ref": report.source_ref,
+        "local_source_mode": report.local_source_mode,
+        "workspace_root": report.workspace_root,
+        "started_at": report.started_at,
+        "finished_at": report.finished_at,
+        "repositories": list(report.repositories),
+        "summary": {
+            "repository_count": len(report.repositories),
+            "audited_repository_count": len(report.reports),
+        },
+        "hosted_governance_summary": _org_summary(report.reports, hosted=True),
+        "local_source_summary": _org_summary(report.reports, hosted=False),
+        "errors": list(report.errors),
+        "reports": [json.loads(render_json_report(repo_report)) for repo_report in report.reports],
+    }
+    return json.dumps(data, indent=2, sort_keys=True)
+
+
+def _hosted_items(remote: RemoteSnapshot, state: HostedState) -> list[AuditItem]:
     expected = _expectations(state.repo, remote)
     items = [
         AuditItem(
@@ -960,6 +1149,33 @@ def _fetch_object(runner: Runner, endpoint: str) -> dict[str, object]:
     if not isinstance(data, dict):
         raise RuntimeError(f"gh api {endpoint} did not return an object")
     return data
+
+
+def _fetch_org_repositories(org: str, runner: Runner) -> tuple[tuple[str, ...], list[str]]:
+    command = runner(("gh", "repo", "list", org, "--json", "nameWithOwner", "--limit", "1000"))
+    if command.returncode != 0:
+        detail = (command.stderr or command.stdout or f"exit {command.returncode}").splitlines()[0]
+        raise RuntimeError(f"gh repo list {org} failed: {detail}")
+    try:
+        data = json.loads(command.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"gh repo list {org} returned invalid JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise RuntimeError(f"gh repo list {org} did not return a repository list")
+    repositories: list[str] = []
+    errors: list[str] = []
+    for entry in data:
+        if not isinstance(entry, dict) or not isinstance(entry.get("nameWithOwner"), str):
+            errors.append("gh repo list entry did not include nameWithOwner")
+            continue
+        repositories.append(entry["nameWithOwner"])
+    return tuple(sorted(set(repositories), key=str.lower)), errors
+
+
+def _org_local_repo_root(repo: str, workspace_root: Path | None) -> Path | None:
+    if workspace_root is None:
+        return None
+    return workspace_root / repo.split("/", 1)[-1]
 
 
 def _fetch_optional_object(
@@ -2213,6 +2429,36 @@ def _enabled_disabled_unknown(value: bool | None) -> str:
 
 def _source(remote: RemoteSnapshot) -> str:
     return f"central repo-settings policy + GitHub {remote.ref} ({remote.sha})"
+
+
+def _local_source_items(items: Iterable[AuditItem]) -> tuple[AuditItem, ...]:
+    return tuple(item for item in items if item.setting in LOCAL_SOURCE_SETTINGS)
+
+
+def _hosted_governance_items(items: Iterable[AuditItem]) -> tuple[AuditItem, ...]:
+    return tuple(item for item in items if item.setting not in LOCAL_SOURCE_SETTINGS)
+
+
+def _org_summary(reports: Iterable[RepoSettingsReport], *, hosted: bool) -> dict[str, int]:
+    items = []
+    for report in reports:
+        selected = _hosted_governance_items(report.items) if hosted else _local_source_items(report.items)
+        items.extend(selected)
+    return _summary(items)
+
+
+def _has_hosted_drift(report: RepoSettingsReport | OrgRepoSettingsReport) -> bool:
+    if isinstance(report, RepoSettingsReport):
+        return any(item.status == "drift" for item in _hosted_governance_items(report.items))
+    return any(_has_hosted_drift(repo_report) for repo_report in report.reports)
+
+
+def _has_runtime_errors(report: RepoSettingsReport | OrgRepoSettingsReport) -> bool:
+    if report.errors:
+        return True
+    if isinstance(report, OrgRepoSettingsReport):
+        return any(_has_runtime_errors(repo_report) for repo_report in report.reports)
+    return False
 
 
 def _summary(items: Iterable[AuditItem]) -> dict[str, int]:
