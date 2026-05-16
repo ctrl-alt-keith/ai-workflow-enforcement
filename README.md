@@ -31,7 +31,8 @@ first workflow transmission checks:
 - ordinary repo commands shown through `zsh -lc`, `bash -lc`, or `sh -c`
 - implementation guidance that presents branch-only or optional-worktree flows
   without required repo-local worktree language
-- cross-repo scope gaps when an explicit workspace inventory is provided
+- cross-repo scope gaps when authoritative organization inventory, an explicit
+  repository list, or a caller-owned manifest is provided
 - Codex sandbox docs/examples that imply `writable_roots` is the exhaustive
   effective writable root set
 
@@ -92,12 +93,15 @@ workflow-policy findings with kind, path, line, snippet, reasons, and suggested
 direction. It does not record workflow state, persist classifications, escalate
 findings, or describe remediation steps.
 
-For cross-repo advisory scans, provide an explicit workspace root and manifest.
-When organization repository inventory is available, pass it as
-`organization_repositories` in config or repeated `--organization-repository`
-CLI values. The scanner reconciles those inputs and scans only the active
-intersection. It does not treat raw local checkout layout as authoritative
-workspace scope.
+For cross-repo advisory scans, provide an explicit workspace root and
+authoritative inventory. The preferred mode is `organization`, which uses
+GitHub CLI organization enumeration to build the visible repository inventory
+before checking local checkout availability. Explicit
+`organization_repositories` entries or repeated `--organization-repository`
+CLI values can narrow that visible inventory for scoped scans. A caller-owned
+manifest can also narrow or override scope for local workflows. The scanner
+does not require or infer a playbook-owned workspace manifest, and raw local
+checkout layout is never authoritative workspace scope.
 
 Render that JSON into a concise local review packet:
 
