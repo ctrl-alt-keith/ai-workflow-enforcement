@@ -68,6 +68,12 @@
       "required_checks": [
         "check"
       ]
+    },
+    "ctrl-alt-keith/trusted-network-registry": {
+      "required_checks": [
+        "authoritative-source-check / authoritative-source-check",
+        "make check"
+      ]
     }
   }
 }
