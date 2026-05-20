@@ -411,7 +411,7 @@ def _cleanup_repo(
     if apply:
         fetch = _git(path, "fetch", target.remote, "--prune")
         if fetch.returncode != 0:
-            report.skipped = "fetch/prune failed"
+            report.skipped = f"fetch/prune failed: {_command_failure_detail(fetch)}"
             return report
 
     report.starting_branch = _current_branch(path)
@@ -1151,6 +1151,15 @@ def _gh(cwd: Path, *argv: str) -> GitCommand:
         stdout=process.stdout.strip(),
         stderr=process.stderr.strip(),
     )
+
+
+def _command_failure_detail(result: GitCommand) -> str:
+    detail = result.stderr or result.stdout
+    for line in detail.splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return f"exit {result.returncode}"
 
 
 def _repo_target(item: dict[str, object], base: Path) -> RepoTarget:
