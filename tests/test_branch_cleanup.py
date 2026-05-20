@@ -303,6 +303,26 @@ class BranchCleanupTests(unittest.TestCase):
 
         self.assertEqual("dirty working tree", report.repos[0].skipped)
 
+    def test_apply_fetch_prune_skip_reports_first_error_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            real_git = branch_cleanup._git
+
+            def git_with_fetch_failure(cwd: Path, *argv: str) -> branch_cleanup.GitCommand:
+                if argv == ("fetch", "origin", "--prune"):
+                    return branch_cleanup.GitCommand(
+                        ("git",) + argv,
+                        128,
+                        "",
+                        "first actionable line\nsecond line",
+                    )
+                return real_git(cwd, *argv)
+
+            with mock.patch.object(branch_cleanup, "_git", side_effect=git_with_fetch_failure):
+                report = cleanup_branches(_config(repo), apply=True)
+
+        self.assertEqual("fetch/prune failed: first actionable line", report.repos[0].skipped)
+
     def test_github_pr_evidence_must_match_branch_tip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
