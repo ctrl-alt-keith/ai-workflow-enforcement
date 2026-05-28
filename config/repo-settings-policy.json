@@ -32,6 +32,9 @@
     "ctrl-alt-keith/knowledge-vault": {
       "visibility": "private"
     },
+    "ctrl-alt-keith/lke-image-lab": {
+      "visibility": "private"
+    },
     "ctrl-alt-keith/nexus": {
       "visibility": "private",
       "required_checks": [
