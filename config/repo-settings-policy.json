@@ -77,6 +77,11 @@
         "authoritative-source-check / authoritative-source-check",
         "make check"
       ]
+    },
+    "ctrl-alt-keith/trusted-ai-environment": {
+      "required_checks": [
+        "make check"
+      ]
     }
   }
 }
