@@ -29,6 +29,14 @@
         "markdownlint"
       ]
     },
+    "ctrl-alt-keith/leadership-workbench": {
+      "visibility": "private",
+      "require_status_checks": false,
+      "administrator_bypass": "disabled",
+      "dependabot": {
+        "enabled": false
+      }
+    },
     "ctrl-alt-keith/knowledge-vault": {
       "visibility": "private"
     },
