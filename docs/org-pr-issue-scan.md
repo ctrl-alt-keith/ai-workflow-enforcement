@@ -16,6 +16,12 @@ Run a machine-readable scan:
 python3 -m enforcement.org_pr_issue_scan --output-format json
 ```
 
+Ask automation callers to fail on incomplete coverage:
+
+```sh
+python3 -m enforcement.org_pr_issue_scan --fail-on-error
+```
+
 ## Safety Model
 
 The tool uses the local `gh` CLI authentication and API runtime. It does not
@@ -38,6 +44,11 @@ report.
 Each pull request and issue entry includes the repository name, number, title,
 URL, author, labels, assignees, and `updated_at` when GitHub returns those
 fields.
+
+The default exit behavior is advisory and non-blocking, including when the
+report includes repository enumeration errors or skipped per-repository scopes.
+Use `--fail-on-error` when a scheduled automation or local check should return
+exit code 1 for incomplete coverage while still printing the report.
 
 ## Automation Notes
 
