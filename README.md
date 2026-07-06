@@ -5,6 +5,9 @@ Lightweight reinforcement tools for the `ctrl-alt-keith` AI workflow model.
 This repository is not a workflow orchestrator. It holds small operational
 checks that help humans notice when staging notes, canonical playbook guidance,
 and repo-local execution guidance may be drifting out of alignment.
+It is not an independent workflow-policy source: `ai-workflow-playbook` remains
+the canonical source of reusable workflow doctrine, and this repository
+implements selected, checkable portions of that doctrine mechanically.
 
 ## Current Tools
 
@@ -245,11 +248,17 @@ under that directory. The example config uses `archive/**` for this reason.
 ## Repository Model
 
 - `ai-workflow-playbook` remains the canonical source of reusable workflow
-  guidance.
+  doctrine, including philosophy, operating guidance, authority boundaries, and
+  human and agent operating models.
 - `ai-workflow-incubator` remains the private staging/incubation repo for ideas,
   pressure, and experiments.
-- This repository provides reinforcement signals that help keep those layers
-  aligned.
+- This repository owns mechanical verification, advisory and validation
+  tooling, drift reporting, and reusable automation that enforces or assists
+  selected playbook guidance.
+- When enforcement output and playbook doctrine diverge, the playbook is
+  authoritative and enforcement should be updated to match.
+- Not every playbook rule requires enforcement, and not every enforcement
+  capability should become playbook doctrine.
 - Repo-local execution guidance belongs in this repository's `AGENTS.md`.
 
 ## Non-Goals
@@ -257,6 +266,7 @@ under that directory. The example config uses `archive/**` for this reason.
 - automatic remediation
 - mutating GitHub API integration
 - CI enforcement
+- independent workflow doctrine or policy ownership
 - embeddings or vector databases
 - LLM-backed semantic search
 - generalized orchestration frameworks
