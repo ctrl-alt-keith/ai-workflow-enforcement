@@ -165,6 +165,28 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertIn("Skipped or partial repositories: 1", advisory_stdout)
         self.assertIn("Skipped or partial repositories: 1", failing_stdout)
 
+    def test_fail_on_error_preserves_json_incomplete_coverage_report(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("blocked")]],
+                "/repos/ctrl-alt-keith/blocked/pulls?state=open&per_page=100": GhCommand(
+                    argv=(),
+                    returncode=1,
+                    stdout="",
+                    stderr="HTTP 403: Forbidden",
+                ),
+                "/repos/ctrl-alt-keith/blocked/issues?state=open&per_page=100": [[]],
+            }
+        )
+        report = scan_org_work(runner=gh)
+
+        code, stdout = _run_main_with_report(report, "--output-format", "json", "--fail-on-error")
+
+        self.assertEqual(1, code)
+        data = json.loads(stdout)
+        self.assertEqual(1, data["summary"]["skipped_repository_count"])
+        self.assertEqual(["pull requests inaccessible: HTTP 403: Forbidden"], data["repositories"][0]["skipped"])
+
     def test_fail_on_error_handles_repository_enumeration_errors(self) -> None:
         gh = FakeGh(
             {
