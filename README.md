@@ -149,7 +149,9 @@ It uses the local `gh` CLI authentication/runtime, handles paginated repository
 and work-item responses, excludes pull requests from issue results, groups
 findings by repository, and reports skipped or inaccessible repository scopes
 with reasons. Machine-readable JSON is available with `--output-format json`.
-See `docs/org-pr-issue-scan.md`.
+The default exit behavior remains advisory; use `--fail-on-error` when an
+automation should exit non-zero for repository enumeration failures or partial
+per-repository collection. See `docs/org-pr-issue-scan.md`.
 
 ## Repo Settings Audit
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import unittest
+from unittest.mock import patch
 
-from enforcement.org_pr_issue_scan import GhCommand, render_json_report, render_text_report, scan_org_work
+from enforcement.org_pr_issue_scan import GhCommand, main, render_json_report, render_text_report, scan_org_work
 
 
 class OrgPrIssueScanTests(unittest.TestCase):
@@ -139,6 +142,50 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertIn("skipped: pull requests inaccessible: HTTP 403: Forbidden", text)
         self.assertIn("skipped: issues inaccessible: HTTP 404: Not Found", text)
 
+    def test_fail_on_error_is_opt_in_for_incomplete_repository_coverage(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("blocked")]],
+                "/repos/ctrl-alt-keith/blocked/pulls?state=open&per_page=100": GhCommand(
+                    argv=(),
+                    returncode=1,
+                    stdout="",
+                    stderr="HTTP 403: Forbidden",
+                ),
+                "/repos/ctrl-alt-keith/blocked/issues?state=open&per_page=100": [[]],
+            }
+        )
+        report = scan_org_work(runner=gh)
+
+        advisory_code, advisory_stdout = _run_main_with_report(report)
+        failing_code, failing_stdout = _run_main_with_report(report, "--fail-on-error")
+
+        self.assertEqual(0, advisory_code)
+        self.assertEqual(1, failing_code)
+        self.assertIn("Skipped or partial repositories: 1", advisory_stdout)
+        self.assertIn("Skipped or partial repositories: 1", failing_stdout)
+
+    def test_fail_on_error_handles_repository_enumeration_errors(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": GhCommand(
+                    argv=(),
+                    returncode=1,
+                    stdout="",
+                    stderr="HTTP 500: Server Error",
+                ),
+            }
+        )
+        report = scan_org_work(runner=gh)
+
+        advisory_code, advisory_stdout = _run_main_with_report(report)
+        failing_code, failing_stdout = _run_main_with_report(report, "--fail-on-error")
+
+        self.assertEqual(0, advisory_code)
+        self.assertEqual(1, failing_code)
+        self.assertIn("ERROR: repository enumeration failed: HTTP 500: Server Error", advisory_stdout)
+        self.assertIn("ERROR: repository enumeration failed: HTTP 500: Server Error", failing_stdout)
+
 
 class FakeGh:
     def __init__(self, responses: dict[str, object]) -> None:
@@ -152,6 +199,14 @@ class FakeGh:
         if isinstance(response, GhCommand):
             return response
         return GhCommand(argv=argv, returncode=0, stdout=json.dumps(response), stderr="")
+
+
+def _run_main_with_report(report: object, *args: str) -> tuple[int, str]:
+    stdout = StringIO()
+    with patch("enforcement.org_pr_issue_scan.scan_org_work", return_value=report):
+        with redirect_stdout(stdout):
+            code = main(list(args))
+    return code, stdout.getvalue()
 
 
 def _repo(name: str) -> dict[str, object]:

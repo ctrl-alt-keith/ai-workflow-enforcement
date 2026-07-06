@@ -97,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="text",
         help="Report format. Default is human-readable text.",
     )
+    parser.add_argument(
+        "--fail-on-error",
+        action="store_true",
+        help="Exit 1 if repository enumeration or per-repository collection reports incomplete coverage.",
+    )
     return parser
 
 
@@ -107,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         print(render_json_report(report))
     else:
         print(render_text_report(report))
+    if args.fail_on_error and _has_runtime_errors(report):
+        return 1
     return 0
 
 
@@ -299,6 +306,10 @@ def _item_to_json(item: WorkItem) -> dict[str, object]:
         "assignees": list(item.assignees),
         "updated_at": item.updated_at,
     }
+
+
+def _has_runtime_errors(report: OrgWorkReport) -> bool:
+    return bool(report.errors) or any(repo.skipped for repo in report.repositories)
 
 
 def _gh(argv: tuple[str, ...]) -> GhCommand:
