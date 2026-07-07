@@ -117,6 +117,22 @@ count, candidate evidence, and suggested reviewer questions while explicitly
 preserving human-reviewed classification. See `docs/review-packet.md` for the
 intended local handoff workflow.
 
+## Safe Refresh Repositories
+
+The safe refresh helper updates configured local Git checkouts before another
+tool depends on local source state. It reuses the branch-cleanup JSON
+`repositories` inventory, verifies clean working trees, expected branches, and
+expected upstreams, then runs `git fetch` and `git pull --ff-only`.
+
+```sh
+python3 -m enforcement.safe_refresh_repos --config examples/branch-cleanup.json
+```
+
+It reports `refreshed`, `already-current`, `skipped`, and `blocked`
+repositories, exits non-zero when any selected repository is blocked, and does
+not delete refs, prune remotes, write automation memory, or schedule follow-up
+work. See `docs/safe-refresh-repos.md`.
+
 ## Branch Cleanup Reinforcement
 
 The branch cleanup tool is a dry-run-first operational reinforcement helper for
