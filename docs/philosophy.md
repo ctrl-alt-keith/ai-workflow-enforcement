@@ -1,15 +1,22 @@
 # Enforcement Philosophy
 
-This repository reinforces a workflow model that already separates three
-layers:
+This repository reinforces a workflow model whose reusable doctrine lives in
+`ai-workflow-playbook`. It operates in a layered system:
 
 - staging material where ideas and pressure can be rough
 - canonical reusable playbook guidance
 - repo-local execution guidance
 
-The reinforcement layer should help humans notice convergence problems without
-turning the workflow into autonomous governance. The first scanner therefore
-uses deterministic, explainable heuristics and produces human-readable review
+The reinforcement layer owns mechanical verification, advisory and validation
+tooling, drift reporting, and reusable automation for selected playbook
+guidance. It should help humans notice convergence problems without turning
+the workflow into autonomous governance or independent workflow policy. When
+reinforcement signals and playbook doctrine diverge, the playbook is
+authoritative and reinforcement should be updated to match.
+
+Not every playbook rule needs enforcement, and not every reinforcement
+capability should become playbook doctrine. The first scanner therefore uses
+deterministic, explainable heuristics and produces human-readable review
 signals.
 
 The intended behavior is modest:
