@@ -86,7 +86,7 @@ class SafeRefreshReposTests(unittest.TestCase):
         skipped = report.repositories[1]
         self.assertEqual(["not selected"], skipped.details)
 
-    def test_loads_branch_cleanup_config_inventory_without_branch_cleanup_policy(self) -> None:
+    def test_loads_only_repository_inventory_from_branch_cleanup_compatible_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _make_repo(root, "repo")
@@ -122,6 +122,8 @@ class SafeRefreshReposTests(unittest.TestCase):
 
         self.assertEqual(("sample",), tuple(repo.name for repo in config.repositories))
         self.assertEqual((root / "repo").resolve(), config.repositories[0].path)
+        self.assertFalse(hasattr(config, "protected_branches"))
+        self.assertFalse(hasattr(config, "stale_approvals"))
 
     def test_cli_json_returns_one_when_any_repo_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

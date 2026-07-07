@@ -12,6 +12,11 @@ Use an existing branch-cleanup JSON config as the repository inventory:
 python3 -m enforcement.safe_refresh_repos --config examples/branch-cleanup.json
 ```
 
+The helper intentionally reads only the top-level `repositories` list from
+that branch-cleanup-compatible config. Branch cleanup policy fields such as
+`protected_branches` and `stale_approvals` are ignored by safe refresh and
+remain owned by `enforcement.branch_cleanup`.
+
 Refresh one or more named repositories from that inventory:
 
 ```sh
@@ -45,8 +50,8 @@ or CLI errors, and `0` otherwise.
 
 ## Boundaries
 
-This helper does not classify branches, delete refs, prune remotes, write
-automation memory, schedule follow-up work, or define workflow policy. It can
-be used before `enforcement.branch_cleanup`, repo settings audits, or other
-local-source-sensitive checks, but those callers remain responsible for their
-own policy and reporting semantics.
+This helper does not classify branches, read or apply branch-cleanup policy,
+delete refs, prune remotes, write automation memory, schedule follow-up work,
+or define workflow policy. It can be used before `enforcement.branch_cleanup`,
+repo settings audits, or other local-source-sensitive checks, but those callers
+remain responsible for their own policy and reporting semantics.
