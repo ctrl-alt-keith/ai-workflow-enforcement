@@ -277,6 +277,8 @@ under that directory. The example config uses `archive/**` for this reason.
   capability should become playbook doctrine.
 - Repo-local execution guidance belongs in this repository's `AGENTS.md`.
 
+See `docs/product-boundary.md` for the concise repository boundary guide.
+
 ## Non-Goals
 
 - automatic remediation
