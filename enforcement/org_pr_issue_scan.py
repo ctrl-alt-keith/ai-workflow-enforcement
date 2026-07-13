@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import subprocess
+import sys
 from typing import Callable, Iterable
 
 
@@ -59,6 +60,7 @@ class OrgWorkReport:
     automation_id: str
     automation_display_name: str
     org: str
+    selected_repositories: tuple[str, ...]
     started_at: str
     finished_at: str
     repositories: tuple[RepositoryWork, ...]
@@ -68,11 +70,19 @@ class OrgWorkReport:
 Runner = Callable[[tuple[str, ...]], GhCommand]
 
 
-def scan_org_work(org: str = DEFAULT_ORG, *, runner: Runner | None = None) -> OrgWorkReport:
+def scan_org_work(
+    org: str = DEFAULT_ORG,
+    *,
+    selected_repos: Iterable[str] = (),
+    runner: Runner | None = None,
+) -> OrgWorkReport:
     """Collect current open pull requests and issues for all visible org repos."""
     started = _utc_now()
     gh = runner or _gh
     repositories, errors = _fetch_repositories(org, gh)
+    selected = _repo_selection_names(org, selected_repos)
+    if selected and not errors:
+        repositories = _select_repositories(org, repositories, selected)
     repo_reports = tuple(_scan_repository(org, repo, gh) for repo in sorted(repositories, key=lambda item: item.name.lower()))
     finished = _utc_now()
     return OrgWorkReport(
@@ -81,6 +91,7 @@ def scan_org_work(org: str = DEFAULT_ORG, *, runner: Runner | None = None) -> Or
         automation_id=AUTOMATION_ID,
         automation_display_name=AUTOMATION_DISPLAY_NAME,
         org=org,
+        selected_repositories=selected,
         started_at=started,
         finished_at=finished,
         repositories=repo_reports,
@@ -91,6 +102,12 @@ def scan_org_work(org: str = DEFAULT_ORG, *, runner: Runner | None = None) -> Or
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Report open pull requests and issues across a GitHub organization.")
     parser.add_argument("--org", default=DEFAULT_ORG, help=f"GitHub organization to scan. Default: {DEFAULT_ORG}.")
+    parser.add_argument(
+        "--repo",
+        action="append",
+        default=[],
+        help="Repository name to scan after org enumeration. May be repeated; accepts name or org/name.",
+    )
     parser.add_argument(
         "--output-format",
         choices=("text", "json"),
@@ -107,7 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    report = scan_org_work(args.org)
+    try:
+        report = scan_org_work(args.org, selected_repos=args.repo)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     if args.output_format == "json":
         print(render_json_report(report))
     else:
@@ -125,6 +146,7 @@ def render_text_report(report: OrgWorkReport) -> str:
         report.automation_display_name,
         f"Automation ID: {report.automation_id}",
         f"Organization: {report.org}",
+        *([f"Repository filter: {', '.join(report.selected_repositories)}"] if report.selected_repositories else []),
         f"Started: {report.started_at}",
         f"Finished: {report.finished_at}",
         f"Repositories scanned: {len(report.repositories)}",
@@ -163,6 +185,7 @@ def render_json_report(report: OrgWorkReport) -> str:
         "automation_id": report.automation_id,
         "automation_display_name": report.automation_display_name,
         "org": report.org,
+        "selected_repositories": list(report.selected_repositories),
         "started_at": report.started_at,
         "finished_at": report.finished_at,
         "errors": list(report.errors),
@@ -222,6 +245,33 @@ def _fetch_repositories(org: str, runner: Runner) -> tuple[tuple[Repository, ...
         if item.get("name")
     )
     return repositories, ()
+
+
+def _repo_selection_names(org: str, selected_repos: Iterable[str]) -> tuple[str, ...]:
+    names: list[str] = []
+    for raw in selected_repos:
+        value = raw.strip()
+        if not value:
+            continue
+        if "/" in value:
+            owner, repo_name = value.split("/", 1)
+            if owner == org and repo_name and "/" not in repo_name:
+                value = repo_name
+        if value not in names:
+            names.append(value)
+    return tuple(names)
+
+
+def _select_repositories(
+    org: str,
+    repositories: tuple[Repository, ...],
+    selected_names: tuple[str, ...],
+) -> tuple[Repository, ...]:
+    by_name = {repo.name: repo for repo in repositories}
+    unknown = tuple(name for name in selected_names if name not in by_name)
+    if unknown:
+        raise ValueError(f"selected repositories not found in {org}: {', '.join(unknown)}")
+    return tuple(by_name[name] for name in selected_names)
 
 
 def _fetch_collection(endpoint: str, runner: Runner) -> tuple[tuple[dict[str, object], ...], str]:

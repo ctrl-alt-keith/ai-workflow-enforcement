@@ -16,6 +16,15 @@ Run a machine-readable scan:
 python3 -m enforcement.org_pr_issue_scan --output-format json
 ```
 
+Run a scoped scan for one or more repositories after live organization
+enumeration:
+
+```sh
+python3 -m enforcement.org_pr_issue_scan \
+  --repo ai-workflow-playbook \
+  --repo ctrl-alt-keith/ai-workflow-enforcement
+```
+
 Ask automation callers to fail on incomplete coverage:
 
 ```sh
@@ -31,15 +40,22 @@ commit, push, or update automation configuration.
 The scan flow is:
 
 1. enumerate organization repositories dynamically with `gh api`
-2. fetch open pull requests for each repository
-3. fetch open issues for each repository
-4. exclude pull requests returned by the issues endpoint
-5. group results by repository, with pull requests and issues separated
-6. report skipped or partially inaccessible repository scopes with reasons
+2. optionally narrow the report to caller-selected repositories from that live
+   inventory
+3. fetch open pull requests for each selected repository
+4. fetch open issues for each selected repository
+5. exclude pull requests returned by the issues endpoint
+6. group results by repository, with pull requests and issues separated
+7. report skipped or partially inaccessible repository scopes with reasons
 
 Repository, pull request, and issue collection uses `gh api --paginate --slurp`
 with `per_page=100` endpoints so paginated responses are included in a single
 report.
+
+`--repo` may be repeated and accepts either a repository name or `org/name`
+within the selected organization. Unknown selected repositories are treated as
+operator input errors after organization enumeration, so the tool stops instead
+of silently producing an empty or misleading scoped report.
 
 Each pull request and issue entry includes the repository name, number, title,
 URL, author, labels, assignees, and `updated_at` when GitHub returns those

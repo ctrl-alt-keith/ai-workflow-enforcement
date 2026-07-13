@@ -165,12 +165,14 @@ python3 -m enforcement.org_pr_issue_scan
 ```
 
 It uses the local `gh` CLI authentication/runtime, handles paginated repository
-and work-item responses, excludes pull requests from issue results, groups
-findings by repository, and reports skipped or inaccessible repository scopes
-with reasons. Machine-readable JSON is available with `--output-format json`.
-The default exit behavior remains advisory; use `--fail-on-error` when an
-automation should exit non-zero for repository enumeration failures or partial
-per-repository collection. See `docs/org-pr-issue-scan.md`.
+and work-item responses, optionally narrows the report with repeated `--repo`
+values after live organization enumeration, excludes pull requests from issue
+results, groups findings by repository, and reports skipped or inaccessible
+repository scopes with reasons. Machine-readable JSON is available with
+`--output-format json`. The default exit behavior remains advisory; use
+`--fail-on-error` when an automation should exit non-zero for repository
+enumeration failures or partial per-repository collection. See
+`docs/org-pr-issue-scan.md`.
 
 ## Repo Settings Audit
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 import json
 import unittest
@@ -90,6 +90,62 @@ class OrgPrIssueScanTests(unittest.TestCase):
         for command in gh.commands:
             self.assertIn("--paginate", command)
             self.assertIn("--slurp", command)
+
+    def test_selected_repositories_are_filtered_after_org_enumeration(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [
+                    [_repo("alpha")],
+                    [_repo("beta")],
+                    [_repo("gamma")],
+                ],
+                "/repos/ctrl-alt-keith/alpha/pulls?state=open&per_page=100": [
+                    [_item(1, "Alpha PR")]
+                ],
+                "/repos/ctrl-alt-keith/alpha/issues?state=open&per_page=100": [[]],
+                "/repos/ctrl-alt-keith/beta/pulls?state=open&per_page=100": [[]],
+                "/repos/ctrl-alt-keith/beta/issues?state=open&per_page=100": [
+                    [_item(2, "Beta issue")]
+                ],
+            }
+        )
+
+        report = scan_org_work(
+            selected_repos=("ctrl-alt-keith/beta", "alpha", "ctrl-alt-keith/beta"),
+            runner=gh,
+        )
+        text = render_text_report(report)
+        data = json.loads(render_json_report(report))
+
+        self.assertEqual(("beta", "alpha"), report.selected_repositories)
+        self.assertEqual(("alpha", "beta"), tuple(repo.name for repo in report.repositories))
+        self.assertNotIn("/repos/ctrl-alt-keith/gamma/pulls?state=open&per_page=100", [command[-1] for command in gh.commands])
+        self.assertIn("Repository filter: beta, alpha", text)
+        self.assertEqual(["beta", "alpha"], data["selected_repositories"])
+        self.assertEqual(2, data["summary"]["repository_count"])
+
+    def test_unknown_selected_repository_is_an_operator_error(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [
+                    [_repo("alpha")],
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "selected repositories not found in ctrl-alt-keith: missing"):
+            scan_org_work(selected_repos=("missing",), runner=gh)
+
+    def test_main_reports_unknown_selected_repository_to_stderr(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch("enforcement.org_pr_issue_scan.scan_org_work", side_effect=ValueError("bad selection")):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = main(["--repo", "missing"])
+
+        self.assertEqual(2, code)
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("error: bad selection", stderr.getvalue())
 
     def test_empty_no_open_work_report_is_explicit(self) -> None:
         gh = FakeGh(
