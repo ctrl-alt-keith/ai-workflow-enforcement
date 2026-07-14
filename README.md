@@ -133,6 +133,26 @@ repositories, exits non-zero when any selected repository is blocked, and does
 not delete refs, prune remotes, write automation memory, or schedule follow-up
 work. See `docs/safe-refresh-repos.md`.
 
+## Codex Safe Recursive Removal
+
+`codex-safe-rm` is a versioned enforcement control for deleting literal
+relative directory trees beneath the invocation working directory. It gives a
+Codex fixed-prefix approval rule a reviewed executable that validates every
+dynamic operand, rejects `.git` and containment escapes, and requires
+fd-relative, symlink-resistant removal support.
+
+The reviewed source is installed explicitly rather than maintained under
+`~/.local/bin`:
+
+```sh
+make install
+make verify-install
+```
+
+Direct `rm` remains approval-gated. See `docs/codex-safe-rm.md` for the threat
+model, guarantees, non-guarantees, rule fixture, update flow, and uninstall
+behavior.
+
 ## Branch Cleanup Reinforcement
 
 The branch cleanup tool is a dry-run-first operational reinforcement helper for

@@ -1,0 +1,32 @@
+# Direct rm remains approval-gated. Dynamic operand validation is delegated to
+# the versioned enforcement helper because prefix_rule cannot validate suffixes.
+prefix_rule(
+    pattern=["rm"],
+    decision="prompt",
+    justification="Direct filesystem deletion requires explicit approval.",
+    match=[
+        "rm -rf -- build",
+        "rm -rf -- /tmp/foo",
+    ],
+    not_match=[
+        "/Users/keith/.local/bin/codex-safe-rm -rf -- build",
+    ],
+)
+
+prefix_rule(
+    pattern=["/Users/keith/.local/bin/codex-safe-rm", "-rf", "--"],
+    decision="allow",
+    justification="The versioned enforcement helper validates every operand and performs fd-relative, symlink-resistant deletion beneath the invocation cwd.",
+    match=[
+        "/Users/keith/.local/bin/codex-safe-rm -rf -- pytest-of-root",
+        "/Users/keith/.local/bin/codex-safe-rm -rf -- .pytest_cache",
+        "/Users/keith/.local/bin/codex-safe-rm -rf -- build dist",
+        "/Users/keith/.local/bin/codex-safe-rm -rf -- docs/_build",
+        "/Users/keith/.local/bin/codex-safe-rm -rf -- knowledge-adapters",
+    ],
+    not_match=[
+        "rm -rf -- build",
+        "/Users/keith/.local/bin/codex-safe-rm -r -- build",
+        "/Users/keith/.local/bin/codex-safe-rm -- build",
+    ],
+)
