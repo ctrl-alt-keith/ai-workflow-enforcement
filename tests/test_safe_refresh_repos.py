@@ -45,6 +45,29 @@ class SafeRefreshReposTests(unittest.TestCase):
         self.assertEqual(after, result.after)
         self.assertNotEqual(before, after)
 
+    def test_unpushed_local_commit_blocks_without_changing_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            remote_head = _rev_parse(repo, "origin/main")
+            (repo / "local.txt").write_text("local work\n", encoding="utf-8")
+            _git(repo, "add", "local.txt")
+            _git(repo, "commit", "-m", "Local work")
+            local_head = _rev_parse(repo, "HEAD")
+
+            report = safe_refresh_repos(SafeRefreshConfig((RepoTarget("sample", repo),)))
+            after = _rev_parse(repo, "HEAD")
+
+        result = report.repositories[0]
+        self.assertNotEqual(remote_head, local_head)
+        self.assertEqual("blocked", result.status)
+        self.assertEqual(local_head, result.before)
+        self.assertEqual(local_head, result.after)
+        self.assertEqual(local_head, after)
+        self.assertIn(
+            f"HEAD {local_head} does not match origin/main {remote_head}",
+            result.details,
+        )
+
     def test_dirty_worktree_blocks_without_fetching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
