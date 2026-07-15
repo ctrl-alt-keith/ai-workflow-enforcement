@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from enforcement import branch_cleanup, org_pr_issue_scan
 from enforcement.branch_cleanup import BranchCleanupReport, RepoReport
 from enforcement.org_pr_issue_scan import OrgWorkReport, RepositoryWork
 from enforcement.work_state_index import (
@@ -32,6 +33,10 @@ class WorkStateIndexTests(unittest.TestCase):
                 branch_scanner=_branch_report,
                 worktree_runner=lambda cwd, argv: CommandResult(0, f"worktree {cwd}\nHEAD abc", ""),
             )
+            selected_config = branch_cleanup.BranchCleanupConfig(
+                (branch_cleanup.RepoTarget("alpha", Path(raw) / "alpha"),)
+            )
+            expected_cleanup = _branch_report(selected_config)
 
         self.assertEqual("repository", index.view)
         self.assertEqual(("alpha",), index.repositories)
@@ -45,6 +50,13 @@ class WorkStateIndexTests(unittest.TestCase):
         self.assertTrue(all(source.stale_after_capture for source in index.sources))
         worktrees = next(source for source in index.sources if source.name == "local_git_worktrees")
         self.assertEqual(["alpha"], [item["name"] for item in worktrees.payload["repositories"]])
+        org = next(source for source in index.sources if source.name == "organization_pr_issue_scan")
+        cleanup = next(source for source in index.sources if source.name == "branch_cleanup_dry_run")
+        expected_org = _org_report()
+        self.assertEqual(org_pr_issue_scan.report_to_dict(expected_org), org.payload)
+        self.assertEqual(json.loads(org_pr_issue_scan.render_json_report(expected_org)), org.payload)
+        self.assertEqual(branch_cleanup.report_to_dict(expected_cleanup), cleanup.payload)
+        self.assertEqual(json.loads(branch_cleanup.render_json_report(expected_cleanup)), cleanup.payload)
 
     def test_one_source_unavailable_does_not_invent_payload(self) -> None:
         index = compose_work_state_index(clock=lambda: STAMP, org_scanner=_org_report)

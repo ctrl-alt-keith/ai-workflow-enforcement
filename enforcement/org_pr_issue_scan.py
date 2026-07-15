@@ -179,7 +179,12 @@ def render_text_report(report: OrgWorkReport) -> str:
 
 
 def render_json_report(report: OrgWorkReport) -> str:
-    data = {
+    return json.dumps(report_to_dict(report), indent=2, sort_keys=True)
+
+
+def report_to_dict(report: OrgWorkReport) -> dict[str, object]:
+    """Return the structured representation used by the JSON report."""
+    return {
         "schema_version": report.schema_version,
         "report_type": report.report_type,
         "automation_id": report.automation_id,
@@ -207,7 +212,6 @@ def render_json_report(report: OrgWorkReport) -> str:
             for repo in report.repositories
         ],
     }
-    return json.dumps(data, indent=2, sort_keys=True)
 
 
 def _scan_repository(org: str, repo: Repository, runner: Runner) -> RepositoryWork:

@@ -86,7 +86,7 @@ def compose_work_state_index(
                 report.finished_at,
                 status,
                 errors,
-                json.loads(org_pr_issue_scan.render_json_report(report)),
+                org_pr_issue_scan.report_to_dict(report),
             )
         )
     except Exception as exc:  # source boundaries must preserve partial composition
@@ -114,7 +114,7 @@ def compose_work_state_index(
                     report.finished_at,
                     "partial" if errors else "available",
                     errors,
-                    json.loads(branch_cleanup.render_json_report(report)),
+                    branch_cleanup.report_to_dict(report),
                 )
             )
         except Exception as exc:

@@ -322,9 +322,14 @@ def render_text_report(report: BranchCleanupReport) -> str:
 
 
 def render_json_report(report: BranchCleanupReport | BranchCleanupSequenceReport) -> str:
+    return json.dumps(report_to_dict(report), indent=2, sort_keys=True)
+
+
+def report_to_dict(report: BranchCleanupReport | BranchCleanupSequenceReport) -> dict[str, object]:
+    """Return the structured representation used by the JSON report."""
     if isinstance(report, BranchCleanupSequenceReport):
-        return json.dumps(_sequence_report_to_json(report), indent=2, sort_keys=True)
-    return json.dumps(_cleanup_report_to_json(report), indent=2, sort_keys=True)
+        return _sequence_report_to_json(report)
+    return _cleanup_report_to_json(report)
 
 
 def _cleanup_report_to_json(report: BranchCleanupReport) -> dict[str, object]:
