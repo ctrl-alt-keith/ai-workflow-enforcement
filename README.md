@@ -11,6 +11,19 @@ implements selected, checkable portions of that doctrine mechanically.
 
 ## Current Tools
 
+Compare repository-local validation claims with directly observable Makefile
+targets without executing validation or mutating repositories:
+
+```sh
+python3 -m enforcement.validation_contract_inventory /path/to/repository
+python3 -m enforcement.validation_contract_inventory /path/to/repository --output-format json
+```
+
+Multiple repository roots may be supplied. Markdown and JSON reports retain
+claim and implementation evidence, use `Unclear` when evidence is incomplete,
+and do not score or rank repositories. See
+`docs/validation-contract-inventory.md` for source and classification bounds.
+
 Generate an on-demand, source-backed preflight for one local repository:
 
 ```sh
