@@ -11,6 +11,18 @@ implements selected, checkable portions of that doctrine mechanically.
 
 ## Current Tools
 
+Generate an on-demand, source-backed preflight for one local repository:
+
+```sh
+python3 -m enforcement.repo_preflight /path/to/repository
+python3 -m enforcement.repo_preflight /path/to/repository --output-format json
+```
+
+The report is advisory, stale after capture, and not a source of truth. It
+does not persist repository descriptors or infer capabilities. Hosted GitHub
+metadata is read only when `--include-hosted` is explicitly supplied. See
+`docs/repo-preflight.md` for source boundaries and unavailable semantics.
+
 The first experiment is a filesystem-scoped notes vs playbook drift scanner.
 It compares configured staging-note roots with configured playbook roots and
 reports possible overlap candidates using deterministic heuristics:
