@@ -194,6 +194,24 @@ repository scopes with reasons. Machine-readable JSON is available with
 enumeration failures or partial per-repository collection. See
 `docs/org-pr-issue-scan.md`.
 
+## Work-State Advisory Index
+
+The work-state index composes the existing organization PR/issue scan,
+branch-cleanup dry-run report, and locally available `git worktree list
+--porcelain` facts into one timestamped advisory report:
+
+```sh
+python3 -m enforcement.work_state_index \
+  --branch-cleanup-config examples/branch-cleanup.json
+```
+
+Markdown is the default and JSON is available with `--output-format json`.
+Repeated `--repo` values provide a bounded per-repository view. Each source
+retains its command, capture time, freshness, errors, status, and native
+payload; unavailable local evidence is reported as unavailable rather than
+empty. The index is stale after capture, is not a source of truth, and does not
+authorize cleanup or mutation. See `docs/work-state-index.md`.
+
 ## Repo Settings Audit
 
 The repo settings audit is a read-only hosted governance checker for one GitHub
