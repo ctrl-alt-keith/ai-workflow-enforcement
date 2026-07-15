@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 from typing import Callable
+from urllib.parse import urlsplit, urlunsplit
 
 
 NOTICE = "This report is advisory, stale after capture, and not a source of truth."
@@ -222,8 +223,16 @@ def _parse_remotes(output: str) -> list[dict[str, str]]:
         parts = line.split()
         if len(parts) >= 3:
             kind = parts[2].strip("()")
-            found[(parts[0], kind)] = {"name": parts[0], "url": parts[1], "kind": kind}
+            found[(parts[0], kind)] = {"name": parts[0], "url": _sanitize_remote_url(parts[1]), "kind": kind}
     return [found[key] for key in sorted(found)]
+
+
+def _sanitize_remote_url(url: str) -> str:
+    parsed = urlsplit(url)
+    if not parsed.scheme or not parsed.netloc or "@" not in parsed.netloc:
+        return url
+    sanitized_netloc = parsed.netloc.rsplit("@", 1)[1]
+    return urlunsplit((parsed.scheme, sanitized_netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 def _github_repo_identity(remotes: object) -> str | None:

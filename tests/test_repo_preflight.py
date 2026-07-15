@@ -13,6 +13,7 @@ from enforcement.repo_preflight import (
     NOTICE,
     inspect_repository,
     main,
+    _parse_remotes,
     render_json,
     render_markdown,
 )
@@ -46,6 +47,46 @@ class RepoPreflightTests(unittest.TestCase):
         self.assertEqual("dirty", facts["working_tree"])
         self.assertEqual("unknown", facts["default_branch"])
         self.assertEqual("origin", facts["remotes"][0]["name"])
+
+    def test_remote_urls_strip_only_url_userinfo(self) -> None:
+        remotes = _parse_remotes(
+            "ordinary https://github.com/example/ordinary.git (fetch)\n"
+            "credential https://username:token@github.com/example/credential.git (fetch)\n"
+            "token https://token@github.com/example/token.git (push)\n"
+            "ssh git@github.com:example/ssh.git (fetch)\n"
+        )
+
+        self.assertEqual(
+            [
+                {"name": "credential", "url": "https://github.com/example/credential.git", "kind": "fetch"},
+                {"name": "ordinary", "url": "https://github.com/example/ordinary.git", "kind": "fetch"},
+                {"name": "ssh", "url": "git@github.com:example/ssh.git", "kind": "fetch"},
+                {"name": "token", "url": "https://github.com/example/token.git", "kind": "push"},
+            ],
+            remotes,
+        )
+
+    def test_hosted_identity_uses_sanitized_remote_and_renderers_do_not_leak_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = _repo(Path(raw), agents="# Agent\n", makefile="check:\n\ttrue\n")
+            _git(repo, "remote", "add", "origin", "https://username:secret-token@github.com/example/private-repo.git")
+            hosted_commands: list[tuple[str, ...]] = []
+
+            def runner(cwd: Path, argv: tuple[str, ...]) -> CommandResult:
+                if argv[:2] == ("gh", "api"):
+                    hosted_commands.append(argv)
+                    return CommandResult(0, json.dumps({"visibility": "private", "default_branch": "main", "archived": False}), "")
+                return _run(cwd, argv)
+
+            report = inspect_repository(repo, include_hosted=True, clock=lambda: STAMP, runner=runner)
+
+        self.assertEqual([("gh", "api", "repos/example/private-repo")], hosted_commands)
+        remotes = _source(report, "git_metadata").facts["remotes"]
+        self.assertTrue(all(remote["url"] == "https://github.com/example/private-repo.git" for remote in remotes))
+        for rendered in (render_json(report), render_markdown(report)):
+            self.assertNotIn("username", rendered)
+            self.assertNotIn("secret-token", rendered)
+            self.assertIn("https://github.com/example/private-repo.git", rendered)
 
     def test_sanitized_private_shape_reports_only_explicit_hosted_fields(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
