@@ -20,6 +20,12 @@ _MAKE_COMMAND = re.compile(
     re.I,
 )
 _AMBIGUOUS_VALIDATION = re.compile(r"\b(?:run|runs|running|use|uses)\b.{0,48}\b(?:tests?|validation|checks?)\b", re.I)
+_PROHIBITED_COMMAND = re.compile(
+    r"\b(?:do not|don't|never|avoid|must not|should not)(?:\s+(?:run|use|using))?\s*$",
+    re.I,
+)
+_OLD_COMMAND = re.compile(r"\b(?:old|former|previous|legacy)\b.{0,40}\b(?:used|uses?|ran)\s*$", re.I)
+_DEPRECATED_COMMAND = re.compile(r"^.{0,64}\b(?:no longer supported|deprecated|obsolete|removed)\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -179,6 +185,8 @@ def _collect_claims(root: Path) -> tuple[list[tuple[str, tuple[Evidence, ...]]],
                 target = match.group(1) or match.group(2)
                 if not any(term in target.lower() for term in ("check", "test", "lint", "valid")):
                     continue
+                if not _accept_command_candidate(line, match):
+                    continue
                 command = f"make {target}"
                 explicit.setdefault(command, []).append(Evidence("claim", relative, line_number, target, command, line.strip()))
             if not matches and _AMBIGUOUS_VALIDATION.search(line):
@@ -187,6 +195,25 @@ def _collect_claims(root: Path) -> tuple[list[tuple[str, tuple[Evidence, ...]]],
     if claims:
         ambiguous = []
     return claims, sorted(ambiguous, key=lambda item: (item.path, item.line or 0, item.snippet))
+
+
+def _accept_command_candidate(line: str, match: re.Match[str]) -> bool:
+    """Reject clearly non-active command references without interpreting general prose."""
+    make_start = match.start() + match.group(0).lower().find("make")
+    prefix = line[:make_start].rstrip("`*_ ")
+    suffix = line[match.end():]
+    if _PROHIBITED_COMMAND.search(prefix) or _OLD_COMMAND.search(prefix):
+        return False
+    if _DEPRECATED_COMMAND.search(suffix):
+        return False
+    for contrast in re.finditer(r"\binstead of\b", line, re.I):
+        contrast_end = len(line)
+        delimiter = re.search(r"[,;]", line[contrast.end():])
+        if delimiter:
+            contrast_end = contrast.end() + delimiter.start()
+        if contrast.end() <= make_start < contrast_end:
+            return False
+    return True
 
 
 def _documentation_paths(root: Path) -> tuple[Path, ...]:

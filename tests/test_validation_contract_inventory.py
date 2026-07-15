@@ -60,6 +60,43 @@ class ValidationContractInventoryTests(unittest.TestCase):
             finding = _only(_repo(root, "recommend", agents="Run make check.\n", makefile="test:\n\ttrue\n"))
         self.assertIn("repository-local", finding.recommendation)
 
+    def test_do_not_run_command_is_not_an_active_claim(self) -> None:
+        with _fixtures() as root:
+            finding = _only(_repo(root, "do-not", agents="Do not run make check.\n", makefile="check:\n\ttrue\n"))
+        self.assertEqual("Unclear", finding.classification)
+        self.assertNotEqual("make check", finding.claimed_validation)
+
+    def test_never_use_quoted_command_is_not_an_active_claim(self) -> None:
+        with _fixtures() as root:
+            finding = _only(_repo(root, "never", agents="Never use `make release-check`.\n", makefile="release-check:\n\ttrue\n"))
+        self.assertEqual("Unclear", finding.classification)
+        self.assertNotEqual("make release-check", finding.claimed_validation)
+
+    def test_common_prohibition_phrases_are_not_active_claims(self) -> None:
+        for phrase in ("Don't run", "Avoid", "Must not use", "Should not run"):
+            with self.subTest(phrase=phrase), _fixtures() as root:
+                finding = _only(_repo(root, "prohibited", agents=f"{phrase} `make lint`.\n", makefile="lint:\n\ttrue\n"))
+            self.assertEqual("Unclear", finding.classification)
+            self.assertNotEqual("make lint", finding.claimed_validation)
+
+    def test_instead_of_keeps_only_the_intended_command(self) -> None:
+        with _fixtures() as root:
+            repo = _repo(root, "contrast", agents="Use make test instead of `make check`.\n", makefile="test:\n\ttrue\ncheck:\n\ttrue\n")
+            findings = inventory_validation_contracts([repo], clock=lambda: STAMP).repositories[0].findings
+        self.assertEqual(["make test"], [finding.claimed_validation for finding in findings])
+        self.assertEqual("Match", findings[0].classification)
+
+    def test_deprecated_command_is_not_an_active_claim(self) -> None:
+        with _fixtures() as root:
+            finding = _only(_repo(
+                root,
+                "deprecated",
+                agents="The old workflow used `make validate`, but it is no longer supported.\n",
+                makefile="validate:\n\ttrue\n",
+            ))
+        self.assertEqual("Unclear", finding.classification)
+        self.assertNotEqual("make validate", finding.claimed_validation)
+
     def test_deterministic_markdown_and_json_rendering(self) -> None:
         with _fixtures() as root:
             repo = _repo(root, "stable", agents="Run make check.\n", makefile="check:\n\ttrue\n")
