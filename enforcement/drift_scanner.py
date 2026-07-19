@@ -691,33 +691,7 @@ def _unique_documents(documents: tuple[Document, ...]) -> tuple[Document, ...]:
 
 
 def _scan_agents_alignment(document: Document, playbook: tuple[Document, ...]) -> list[AdvisoryFinding]:
-    normalized = normalize_text(document.text)
     findings: list[AdvisoryFinding] = []
-    if not (
-        "interaction mode" in normalized
-        and "implementation" in normalized
-        and "review audit" in normalized
-        and "orchestration" in normalized
-    ):
-        findings.append(
-            _finding(
-                "agents_missing_interaction_mode_pointer",
-                document,
-                "Interaction mode pointer not found",
-                ("AGENTS.md does not point clearly at implementation, review/audit, and orchestration modes",),
-                "Add a concise repo-local pointer to the playbook interaction-mode guidance.",
-            )
-        )
-    if not _has_full_command_form_guidance(normalized, require_execution_layer=False):
-        findings.append(
-            _finding(
-                "agents_missing_command_form_guidance",
-                document,
-                "Command-form guidance appears incomplete",
-                tuple(_command_form_gaps(normalized, require_execution_layer=False)),
-                "Reinforce direct command form and wrapper-shell preflight without duplicating broad playbook policy.",
-            )
-        )
     if not has_canonical_reference(document.text):
         findings.append(
             _finding(

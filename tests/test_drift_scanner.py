@@ -120,7 +120,7 @@ class DriftScannerTests(unittest.TestCase):
 
         self.assertEqual(0, len(result.candidates))
 
-    def test_agents_alignment_finds_missing_pointers_without_flagging_thin_reinforcement(self) -> None:
+    def test_agents_alignment_does_not_require_interaction_mode_vocabulary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workspace = root / "workspace"
@@ -143,17 +143,7 @@ class DriftScannerTests(unittest.TestCase):
             )
             (repo / "AGENTS.md").write_text(
                 "# AGENTS.md\n\n"
-                "This repo uses ai-workflow-playbook as canonical guidance.\n\n"
-                "## Startup And Interaction Mode\n\n"
-                "- Before acting, select the interaction mode: implementation, review/audit, "
-                "or orchestration/prompt-authoring.\n\n"
-                "## Local Execution\n\n"
-                "- Use direct command execution for ordinary repo commands such as git, gh, "
-                "make, python, and repo-local scripts.\n"
-                "- Before using zsh, bash, sh, zsh -lc, bash -lc, or sh -c, check whether "
-                "the command has a direct form and use that direct form when it does.\n"
-                "- Prefer native argv execution and disable implicit shell or login shell "
-                "behavior for git and gh where supported.\n",
+                "Follow ai-workflow-playbook/docs/start-here.md for reusable workflow guidance.\n",
                 encoding="utf-8",
             )
 
@@ -168,7 +158,7 @@ class DriftScannerTests(unittest.TestCase):
 
         self.assertEqual(0, len(result.advisory_findings))
 
-    def test_agents_alignment_finds_missing_command_and_interaction_guidance(self) -> None:
+    def test_agents_alignment_reports_missing_canonical_reference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workspace = root / "workspace"
@@ -182,7 +172,7 @@ class DriftScannerTests(unittest.TestCase):
             (notes / "note.md").write_text("temporary note", encoding="utf-8")
             (playbook / "start-here.md").write_text("ai-workflow-playbook guidance", encoding="utf-8")
             (repo / "AGENTS.md").write_text(
-                "# AGENTS.md\n\nPrefer direct git and gh commands.\n",
+                "# AGENTS.md\n\nRepository-specific execution guidance.\n",
                 encoding="utf-8",
             )
 
@@ -196,12 +186,9 @@ class DriftScannerTests(unittest.TestCase):
             )
 
         kinds = {finding.kind for finding in result.advisory_findings}
-        self.assertIn("agents_missing_interaction_mode_pointer", kinds)
-        self.assertIn("agents_missing_command_form_guidance", kinds)
-        self.assertIn("agents_missing_canonical_playbook_reference", kinds)
-        self.assertIn("weak_command_form_wording", kinds)
+        self.assertEqual({"agents_missing_canonical_playbook_reference"}, kinds)
 
-    def test_agents_alignment_does_not_require_adapter_execution_layer_wording(self) -> None:
+    def test_agents_alignment_does_not_require_command_form_vocabulary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workspace = root / "workspace"
@@ -218,8 +205,7 @@ class DriftScannerTests(unittest.TestCase):
                 "# AGENTS.md\n\n"
                 "This repo uses ai-workflow-playbook as canonical guidance.\n"
                 "Select the interaction mode: implementation, review/audit, or orchestration.\n"
-                "Use direct command execution for git, gh, make, python, and repo-local scripts.\n"
-                "Before using wrapper shells such as zsh -lc, bash -lc, or sh -c, check whether direct form exists.\n",
+                "Run the repository validation entrypoint before opening a pull request.\n",
                 encoding="utf-8",
             )
 
@@ -232,11 +218,7 @@ class DriftScannerTests(unittest.TestCase):
                 )
             )
 
-        findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "agents_missing_command_form_guidance"
-        ]
-        self.assertEqual(0, len(findings))
+        self.assertEqual(0, len(result.advisory_findings))
 
     def test_agents_alignment_flags_large_canonical_duplication(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
