@@ -48,8 +48,8 @@ reports possible overlap candidates using deterministic heuristics:
 The scanner also emits a small advisory workflow-policy finding stream for the
 first workflow transmission checks:
 
-- `AGENTS.md` files missing interaction-mode, command-form, or playbook
-  pointers
+- `AGENTS.md` files missing canonical playbook routing or containing large
+  copied-doctrine overlap
 - weak command-form wording that names only `git` and `gh`
 - noncanonical runtime, generated, copied-instruction, or staging surfaces using
   authority language
