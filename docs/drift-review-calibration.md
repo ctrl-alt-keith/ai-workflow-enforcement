@@ -52,9 +52,12 @@ suppression:
 
 - Worktree findings require imperative setup wording, a `git worktree add`
   command outside a command-history record, or an explicit worktree-per-lane
-  rule. Historical narrative, observed phase signals, analytical discussion,
-  negative guidance, and attempts that stopped before worktree creation are
-  evidence about prior execution rather than setup instructions.
+  rule. Nearby setup guidance should direct the reader to inspect
+  `git worktree list` and repo-local `.worktrees/`, then select, reuse, or create
+  a dedicated repo-local worktree. Historical narrative, observed phase signals,
+  analytical discussion, negative guidance, and attempts that stopped before
+  worktree creation are evidence about prior execution rather than setup
+  instructions.
 - Authority findings target direct claims that the current noncanonical note,
   prompt, file, artifact, or surface governs workflow or is a canonical source.
   Questions, negative statements, analytical discussion, check-family names,
