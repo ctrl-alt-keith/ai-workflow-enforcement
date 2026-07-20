@@ -115,7 +115,9 @@ AUTHORITY_DISCUSSION_PHRASES = (
 )
 AUTHORITY_CLAIM_PHRASES = (
     "authoritative guidance",
+    "canonical authority",
     "canonical true",
+    "canonical worked example",
     "definitive guidance",
     "definitive instruction",
     "definitive instructions",
@@ -132,7 +134,7 @@ AUTHORITY_CLAIM_PATTERNS = tuple(
     for pattern in (
         r"\b(?:this|the|current|runtime)\s+(?:runtime\s+)?(?:document|prompt|file|note|artifact|surface|playbook)\s+"
         r"(?:is|are|becomes?|remains?|serves as|acts as)\s+(?:the\s+)?(?:canonical|authoritative|definitive)\b",
-        r"\b(?:canonical|authoritative|definitive)\s+(?:source|guidance|instruction|instructions|reference|definition)\b",
+        r"\b(?:canonical|authoritative|definitive)\s+(?:sources?|guidance|instruction|instructions|reference|definition)\b",
         r"\b(?:primary|official)\s+(?:operational\s+)?(?:reference|workflow definition)\b",
         r"\b(?:this|the|current|runtime)\s+(?:document|prompt|file|note|artifact|surface)\s+governs\b",
         r"\b(?:governs|defines)\s+(?:the\s+)?(?:workflow|operational workflow|instructions)\b",
@@ -147,24 +149,14 @@ AUTHORITY_NEGATIVE_RE = re.compile(
     r"\b(?:do\s+not|does\s+not|did\s+not|must\s+not|should\s+not|not|no|never|without|rather\s+than)\b"
     r".{0,120}\b(?:source\s+of\s+truth|canonical|authoritative|definitive)\b"
 )
-AUTHORITY_HISTORICAL_RE = re.compile(
-    r"\b(?:historical|history|retrospective|frozen|completed|previous|prior|was|were|had|recorded|observed|"
-    r"reported|exposed|used|remained|retained)\b.{0,140}"
-    r"\b(?:source\s+of\s+truth|canonical|authoritative|definitive)\b"
-)
 AUTHORITY_EVIDENCE_RE = re.compile(
-    r"\b(?:audit|analysis|evidence|verify|verified|verification|inspect|inspected|reviewed|baseline|source\s+graph|"
-    r"current\s+state|retrievable\s+state|inventory|worked\s+example|calling\s+the\s+result|risk|informal)\b"
+    r"\b(?:audit|analysis|evidence|reviewed|baseline|source\s+graph|"
+    r"current\s+state|retrievable\s+state|inventory|calling\s+the\s+result|risk|informal)\b"
     r".{0,160}\b(?:source\s+of\s+truth|canonical|authoritative|definitive)\b"
     r"|"
     r"\b(?:source\s+of\s+truth|canonical|authoritative|definitive)\b.{0,160}"
-    r"\b(?:audit|analysis|evidence|verify|verified|verification|inspect|inspected|reviewed|baseline|source\s+graph|"
-    r"current\s+state|retrievable\s+state|inventory|worked\s+example|risk|informal)\b"
-)
-AUTHORITY_TYPED_OWNER_RE = re.compile(
-    r"\b(?:github|repository|pull\s+request|prs?|issues?|provider|official\s+documentation|workspace\s+scope|"
-    r"live\s+state|repo\s+state)\b.{0,140}"
-    r"\b(?:source\s+of\s+truth|canonical|authoritative|definitive)\b"
+    r"\b(?:audit|analysis|evidence|reviewed|baseline|source\s+graph|"
+    r"current\s+state|retrievable\s+state|inventory|risk|informal)\b"
 )
 STRONG_RULE_RE = re.compile(r"\b(must|never|do not|required|prohibit(?:ed|s)?|only)\b", re.IGNORECASE)
 WRAPPER_EXAMPLE_RE = re.compile(
@@ -870,6 +862,9 @@ def _mentions_weak_git_gh_only_wording(normalized: str) -> bool:
 
 
 def _scan_authority_language(document: Document) -> list[AdvisoryFinding]:
+    if _is_frozen_historical_evidence(document.text):
+        return []
+
     findings: list[AdvisoryFinding] = []
     lines = _iter_lines(document.text)
     for index, (line_number, line) in enumerate(lines):
@@ -950,11 +945,7 @@ def _has_authority_exception(normalized_text: str) -> bool:
         return True
     if AUTHORITY_NEGATIVE_RE.search(normalized_text):
         return True
-    if AUTHORITY_HISTORICAL_RE.search(normalized_text):
-        return True
     if AUTHORITY_EVIDENCE_RE.search(normalized_text):
-        return True
-    if AUTHORITY_TYPED_OWNER_RE.search(normalized_text):
         return True
     if re.search(
         r"\bauthoritative\s+source\b.{0,40}\b(?:check|checks|scanner|rollout|adoption|work)\b",

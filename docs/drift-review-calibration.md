@@ -57,20 +57,26 @@ suppression:
   evidence about prior execution rather than setup instructions.
 - Authority findings target direct claims that the current noncanonical note,
   prompt, file, artifact, or surface governs workflow or is a canonical source.
-  Questions, historical analysis, negative statements, evidence-verification
-  discussion, frozen retrospective wording, and question-typed owners such as
-  GitHub or official documentation do not compete with Playbook ownership.
-  Direct local claims and explicit attempts to replace or supersede the
-  Playbook remain findings.
+  Questions, negative statements, analytical discussion, check-family names,
+  and explicitly frozen historical evidence artifacts do not compete with
+  Playbook ownership. Past tense and owner names such as GitHub are not blanket
+  exemptions: a direct claim remains a finding in an active note, while the
+  same preserved wording can be suppressed when the document-level context
+  identifies a frozen historical evidence record. Question-typed ownership is
+  represented by question semantics, not by exempting every claim about a
+  particular owner. Direct local claims and explicit attempts to replace or
+  supersede the Playbook remain findings.
 - Frozen proposal and review records remain overlap candidates when their text
   duplicates current Playbook guidance. The scanner adds frozen-historical
   context and recommends verifying the owner reference before preserving the
   recorded application. It does not suppress the candidate, because a frozen
   label alone cannot prove that duplication is intentional.
 
-These distinctions came from the completed July 20 Incubator triage. Each
-suppression class has a regression fixture paired with positive fixtures for
-imperative worktree setup and competing canonical-source language.
+These distinctions came from the completed July 20 Incubator triage. The
+authority regression corpus is separated into confirmed false positives,
+confirmed genuine drift in active notes, and frozen historical evidence. Each
+suppression class is paired with positive fixtures for imperative worktree
+setup and competing canonical-source language.
 
 ## Ignored-Path Accounting
 

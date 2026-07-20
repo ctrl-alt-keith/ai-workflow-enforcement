@@ -797,20 +797,18 @@ class DriftScannerTests(unittest.TestCase):
             [finding.snippet for finding in authority_findings],
         )
 
-    def test_authority_language_skips_questions_history_negative_guidance_and_evidence(self) -> None:
+    def test_authority_language_skips_confirmed_false_positive_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             notes = root / "notes"
             playbook = root / "playbook"
             notes.mkdir()
             playbook.mkdir()
-            (notes / "retrospective.md").write_text(
+            (notes / "active-analysis.md").write_text(
                 "Which source is authoritative for current repository state?\n"
-                "GitHub state was used as an authoritative source during the completed audit.\n"
+                "Is GitHub the authoritative source for current repository state?\n"
                 "No inferred state was treated as canonical.\n"
                 "Do not treat a supplied receipt as authoritative current state.\n"
-                "List the authoritative sources inspected before trusting recommendations.\n"
-                "The frozen retrospective records canonical guidance as it existed at that boundary.\n"
                 "Provider work exposed collection lineage as canonical concepts.\n",
                 encoding="utf-8",
             )
@@ -823,7 +821,7 @@ class DriftScannerTests(unittest.TestCase):
             {finding.kind for finding in result.advisory_findings},
         )
 
-    def test_incubator_authority_false_positive_regression_corpus(self) -> None:
+    def test_incubator_confirmed_authority_false_positive_regression_corpus(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             notes = root / "notes"
@@ -833,9 +831,7 @@ class DriftScannerTests(unittest.TestCase):
             false_positive_lines = (
                 "Do not turn generated rollups into source of truth for repository state.",
                 "Risk: shadow-canon emergence can become an informal canonical reference.",
-                "Synchronization: lane 2.A merges first because it was the canonical authority.",
                 "When the operator asserts authoritative state, record the verification target.",
-                "GitHub state was used as authoritative source via git metadata.",
                 "No inferred state is treated as canonical.",
                 "Autonomous agents help when the source of truth is verifiable.",
                 "The GitHub authoritative scan covered the visible repositories.",
@@ -852,14 +848,65 @@ class DriftScannerTests(unittest.TestCase):
                 "Do not imply any generated view is source of truth.",
                 "Do not treat descriptor output as canonical docs.",
                 "Exact workspace scope must come from authoritative inventory.",
-                "The proposal was verified against current authoritative sources.",
-                "List the authoritative sources inspected before trusting recommendations.",
-                "Retain this as the canonical worked example, but not as canonical workflow authority.",
                 "Add truncation detection before calling the result authoritative.",
-                "GitHub is the authoritative source of truth for repository and review state.",
             )
             (notes / "confirmed-false-positives.md").write_text(
                 "\n".join(false_positive_lines) + "\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertNotIn(
+            "noncanonical_authority_language",
+            {finding.kind for finding in result.advisory_findings},
+        )
+
+    def test_incubator_confirmed_genuine_authority_drift_regression_corpus(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            genuine_drift_lines = (
+                "Synchronization: lane 2.A merges first because it was the canonical authority.",
+                "GitHub state was used as authoritative source via git metadata.",
+                "The proposal was verified against current authoritative sources.",
+                "List the authoritative sources inspected before trusting recommendations.",
+                "Retain this as the canonical worked example for this incubation concept.",
+                "GitHub is the authoritative source of truth for repository and review state.",
+            )
+            (notes / "active-note.md").write_text(
+                "\n".join(genuine_drift_lines) + "\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        authority_findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "noncanonical_authority_language"
+        ]
+        self.assertEqual(list(genuine_drift_lines), [finding.snippet for finding in authority_findings])
+
+    def test_incubator_genuine_authority_wording_is_suppressed_in_frozen_historical_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "frozen-review.md").write_text(
+                "# Frozen Review Record\n\n"
+                "context: frozen historical evidence artifact\n"
+                "role: completed retrospective record\n\n"
+                "The preserved review quoted these prior findings:\n"
+                "- Synchronization: lane 2.A merges first because it was the canonical authority.\n"
+                "- GitHub state was used as authoritative source via git metadata.\n"
+                "- GitHub is the authoritative source of truth for repository and review state.\n",
                 encoding="utf-8",
             )
             (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
