@@ -45,6 +45,48 @@ Token similarity is a closeness signal, not a severity score. High similarity
 can indicate copied guidance, but it can also reflect intentional staging work
 or examples that need to remain readable near the evidence.
 
+## Context-Sensitive Policy Signals
+
+The scanner favors grammatical and artifact context over broad keyword
+suppression:
+
+- Worktree findings require imperative setup wording, a `git worktree add`
+  command outside a command-history record, or an explicit worktree-per-lane
+  rule. Historical narrative, observed phase signals, analytical discussion,
+  negative guidance, and attempts that stopped before worktree creation are
+  evidence about prior execution rather than setup instructions.
+- Authority findings target direct claims that the current noncanonical note,
+  prompt, file, artifact, or surface governs workflow or is a canonical source.
+  Questions, historical analysis, negative statements, evidence-verification
+  discussion, frozen retrospective wording, and question-typed owners such as
+  GitHub or official documentation do not compete with Playbook ownership.
+  Direct local claims and explicit attempts to replace or supersede the
+  Playbook remain findings.
+- Frozen proposal and review records remain overlap candidates when their text
+  duplicates current Playbook guidance. The scanner adds frozen-historical
+  context and recommends verifying the owner reference before preserving the
+  recorded application. It does not suppress the candidate, because a frozen
+  label alone cannot prove that duplication is intentional.
+
+These distinctions came from the completed July 20 Incubator triage. Each
+suppression class has a regression fixture paired with positive fixtures for
+imperative worktree setup and competing canonical-source language.
+
+## Ignored-Path Accounting
+
+Ignored-path reporting counts unique excluded roots or files, not every file
+contained inside an excluded directory. Directory traversal stops at ignored
+roots such as `.git/`, `.worktrees/`, `.venv/`, `__pycache__/`, and configured
+archives. The same ignored path is counted once when an explicit notes root is
+also present in workspace inventory.
+
+This makes the metric describe scan scope instead of generated-file volume.
+In the July 20 audit comparison, nine worktrees created between runs accounted
+for 13,183 of the 13,726 additional ignored-file entries; `.venv` and
+`__pycache__` growth explained most of the remainder. Counting excluded roots
+keeps those intentionally ignored trees visible without making checkout size
+look like a scope change.
+
 ## First Real Review Loop
 
 The first real drift-review loop started after an archive-ignore correction and

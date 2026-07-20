@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fnmatch import fnmatch
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -120,7 +121,6 @@ AUTHORITY_CLAIM_PHRASES = (
     "definitive instructions",
     "official workflow definition",
     "primary operational reference",
-    "source of truth",
     "source is canonical",
     "surface is canonical",
     "artifact is canonical",
@@ -130,14 +130,41 @@ AUTHORITY_CLAIM_PHRASES = (
 AUTHORITY_CLAIM_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
-        r"\b(?:is|are|as|becomes?|serves as|acts as)\s+(?:the\s+)?(?:canonical|authoritative|definitive)\b",
+        r"\b(?:this|the|current|runtime)\s+(?:runtime\s+)?(?:document|prompt|file|note|artifact|surface|playbook)\s+"
+        r"(?:is|are|becomes?|remains?|serves as|acts as)\s+(?:the\s+)?(?:canonical|authoritative|definitive)\b",
         r"\b(?:canonical|authoritative|definitive)\s+(?:source|guidance|instruction|instructions|reference|definition)\b",
         r"\b(?:primary|official)\s+(?:operational\s+)?(?:reference|workflow definition)\b",
         r"\b(?:this|the|current|runtime)\s+(?:document|prompt|file|note|artifact|surface)\s+governs\b",
         r"\b(?:governs|defines)\s+(?:the\s+)?(?:workflow|operational workflow|instructions)\b",
-        r"\btreat\s+this\s+as\s+(?:the\s+)?source\s+of\s+truth\b",
-        r"\buse\s+this\s+as\s+(?:the\s+)?canonical\s+workflow\b",
+        r"\b(?:this|the|current|runtime)\s+(?:runtime\s+)?(?:document|prompt|file|note|artifact|surface|playbook)\s+"
+        r"(?:is|becomes?|serves as|acts as)\s+(?:the\s+)?source\s+of\s+truth\b",
+        r"\b(?:treat|use)\s+this\s+as\s+(?:the\s+)?source\s+of\s+truth\b",
+        r"\b(?:treat|use)\s+this\b.{0,80}\bas\s+(?:the\s+)?canonical\s+"
+        r"(?:workflow(?:\s+reference)?|source|reference|guidance)\b",
     )
+)
+AUTHORITY_NEGATIVE_RE = re.compile(
+    r"\b(?:do\s+not|does\s+not|did\s+not|must\s+not|should\s+not|not|no|never|without|rather\s+than)\b"
+    r".{0,120}\b(?:source\s+of\s+truth|canonical|authoritative|definitive)\b"
+)
+AUTHORITY_HISTORICAL_RE = re.compile(
+    r"\b(?:historical|history|retrospective|frozen|completed|previous|prior|was|were|had|recorded|observed|"
+    r"reported|exposed|used|remained|retained)\b.{0,140}"
+    r"\b(?:source\s+of\s+truth|canonical|authoritative|definitive)\b"
+)
+AUTHORITY_EVIDENCE_RE = re.compile(
+    r"\b(?:audit|analysis|evidence|verify|verified|verification|inspect|inspected|reviewed|baseline|source\s+graph|"
+    r"current\s+state|retrievable\s+state|inventory|worked\s+example|calling\s+the\s+result|risk|informal)\b"
+    r".{0,160}\b(?:source\s+of\s+truth|canonical|authoritative|definitive)\b"
+    r"|"
+    r"\b(?:source\s+of\s+truth|canonical|authoritative|definitive)\b.{0,160}"
+    r"\b(?:audit|analysis|evidence|verify|verified|verification|inspect|inspected|reviewed|baseline|source\s+graph|"
+    r"current\s+state|retrievable\s+state|inventory|worked\s+example|risk|informal)\b"
+)
+AUTHORITY_TYPED_OWNER_RE = re.compile(
+    r"\b(?:github|repository|pull\s+request|prs?|issues?|provider|official\s+documentation|workspace\s+scope|"
+    r"live\s+state|repo\s+state)\b.{0,140}"
+    r"\b(?:source\s+of\s+truth|canonical|authoritative|definitive)\b"
 )
 STRONG_RULE_RE = re.compile(r"\b(must|never|do not|required|prohibit(?:ed|s)?|only)\b", re.IGNORECASE)
 WRAPPER_EXAMPLE_RE = re.compile(
@@ -155,10 +182,15 @@ ENV_ASSIGNMENT_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+(?:\s+|$))+")
 WORKTREE_CREATION_RE = re.compile(
     r"\bgit\s+worktree\s+add\b"
     r"|"
-    r"\b(?:create|creating|add|adding|set\s+up|setting\s+up|spin\s+up|spinning\s+up|make|making)\s+"
+    r"^\s*(?:(?:[-*+]\s+)|(?:\d+[.)]\s+))?(?:create|add|set\s+up|spin\s+up|make)\s+"
     r"(?:a\s+|an\s+|the\s+)?(?:new\s+|fresh\s+|repo-local\s+|isolated\s+|clean\s+){0,3}worktrees?\b"
     r"|"
-    r"\bworktree\s+creation\b"
+    r"\b(?:must|should|shall|always|need\s+to|required\s+to|then)\b[^.\n]{0,100}"
+    r"\b(?:create|add|set\s+up|spin\s+up|make)\s+"
+    r"(?:a\s+|an\s+|the\s+)?(?:new\s+|fresh\s+|repo-local\s+|isolated\s+|clean\s+){0,3}worktrees?\b"
+    r"|"
+    r"\b(?:for|before|after|first|next)\b[^.\n]{0,120},\s*(?:create|add|set\s+up|spin\s+up|make)\s+"
+    r"(?:a\s+|an\s+|the\s+)?(?:new\s+|fresh\s+|repo-local\s+|isolated\s+|clean\s+){0,3}worktrees?\b"
     r"|"
     r"\b(?:use|using)\s+worktrees?\s+for\s+(?:parallel\s+)?(?:same[-\s]+repo|same\s+repository|parallel)\b"
     r"|"
@@ -178,7 +210,12 @@ BRANCH_ONLY_IMPLEMENTATION_RE = re.compile(
     re.IGNORECASE,
 )
 ISOLATED_SURFACE_CREATION_RE = re.compile(
-    r"\b(?:create|creating|add|adding|set\s+up|setting\s+up|spin\s+up|spinning\s+up|make|making)\b"
+    r"^\s*(?:(?:[-*+]\s+)|(?:\d+[.)]\s+))?(?:create|add|set\s+up|spin\s+up|make)\b"
+    r"[^.\n]{0,100}\b(?:isolated|isolation)\b"
+    r"[^.\n]{0,80}\b(?:execution\s+)?(?:surfaces?|workspaces?|checkouts?|containers?)\b"
+    r"|"
+    r"\b(?:must|should|shall|always|need\s+to|required\s+to|then)\b[^.\n]{0,100}"
+    r"\b(?:create|add|set\s+up|spin\s+up|make)\b"
     r"[^.\n]{0,100}\b(?:isolated|isolation)\b"
     r"[^.\n]{0,80}\b(?:execution\s+)?(?:surfaces?|workspaces?|checkouts?|containers?)\b",
     re.IGNORECASE,
@@ -298,6 +335,11 @@ class OverlapCandidate:
 
     @property
     def suggested_direction(self) -> str:
+        if "frozen historical evidence context" in self.reasons:
+            return (
+                "Keep the overlap visible; verify the canonical owner reference and frozen record context, "
+                "then preserve the historical application when it is intentional."
+            )
         if self.has_canonical_reference:
             return "Review staged note for stale duplicate wording; keep local evidence or context only."
         return "Consider replacing repeated guidance with a short canonical playbook reference."
@@ -333,6 +375,7 @@ def scan(config: ScannerConfig) -> ScanResult:
         note_headings = normalized_headings(note.text)
         note_phrases = normalized_phrases(note.text, config.min_phrase_words)
         note_has_reference = has_canonical_reference(note.text)
+        note_is_frozen_history = _is_frozen_historical_evidence(note.text)
 
         for target in playbook.documents:
             target_headings = normalized_headings(target.text)
@@ -346,6 +389,7 @@ def scan(config: ScannerConfig) -> ScanResult:
                 repeated_phrases,
                 similarity,
                 note_has_reference,
+                note_is_frozen_history,
                 config,
             )
             if not reasons:
@@ -369,7 +413,7 @@ def scan(config: ScannerConfig) -> ScanResult:
         candidates=tuple(candidates[: config.max_candidates]),
         notes_files_scanned=len(notes.documents),
         playbook_files_scanned=len(playbook.documents),
-        ignored_paths=tuple(notes.ignored_paths + playbook.ignored_paths + workspace.ignored_paths),
+        ignored_paths=_unique_paths(notes.ignored_paths + playbook.ignored_paths + workspace.ignored_paths),
         advisory_findings=tuple(advisory_findings[: config.max_candidates]),
     )
 
@@ -393,14 +437,13 @@ def _load_documents(roots: tuple[Path, ...], ignore_patterns: tuple[str, ...]) -
     ignored_paths: list[Path] = []
     for configured_root in roots:
         root = configured_root.resolve()
-        for path in _iter_files(root):
-            if _is_ignored(path, root, ignore_patterns):
-                ignored_paths.append(path)
-                continue
+        files, ignored = _iter_files(root, ignore_patterns)
+        ignored_paths.extend(ignored)
+        for path in files:
             if path.suffix.lower() not in SUPPORTED_SUFFIXES:
                 continue
             documents.append(Document(root=root, path=path, text=path.read_text(encoding="utf-8")))
-    return _DocumentLoad(tuple(documents), tuple(ignored_paths))
+    return _DocumentLoad(tuple(documents), _unique_paths(tuple(ignored_paths)))
 
 
 def _load_workspace_documents(config: ScannerConfig) -> _WorkspaceLoad:
@@ -606,18 +649,44 @@ def _repo_name(repository: str) -> str:
     return repository.rstrip("/").split("/")[-1]
 
 
-def _iter_files(root: Path) -> tuple[Path, ...]:
+def _iter_files(root: Path, ignore_patterns: tuple[str, ...]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     if root.is_file():
-        return (root.resolve(),)
+        resolved = root.resolve()
+        if _is_ignored(resolved, resolved, ignore_patterns):
+            return (), (resolved,)
+        return (resolved,), ()
     files: list[Path] = []
-    for path in root.rglob("*"):
-        resolved = path.resolve()
-        if not resolved.is_file():
-            continue
-        if not _is_within(resolved, root):
-            continue
-        files.append(resolved)
-    return tuple(files)
+    ignored_paths: list[Path] = []
+    for current, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        retained_directories: list[str] = []
+        for name in sorted(directory_names):
+            path = (current_path / name).resolve()
+            if not _is_within(path, root):
+                continue
+            if _is_ignored_directory(path, root, ignore_patterns):
+                ignored_paths.append(path)
+                continue
+            retained_directories.append(name)
+        directory_names[:] = retained_directories
+
+        for name in sorted(file_names):
+            path = (current_path / name).resolve()
+            if not path.is_file() or not _is_within(path, root):
+                continue
+            if _is_ignored(path, root, ignore_patterns):
+                ignored_paths.append(path)
+                continue
+            files.append(path)
+    return tuple(files), tuple(ignored_paths)
+
+
+def _is_ignored_directory(path: Path, root: Path, ignore_patterns: tuple[str, ...]) -> bool:
+    return _is_ignored(path, root, ignore_patterns) or _is_ignored(
+        path / "__scanner_ignored_subtree__",
+        root,
+        ignore_patterns,
+    )
 
 
 def _is_ignored(path: Path, root: Path, ignore_patterns: tuple[str, ...]) -> bool:
@@ -630,6 +699,7 @@ def _candidate_reasons(
     repeated_phrases: tuple[str, ...],
     similarity: float,
     has_reference: bool,
+    is_frozen_history: bool,
     config: ScannerConfig,
 ) -> list[str]:
     reasons: list[str] = []
@@ -641,7 +711,18 @@ def _candidate_reasons(
         reasons.append("token similarity threshold")
     if reasons and not has_reference:
         reasons.append("missing canonical reference")
+    if reasons and is_frozen_history:
+        reasons.append("frozen historical evidence context")
     return reasons
+
+
+def _is_frozen_historical_evidence(text: str) -> bool:
+    normalized = normalize_text(text)
+    return (
+        "frozen" in normalized
+        and any(term in normalized for term in ("proposal", "review", "retrospective", "evidence", "artifact"))
+        and any(term in normalized for term in ("historical", "identity", "digest", "record", "boundary", "reviewed"))
+    )
 
 
 def _candidate_sort_key(candidate: OverlapCandidate) -> tuple[float, int, int, str]:
@@ -688,6 +769,10 @@ def _unique_documents(documents: tuple[Document, ...]) -> tuple[Document, ...]:
         seen.add(document.path)
         unique.append(document)
     return tuple(unique)
+
+
+def _unique_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    return tuple(dict.fromkeys(paths))
 
 
 def _scan_agents_alignment(document: Document, playbook: tuple[Document, ...]) -> list[AdvisoryFinding]:
@@ -821,12 +906,16 @@ def _has_noncanonical_authority_claim(
 ) -> bool:
     if _is_direct_authority_claim(line, normalized_line, is_heading=is_heading):
         return True
+    if _has_authority_exception(normalized_line):
+        return False
     if _is_authority_context_exception(normalized_context):
         return False
     return _has_ambiguous_authority_reference(normalized_line, normalized_context)
 
 
 def _is_direct_authority_claim(line: str, normalized_line: str, *, is_heading: bool) -> bool:
+    if "?" in line:
+        return False
     if is_heading and "source of truth" in normalized_line:
         return False
     if normalized_line == "canonical guidance":
@@ -858,6 +947,19 @@ def _has_authority_exception(normalized_text: str) -> bool:
     if _is_playbook_override_authority_claim(normalized_text):
         return False
     if _is_benign_playbook_canonical_reference(normalized_text):
+        return True
+    if AUTHORITY_NEGATIVE_RE.search(normalized_text):
+        return True
+    if AUTHORITY_HISTORICAL_RE.search(normalized_text):
+        return True
+    if AUTHORITY_EVIDENCE_RE.search(normalized_text):
+        return True
+    if AUTHORITY_TYPED_OWNER_RE.search(normalized_text):
+        return True
+    if re.search(
+        r"\bauthoritative\s+source\b.{0,40}\b(?:check|checks|scanner|rollout|adoption|work)\b",
+        normalized_text,
+    ):
         return True
     if (
         "canonical guidance" in normalized_text
@@ -943,10 +1045,6 @@ def _has_context_suppressed_authority_language(normalized_context: str) -> bool:
 def _has_ambiguous_authority_reference(normalized_line: str, normalized_context: str) -> bool:
     if _has_context_suppressed_authority_language(normalized_context):
         return False
-    if "source of truth" in normalized_line:
-        return True
-    if "authoritative" in normalized_line:
-        return True
     if "canonical" in normalized_line:
         return False
     if _has_authority_claim_language(normalized_line):
