@@ -45,6 +45,12 @@ def validate_review_result_attestation(attestation: dict[str, Any]) -> None:
     if missing:
         raise AttestationValidationError(f"missing required fields: {', '.join(missing)}")
 
+    unexpected = sorted(set(attestation) - set(REQUIRED_FIELDS))
+    if unexpected:
+        raise AttestationValidationError(
+            f"unexpected fields: {', '.join(unexpected)}"
+        )
+
     attestation_type = attestation["attestation_type"]
     if not isinstance(attestation_type, str) or attestation_type not in KNOWN_ATTESTATION_TYPES:
         raise AttestationValidationError(
