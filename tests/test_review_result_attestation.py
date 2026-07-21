@@ -39,6 +39,16 @@ class ReviewResultAttestationTests(unittest.TestCase):
         ):
             validate_review_result_attestation(attestation)
 
+    def test_unknown_fields_are_rejected_to_match_schema_contract(self) -> None:
+        attestation = _example()
+        attestation["cleanup_complete"] = True
+
+        with self.assertRaisesRegex(
+            AttestationValidationError,
+            "unexpected fields: cleanup_complete",
+        ):
+            validate_review_result_attestation(attestation)
+
     def test_invalid_schema_version_is_rejected(self) -> None:
         attestation = _example()
         attestation["schema_version"] = 2
