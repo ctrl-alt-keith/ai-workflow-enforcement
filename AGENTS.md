@@ -70,3 +70,8 @@ repository-specific behavior.
 
 - Use the playbook for reusable workflow rules instead of duplicating them
   here.
+
+
+## Shared Workflow Entry Point
+
+Start with `ai-workflow-playbook/docs/start-here.md` before repository or software work. Use this `AGENTS.md` only for repository-specific execution guidance.
