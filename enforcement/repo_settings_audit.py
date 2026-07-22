@@ -939,8 +939,18 @@ def _dependabot_item(remote: RemoteSnapshot, expected: ExpectedSettings) -> Audi
 def _merge_methods_item(remote: RemoteSnapshot, state: HostedState, expected: ExpectedSettings) -> AuditItem:
     actual = _merge_methods_actual(state)
     known = expected.merge_methods
-    if known:
-        status = "match" if all(actual.get(method) == value for method, value in known.items()) else "drift"
+    mismatched = tuple(
+        method
+        for method, value in known.items()
+        if method in actual and actual[method] != value
+    )
+    unavailable = tuple(method for method in known if method not in actual)
+    if mismatched:
+        status = "drift"
+    elif unavailable:
+        status = "unknown"
+    elif known:
+        status = "match"
     else:
         status = "unknown"
     return AuditItem(
@@ -959,6 +969,13 @@ def _merge_methods_item(remote: RemoteSnapshot, state: HostedState, expected: Ex
         follow_up=(
             "Align hosted merge methods with explicit source-of-truth governance docs."
             if status == "drift"
+            else (
+                "unknown_unavailable: hosted repository metadata did not expose expected fields: "
+                f"{', '.join(_merge_method_label(field) for field in unavailable)}. Retry hosted inspection."
+            )
+            if unavailable
+            else "Hosted merge method and hygiene settings match the effective policy."
+            if status == "match"
             else
             "Compare allowed merge methods manually if the policy is prose-only, or document concrete merge-method expectations before enforcing this check."
             if expected.merge_methods_documented
@@ -1433,6 +1450,8 @@ def _central_policy(repo: str) -> CentralPolicy:
     baseline = _policy_object(data.get("baseline"), "baseline")
     repositories = _policy_object(data.get("repositories", {}), "repositories")
     override = _policy_object(repositories.get(repo, {}), f"repositories.{repo}")
+    _validate_enabled_disabled_policy_field(baseline, "auto_merge", "baseline.auto_merge")
+    _validate_enabled_disabled_policy_field(override, "auto_merge", f"repositories.{repo}.auto_merge")
     merged = {**baseline, **override}
     if isinstance(baseline.get("dependabot"), dict) or isinstance(override.get("dependabot"), dict):
         merged["dependabot"] = {
@@ -1505,6 +1524,15 @@ def _enabled_policy_bool(value: object) -> bool | None:
     if isinstance(value, bool):
         return value
     return None
+
+
+def _validate_enabled_disabled_policy_field(policy: dict[str, object], key: str, label: str) -> None:
+    if key not in policy:
+        return
+    if policy[key] not in ("enabled", "disabled"):
+        raise RuntimeError(
+            f'central repo settings policy field {label} must be "enabled" or "disabled"'
+        )
 
 
 def _policy_merge_methods(policy: dict[str, object]) -> dict[str, bool]:
@@ -2385,6 +2413,13 @@ def _merge_methods_actual(state: HostedState) -> dict[str, bool]:
 
 
 def _describe_expected_merge_methods(methods: dict[str, bool]) -> str:
+    return "; ".join(
+        f"{_merge_method_label(key)}: {_enabled_disabled(value)}"
+        for key, value in sorted(methods.items())
+    )
+
+
+def _merge_method_label(field: str) -> str:
     labels = {
         "allow_merge_commit": "merge commits",
         "allow_squash_merge": "squash merges",
@@ -2392,7 +2427,7 @@ def _describe_expected_merge_methods(methods: dict[str, bool]) -> str:
         "allow_auto_merge": "auto-merge",
         "delete_branch_on_merge": "delete branch on merge",
     }
-    return "; ".join(f"{labels[key]}: {_enabled_disabled(value)}" for key, value in sorted(methods.items()))
+    return labels.get(field, field)
 
 
 def _review_admin_part(label: str, value: object) -> str:

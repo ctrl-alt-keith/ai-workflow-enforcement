@@ -25,6 +25,7 @@
   "repositories": {
     "ctrl-alt-keith/ai-workflow-incubator": {
       "visibility": "private",
+      "auto_merge": "enabled",
       "required_checks": [
         "markdownlint"
       ]

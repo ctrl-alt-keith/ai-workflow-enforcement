@@ -751,6 +751,160 @@ class RepoSettingsAuditTests(unittest.TestCase):
         item = _item(report, "merge method settings")
 
         self.assertEqual("match", item.status)
+        self.assertIn("auto-merge: disabled", item.expected)
+        self.assertEqual(
+            "Hosted merge method and hygiene settings match the effective policy.",
+            item.follow_up,
+        )
+
+    def test_auto_merge_enabled_override_matches_hosted_setting_and_renders_fields(self) -> None:
+        repo = "ctrl-alt-keith/ai-workflow-incubator"
+        report = audit_repo_settings(
+            repo,
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(
+                _responses(
+                    repo=repo,
+                    private=True,
+                    allow_merge_commit=False,
+                    allow_squash_merge=True,
+                    allow_rebase_merge=False,
+                    allow_auto_merge=True,
+                )
+            ),
+        )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("central repo-settings policy + GitHub main (remote-sha)", item.source)
+        self.assertIn("auto-merge: enabled", item.expected)
+        self.assertIn("auto-merge: yes", item.actual)
+        self.assertEqual(
+            "Hosted merge method and hygiene settings match the effective policy.",
+            item.follow_up,
+        )
+
+        json_item = next(
+            rendered_item
+            for rendered_item in json.loads(render_json_report(report))["items"]
+            if rendered_item["setting"] == "merge method settings"
+        )
+        self.assertEqual(item.source, json_item["source"])
+        self.assertEqual(item.expected, json_item["expected"])
+        self.assertEqual(item.actual, json_item["actual"])
+        self.assertEqual(item.follow_up, json_item["follow_up"])
+
+        text_report = render_text_report(report)
+        self.assertIn(f"  source: {item.source}", text_report)
+        self.assertIn(f"  expected: {item.expected}", text_report)
+        self.assertIn(f"  actual: {item.actual}", text_report)
+        self.assertIn(f"  follow-up: {item.follow_up}", text_report)
+
+    def test_auto_merge_enabled_override_drifts_when_hosted_setting_is_disabled(self) -> None:
+        repo = "ctrl-alt-keith/ai-workflow-incubator"
+        report = audit_repo_settings(
+            repo,
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(
+                _responses(
+                    repo=repo,
+                    private=True,
+                    allow_merge_commit=False,
+                    allow_squash_merge=True,
+                    allow_rebase_merge=False,
+                    allow_auto_merge=False,
+                )
+            ),
+        )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("drift", item.status)
+        self.assertIn("auto-merge: enabled", item.expected)
+        self.assertIn("auto-merge: no", item.actual)
+        self.assertIn("Align hosted merge methods", item.follow_up)
+
+    def test_explicit_disabled_auto_merge_override_replaces_enabled_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            policy_path = Path(temp_dir) / "repo-settings-policy.json"
+            policy_path.write_text(
+                json.dumps(
+                    {
+                        "baseline": {"auto_merge": "enabled"},
+                        "repositories": {
+                            "ctrl-alt-keith/sample": {"auto_merge": "disabled"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(repo_settings_audit, "CENTRAL_POLICY_PATH", policy_path):
+                report = audit_repo_settings(
+                    "ctrl-alt-keith/sample",
+                    source_ref="main",
+                    repo_root=Path("/does/not/exist"),
+                    runner=FakeGh(_responses(allow_auto_merge=False)),
+                )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("match", item.status)
+        self.assertEqual("auto-merge: disabled", item.expected)
+        self.assertIn("auto-merge: no", item.actual)
+
+    def test_invalid_auto_merge_policy_values_fail_closed(self) -> None:
+        policies = {
+            "baseline": {
+                "baseline": {"auto_merge": "sometimes"},
+                "repositories": {},
+            },
+            "selected repository override": {
+                "baseline": {"auto_merge": "disabled"},
+                "repositories": {
+                    "ctrl-alt-keith/sample": {"auto_merge": True},
+                },
+            },
+        }
+        for label, policy in policies.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp_dir:
+                policy_path = Path(temp_dir) / "repo-settings-policy.json"
+                policy_path.write_text(json.dumps(policy), encoding="utf-8")
+                with patch.object(repo_settings_audit, "CENTRAL_POLICY_PATH", policy_path):
+                    with self.assertRaisesRegex(RuntimeError, "auto_merge.*enabled.*disabled"):
+                        audit_repo_settings(
+                            "ctrl-alt-keith/sample",
+                            source_ref="main",
+                            repo_root=Path("/does/not/exist"),
+                            runner=FakeGh(_responses()),
+                        )
+
+    def test_unavailable_hosted_auto_merge_setting_reports_unknown(self) -> None:
+        repo = "ctrl-alt-keith/sample"
+        responses = _responses(
+            repo=repo,
+            allow_merge_commit=False,
+            allow_squash_merge=True,
+            allow_rebase_merge=False,
+        )
+        responses[f"/repos/{repo}"].pop("allow_auto_merge")
+
+        report = audit_repo_settings(
+            repo,
+            source_ref="main",
+            repo_root=Path("/does/not/exist"),
+            runner=FakeGh(responses),
+        )
+
+        item = _item(report, "merge method settings")
+
+        self.assertEqual("unknown", item.status)
+        self.assertIn("auto-merge: disabled", item.expected)
+        self.assertIn("auto-merge: unknown", item.actual)
+        self.assertIn("unknown_unavailable", item.follow_up)
+        self.assertIn("auto-merge", item.follow_up)
 
     def test_explicit_zero_review_solo_operator_policy_matches_hosted_settings(self) -> None:
         responses = _responses(required_review_count=0, enforce_admins=False)
