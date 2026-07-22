@@ -94,8 +94,21 @@ class WorktreeIgnoreBaselineStrategyTests(unittest.TestCase):
         self.assertEqual("blocked", result.outcome)
         self.assertEqual(original, self.gitignore.read_bytes())
 
-    def test_undetectable_newline_convention_is_blocked(self) -> None:
+    def test_single_line_without_newline_uses_lf_default(self) -> None:
         original = b"*.pyc"
+        result = self._run(original)
+        self.assertEqual("changed", result.outcome)
+        self.assertEqual((".gitignore",), result.changed_paths)
+        self.assertEqual(b"*.pyc\n.worktrees/\n", self.gitignore.read_bytes())
+
+    def test_empty_existing_file_uses_lf_without_leading_blank_line(self) -> None:
+        result = self._run(b"")
+        self.assertEqual("changed", result.outcome)
+        self.assertEqual((".gitignore",), result.changed_paths)
+        self.assertEqual(b".worktrees/\n", self.gitignore.read_bytes())
+
+    def test_bare_cr_is_blocked_before_mutation(self) -> None:
+        original = b"*.pyc\r.cache"
         result = self._run(original)
         self.assertEqual("blocked", result.outcome)
         self.assertEqual(original, self.gitignore.read_bytes())

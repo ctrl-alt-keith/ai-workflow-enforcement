@@ -144,10 +144,11 @@ not hydrate or verify live Playbook content.
 
 When the `.worktrees` token is wholly absent, the strategy appends only
 `.worktrees/` and a final newline. It preserves the original bytes as an exact
-prefix, uses the file's unambiguous existing LF or CRLF convention, and reports
-`.gitignore` as its only changed path. It does not create a missing `.gitignore`,
-rewrite or reorder rules, normalize unrelated whitespace, infer equivalence,
-or repair another ignore rule.
+prefix, defaults to LF when no newline bytes exist, otherwise preserves an
+unambiguous existing LF or CRLF convention, and reports `.gitignore` as its
+only changed path. It does not create a missing `.gitignore`, rewrite or reorder
+rules, normalize unrelated whitespace, infer equivalence, or repair another
+ignore rule.
 
 The exact active rule returns `no_change`. Any other `.worktrees` occurrence
 blocks the strategy, including commented, negated, rooted, recursive, globbed,

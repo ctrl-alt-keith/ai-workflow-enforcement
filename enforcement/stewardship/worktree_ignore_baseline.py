@@ -68,11 +68,11 @@ class WorktreeIgnoreBaselineStrategy:
             return _blocked(
                 "Root .gitignore has no unambiguous supported newline convention."
             )
-        suffix = (
-            REQUIRED_RULE.encode("utf-8") + newline
-            if original_bytes.endswith(newline)
-            else newline + REQUIRED_RULE.encode("utf-8") + newline
-        )
+        encoded_rule = REQUIRED_RULE.encode("utf-8")
+        if not original_bytes or original_bytes.endswith(newline):
+            suffix = encoded_rule + newline
+        else:
+            suffix = newline + encoded_rule + newline
         expected = original_bytes + suffix
 
         try:
@@ -109,7 +109,7 @@ def _newline_convention(content: bytes) -> bytes | None:
     has_crlf = b"\r\n" in content
     has_lf = b"\n" in without_crlf
     has_cr = b"\r" in without_crlf
-    if has_cr or has_crlf == has_lf:
+    if has_cr or (has_crlf and has_lf):
         return None
     return b"\r\n" if has_crlf else b"\n"
 
