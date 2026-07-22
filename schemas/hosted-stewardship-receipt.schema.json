@@ -43,6 +43,8 @@
     "completed_at": {"type": ["string", "null"]},
     "mode": {"enum": ["dry-run", "propose"]},
     "repository": {"type": "string", "minLength": 1},
+    "requested_target_ref": {"type": ["string", "null"]},
+    "effective_target_ref": {"type": ["string", "null"]},
     "base_branch": {"type": ["string", "null"]},
     "base_sha": {"type": ["string", "null"]},
     "engine_revision": {"type": "string", "minLength": 1},

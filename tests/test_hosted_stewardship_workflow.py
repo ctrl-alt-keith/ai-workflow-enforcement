@@ -24,6 +24,9 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", self.workflow)
         self.assertNotIn("schedule:", self.workflow)
         self.assertIn("- ctrl-alt-keith/ai-workflow-enforcement", self.workflow)
+        self.assertIn("target_ref:", self.workflow)
+        self.assertIn("Optional branch, tag, or commit to inspect in dry-run only", self.workflow)
+        self.assertIn('default: ""', self.workflow)
         self.assertEqual(2, self.workflow.count("          - dry-run") + self.workflow.count("          - propose"))
         self.assertIn("group: hosted-stewardship-${{ inputs.repository }}", self.workflow)
         self.assertIn("cancel-in-progress: false", self.workflow)
@@ -35,6 +38,7 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertIn("STEWARDSHIP_WRITE_APP_CLIENT_ID", self.workflow)
         self.assertIn("STEWARDSHIP_WRITE_APP_PRIVATE_KEY", self.workflow)
         self.assertIn("inputs.mode == 'propose'", self.workflow)
+        self.assertIn("inputs.target_ref == ''", self.workflow)
         self.assertEqual(2, self.workflow.count("repositories: ${{ inputs.repository }}"))
         self.assertIn("permission-contents: read", self.workflow)
         self.assertIn("permission-contents: write", self.workflow)
@@ -44,11 +48,13 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
     def test_modes_share_one_cli_pipeline_and_only_propose_receives_write_token(self) -> None:
         self.assertEqual(1, self.workflow.count("python3 -m enforcement.stewardship.cli"))
         self.assertIn('--mode "${{ inputs.mode }}"', self.workflow)
+        self.assertIn('--target-ref "${TARGET_REF}"', self.workflow)
         execute_step = self.workflow.split(
             "- name: Execute the shared stewardship pipeline", 1
         )[1].split("- name: Upload durable stewardship evidence", 1)[0]
         self.assertIn("STEWARDSHIP_READ_TOKEN", execute_step)
         self.assertIn("STEWARDSHIP_WRITE_TOKEN", execute_step)
+        self.assertIn("TARGET_REF: ${{ inputs.target_ref }}", execute_step)
         strategy = (ROOT / "enforcement" / "stewardship" / "docs_drift.py").read_text(
             encoding="utf-8"
         )
@@ -94,6 +100,16 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertIn(policy["required_policy_marker"], self.product_boundary)
         self.assertEqual(1, self.schema["properties"]["schema_version"]["const"])
         required = set(self.schema["required"])
+        self.assertEqual(
+            {"string", "null"},
+            set(self.schema["properties"]["requested_target_ref"]["type"]),
+        )
+        self.assertEqual(
+            {"string", "null"},
+            set(self.schema["properties"]["effective_target_ref"]["type"]),
+        )
+        self.assertNotIn("requested_target_ref", required)
+        self.assertNotIn("effective_target_ref", required)
         self.assertTrue(
             {
                 "eligibility",

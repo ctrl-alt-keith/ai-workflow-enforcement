@@ -57,6 +57,23 @@ class GitHubGateway:
         data = json.loads(result.stdout)
         return str(data["object"]["sha"])
 
+    def resolve_ref(self, repository: str, target_ref: str) -> str | None:
+        """Resolve a branch, tag, or commit reference to an exact commit SHA."""
+
+        endpoint = f"repos/{repository}/commits/{quote(target_ref, safe='')}"
+        result = self._run(
+            ("gh", "api", endpoint), token=self._read_token, check=False
+        )
+        if result.returncode == 1 and "HTTP 404" in result.stderr:
+            return None
+        if result.returncode != 0:
+            raise GitHubError(_bounded(result.stderr or result.stdout))
+        try:
+            data = json.loads(result.stdout)
+            return str(data["sha"])
+        except (KeyError, json.JSONDecodeError) as exc:
+            raise GitHubError("GitHub returned malformed commit JSON") from exc
+
     def hydrate(self, repository: str, base_sha: str, destination: Path) -> None:
         if destination.exists():
             raise GitHubError(f"hydration destination already exists: {destination}")
