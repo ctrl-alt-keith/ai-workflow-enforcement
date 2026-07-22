@@ -490,3 +490,11 @@ first workflow contract, Phase 2 contract closure note, first skill package,
 Phase 3 closure note, and deferred experiment areas.
 
 > AI-generated. Human-verified. Occasionally argued about.
+
+## Validation
+
+Run the repository-native validation command before delivery:
+
+```sh
+make check
+```
