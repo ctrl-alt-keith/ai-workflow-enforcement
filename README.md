@@ -78,11 +78,7 @@ historical residue, and false positives without changing scanner behavior.
 
 ## Quick Start
 
-Run validation:
-
-```sh
-make check
-```
+See `AGENTS.md` for the repository validation command.
 
 Run the scanner against explicit roots:
 
@@ -137,14 +133,13 @@ The repository-owned workflow drift audit runs every Monday at `17:40 UTC`
 and supports manual `workflow_dispatch` runs. The hosted job checks out the
 requested enforcement commit, hydrates every visible active repository in the
 `ctrl-alt-keith` organization into a clean scan workspace, runs the canonical
-advisory scan, and then runs `make check`.
+advisory scan, and then runs repository-native validation.
 
 The repository contract is:
 
 ```sh
 make workflow-drift-setup
 make workflow-drift-audit
-make check
 ```
 
 The scanner has no third-party Python package dependencies. The setup target
