@@ -8,8 +8,11 @@ from typing import Any, Literal
 
 
 ENGINE_SCHEMA_VERSION = 1
-STRATEGY_ID = "docs-drift"
-STRATEGY_REVISION = "1"
+DEFAULT_STRATEGY_IDENTIFIER = "docs-drift"
+SUPPORTED_STRATEGY_IDENTIFIERS = (
+    "docs-drift",
+    "agents-startup-routing",
+)
 
 Mode = Literal["dry-run", "propose"]
 EligibilityDecision = Literal["eligible", "ineligible", "blocked"]
@@ -29,6 +32,42 @@ class RepositoryInfo:
     full_name: str
     default_branch: str
     archived: bool
+
+
+@dataclass(frozen=True)
+class StrategyMetadata:
+    identifier: str
+    revision: str
+    commit_message: str
+    pr_title: str
+    collision_marker: str
+
+
+DOCS_DRIFT_METADATA = StrategyMetadata(
+    identifier="docs-drift",
+    revision="1",
+    commit_message="docs: document repository validation",
+    pr_title="docs: document repository validation",
+    collision_marker="<!-- hosted-stewardship:docs-drift -->",
+)
+
+AGENTS_STARTUP_ROUTING_METADATA = StrategyMetadata(
+    identifier="agents-startup-routing",
+    revision="1",
+    commit_message="docs: restore the repository startup route",
+    pr_title="docs: restore the repository startup route",
+    collision_marker="<!-- hosted-stewardship:agents-startup-routing -->",
+)
+
+
+def strategy_metadata(identifier: str) -> StrategyMetadata:
+    """Return metadata for one of the two deliberately fixed strategies."""
+
+    if identifier == DOCS_DRIFT_METADATA.identifier:
+        return DOCS_DRIFT_METADATA
+    if identifier == AGENTS_STARTUP_ROUTING_METADATA.identifier:
+        return AGENTS_STARTUP_ROUTING_METADATA
+    raise ValueError(f"unsupported stewardship strategy: {identifier}")
 
 
 @dataclass(frozen=True)

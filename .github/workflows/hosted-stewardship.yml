@@ -17,6 +17,14 @@ on:
         options:
           - dry-run
           - propose
+      strategy:
+        description: Fixed stewardship strategy to execute
+        required: true
+        default: docs-drift
+        type: choice
+        options:
+          - docs-drift
+          - agents-startup-routing
       target_ref:
         description: Optional branch, tag, or commit to inspect in dry-run only; blank uses the default branch
         required: false
@@ -32,7 +40,7 @@ concurrency:
 
 jobs:
   steward:
-    name: Run Docs Drift stewardship
+    name: Run selected stewardship strategy
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -97,6 +105,7 @@ jobs:
           python3 -m enforcement.stewardship.cli \
             --repository "${{ inputs.repository }}" \
             --mode "${{ inputs.mode }}" \
+            --strategy "${{ inputs.strategy }}" \
             --target-ref "${TARGET_REF}" \
             --run-identifier "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --engine-revision "${GITHUB_SHA}" \

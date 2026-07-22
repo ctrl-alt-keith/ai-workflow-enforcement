@@ -242,12 +242,15 @@ are the applicable consistency surfaces.
 
 The manually dispatched Hosted Stewardship Engine is a separate, bounded
 proposal path. It targets one explicitly allowlisted repository, hydrates an
-exact base SHA, runs the single Docs Drift strategy, executes repository-native
-validation, and records a versioned receipt plus exact patch. `dry-run` stops
-without remote mutation; `propose` may use a separate repository-scoped
-delivery App to open one ready-for-review PR. It never merges or enables
-auto-merge. See `docs/hosted-stewardship.md` for operation, permissions,
-eligibility, collision handling, receipts, and deferred scope.
+exact base SHA, runs one of exactly two fixed strategies (`docs-drift` or
+`agents-startup-routing`), executes repository-native validation, and records a
+versioned receipt plus exact patch. The second strategy can only append one
+approved startup-routing block to root `AGENTS.md`. `dry-run` stops without
+remote mutation; `propose` may use a separate repository-scoped delivery App to
+open one ready-for-review PR. It has no plugin framework or dynamic discovery
+and never merges or enables auto-merge. See `docs/hosted-stewardship.md` for
+operation, permissions, eligibility, collision handling, receipts, and
+deferred scope.
 
 Render that JSON into a concise local review packet:
 

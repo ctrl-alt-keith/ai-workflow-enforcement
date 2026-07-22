@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
@@ -11,13 +11,15 @@ import shlex
 import subprocess
 from typing import Callable, Protocol
 
-from .config import StewardshipConfig
+from .agents_startup_routing import (
+    AgentsStartupRoutingContext,
+    AgentsStartupRoutingStrategy,
+)
+from .config import RepositoryPolicy, StewardshipConfig
 from .docs_drift import DocsDriftContext, DocsDriftStrategy
-from .github import PR_MARKER
 from .models import (
+    DEFAULT_STRATEGY_IDENTIFIER,
     ENGINE_SCHEMA_VERSION,
-    STRATEGY_ID,
-    STRATEGY_REVISION,
     CollisionResult,
     DeliveryProposal,
     DeliveryResult,
@@ -25,9 +27,11 @@ from .models import (
     Mode,
     RepositoryInfo,
     StewardshipReceipt,
+    StrategyMetadata,
     StrategyResult,
     ValidationResult,
     artifact_reference,
+    strategy_metadata,
 )
 
 
@@ -53,13 +57,20 @@ class Gateway(Protocol):
 
     def hydrate(self, repository: str, base_sha: str, destination: Path) -> None: ...
 
-    def existing_stewardship_pr(self, repository: str) -> str | None: ...
+    def existing_stewardship_pr(
+        self, repository: str, collision_marker: str
+    ) -> str | None: ...
 
     def deliver(self, repository_root: Path, proposal: DeliveryProposal) -> DeliveryResult: ...
 
 
-class Strategy(Protocol):
-    def run(self, context: DocsDriftContext) -> StrategyResult: ...
+@dataclass(frozen=True)
+class SelectedStrategy:
+    metadata: StrategyMetadata
+    execute: Callable[
+        [Path, RepositoryPolicy, tuple[str, ...]],
+        StrategyResult,
+    ]
 
 
 class StewardshipEngine:
@@ -68,13 +79,19 @@ class StewardshipEngine:
         *,
         config: StewardshipConfig,
         gateway: Gateway,
-        strategy: Strategy | None = None,
+        strategy_identifier: str = DEFAULT_STRATEGY_IDENTIFIER,
+        docs_drift_strategy: DocsDriftStrategy | None = None,
+        agents_startup_routing_strategy: AgentsStartupRoutingStrategy | None = None,
         clock: Callable[[], datetime] | None = None,
         redactions: tuple[str, ...] = (),
     ) -> None:
         self._config = config
         self._gateway = gateway
-        self._strategy = strategy or DocsDriftStrategy()
+        self._strategy = _select_strategy(
+            strategy_identifier,
+            docs_drift_strategy=docs_drift_strategy,
+            agents_startup_routing_strategy=agents_startup_routing_strategy,
+        )
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._redactions = tuple(value for value in redactions if value)
 
@@ -246,18 +263,16 @@ class StewardshipEngine:
 
             stage = "strategy"
             try:
-                strategy_result = self._strategy.run(
-                    DocsDriftContext(
-                        repository_root=checkout,
-                        documentation_path=policy.documentation_path,
-                        validation_command=validation_command,
-                    )
+                strategy_result = self._strategy.execute(
+                    checkout,
+                    policy,
+                    validation_command,
                 )
             except Exception as exc:  # strategy failures must retain a receipt
                 receipt.strategy_result = asdict(
                     StrategyResult(
                         outcome="failed",
-                        summary="Docs Drift strategy execution failed.",
+                        summary="Selected stewardship strategy execution failed.",
                     )
                 )
                 return self._stop(
@@ -327,11 +342,12 @@ class StewardshipEngine:
                 )
                 return self._stop(receipt, terminal="dry_run_complete")
 
+            metadata = self._strategy.metadata
             branch = (
-                f"stewardship/{STRATEGY_ID}/{base_sha[:12]}-{diff_digest[:12]}"
+                f"stewardship/{metadata.identifier}/{base_sha[:12]}-{diff_digest[:12]}"
             )
-            commit_message = "docs: document repository validation"
-            pr_title = "docs: document repository validation"
+            commit_message = metadata.commit_message
+            pr_title = metadata.pr_title
             pr_body = _build_pr_body(
                 repository=repository,
                 base_sha=base_sha,
@@ -339,6 +355,7 @@ class StewardshipEngine:
                 strategy_result=strategy_result,
                 validation=validation,
                 changed_paths=changed_paths,
+                metadata=metadata,
             )
             receipt.proposed_branch = branch
             receipt.proposed_commit_message = commit_message
@@ -346,11 +363,16 @@ class StewardshipEngine:
             receipt.proposed_pr_body = pr_body
 
             stage = "collision_detection"
-            existing_pr = self._gateway.existing_stewardship_pr(repository)
+            existing_pr = self._gateway.existing_stewardship_pr(
+                repository, metadata.collision_marker
+            )
             if existing_pr:
                 collision = CollisionResult(
                     decision="existing_stewardship_pr",
-                    reason="An open stewardship PR already exists for Docs Drift.",
+                    reason=(
+                        "An open stewardship PR already exists for strategy "
+                        f"{metadata.identifier}."
+                    ),
                     existing_pr_url=existing_pr,
                 )
                 receipt.collision = asdict(collision)
@@ -390,7 +412,10 @@ class StewardshipEngine:
 
             collision = CollisionResult(
                 decision="clear",
-                reason="No open Docs Drift stewardship PR or proposed branch was found, and the base SHA is unchanged.",
+                reason=(
+                    f"No open {metadata.identifier} stewardship PR or proposed branch "
+                    "was found, and the base SHA is unchanged."
+                ),
                 observed_base_sha=observed_base_sha,
             )
             receipt.collision = asdict(collision)
@@ -527,8 +552,8 @@ class StewardshipEngine:
             base_branch=None,
             base_sha=None,
             engine_revision=engine_revision,
-            strategy_identifier=STRATEGY_ID,
-            strategy_revision=STRATEGY_REVISION,
+            strategy_identifier=self._strategy.metadata.identifier,
+            strategy_revision=self._strategy.metadata.revision,
             eligibility=asdict(
                 EligibilityResult(
                     decision="blocked",
@@ -627,11 +652,12 @@ def _build_pr_body(
     strategy_result: StrategyResult,
     validation: ValidationResult,
     changed_paths: tuple[str, ...],
+    metadata: StrategyMetadata,
 ) -> str:
     paths = "\n".join(f"- `{path}`" for path in changed_paths)
     evidence = "\n".join(f"- {item}" for item in strategy_result.evidence)
     return (
-        f"{PR_MARKER}\n"
+        f"{metadata.collision_marker}\n"
         "## Hosted Stewardship Engine\n\n"
         f"{strategy_result.summary}\n\n"
         "### Evidence\n\n"
@@ -644,8 +670,64 @@ def _build_pr_body(
         "### Proposal identity\n\n"
         f"- Repository: `{repository}`\n"
         f"- Base SHA: `{base_sha}`\n"
-        f"- Strategy: `{STRATEGY_ID}` revision `{STRATEGY_REVISION}`\n"
+        f"- Strategy: `{metadata.identifier}` revision `{metadata.revision}`\n"
         f"- Engine revision: `{engine_revision}`\n\n"
         "This review-ready proposal was produced by the Hosted Stewardship Engine. "
         "Human merge remains the acceptance boundary.\n"
     )
+
+
+def _select_strategy(
+    identifier: str,
+    *,
+    docs_drift_strategy: DocsDriftStrategy | None = None,
+    agents_startup_routing_strategy: AgentsStartupRoutingStrategy | None = None,
+) -> SelectedStrategy:
+    metadata = strategy_metadata(identifier)
+    if identifier == "docs-drift":
+        if agents_startup_routing_strategy is not None:
+            raise ValueError(
+                "an AGENTS startup routing implementation cannot execute as docs-drift"
+            )
+        selected_docs_drift_strategy = docs_drift_strategy or DocsDriftStrategy()
+
+        def execute_docs_drift(
+            repository_root: Path,
+            policy: RepositoryPolicy,
+            validation_command: tuple[str, ...],
+        ) -> StrategyResult:
+            return selected_docs_drift_strategy.run(
+                DocsDriftContext(
+                    repository_root=repository_root,
+                    documentation_path=policy.documentation_path,
+                    validation_command=validation_command,
+                )
+            )
+
+        return SelectedStrategy(metadata=metadata, execute=execute_docs_drift)
+
+    if identifier == "agents-startup-routing":
+        if docs_drift_strategy is not None:
+            raise ValueError(
+                "a Docs Drift implementation cannot execute as agents-startup-routing"
+            )
+        selected_agents_strategy = (
+            agents_startup_routing_strategy or AgentsStartupRoutingStrategy()
+        )
+
+        def execute_agents_startup_routing(
+            repository_root: Path,
+            policy: RepositoryPolicy,
+            validation_command: tuple[str, ...],
+        ) -> StrategyResult:
+            del policy, validation_command
+            return selected_agents_strategy.run(
+                AgentsStartupRoutingContext(repository_root=repository_root)
+            )
+
+        return SelectedStrategy(
+            metadata=metadata,
+            execute=execute_agents_startup_routing,
+        )
+
+    raise ValueError(f"unsupported stewardship strategy: {identifier}")

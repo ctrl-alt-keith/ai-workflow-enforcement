@@ -21,10 +21,12 @@ small, deterministic, and review-oriented:
 
 The Hosted Stewardship Engine is one narrow exception to the report-only tool
 shape: it may construct a validated local documentation proposal and create one
-review-ready pull request for an explicitly eligible repository. It does not
-classify final meaning, update existing proposals, merge, enable auto-merge, or
-otherwise accept its own change. Hosted Stewardship Engine proposals are
-review-ready evidence; human merge remains the remediation boundary.
+review-ready pull request for an explicitly eligible repository through one of
+two fixed strategies. It does not provide a plugin framework or dynamic
+strategy discovery, classify final meaning, update existing proposals, merge,
+enable auto-merge, or otherwise accept its own change. Hosted Stewardship
+Engine proposals are review-ready evidence; human merge remains the remediation
+boundary.
 
 <!-- hosted-stewardship-policy:review-ready-human-merge -->
 

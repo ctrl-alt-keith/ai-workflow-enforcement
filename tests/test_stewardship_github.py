@@ -6,6 +6,10 @@ import unittest
 from unittest import mock
 
 from enforcement.stewardship.github import GitHubError, GitHubGateway
+from enforcement.stewardship.models import (
+    AGENTS_STARTUP_ROUTING_METADATA,
+    DOCS_DRIFT_METADATA,
+)
 
 
 class StewardshipGitHubGatewayTests(unittest.TestCase):
@@ -57,6 +61,44 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
                 self.gateway.resolve_ref(
                     "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
                 )
+
+    def test_existing_pr_lookup_matches_only_selected_strategy_marker(self) -> None:
+        pages = [
+            [
+                {
+                    "body": DOCS_DRIFT_METADATA.collision_marker,
+                    "html_url": "https://github.com/example/pull/1",
+                },
+                {
+                    "body": AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
+                    "html_url": "https://github.com/example/pull/2",
+                },
+            ]
+        ]
+        with mock.patch.object(self.gateway, "_gh_json", return_value=pages):
+            actual = self.gateway.existing_stewardship_pr(
+                "ctrl-alt-keith/ai-workflow-enforcement",
+                AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
+            )
+
+        self.assertEqual("https://github.com/example/pull/2", actual)
+
+    def test_cross_strategy_pr_is_not_a_collision(self) -> None:
+        pages = [
+            [
+                {
+                    "body": DOCS_DRIFT_METADATA.collision_marker,
+                    "html_url": "https://github.com/example/pull/1",
+                }
+            ]
+        ]
+        with mock.patch.object(self.gateway, "_gh_json", return_value=pages):
+            actual = self.gateway.existing_stewardship_pr(
+                "ctrl-alt-keith/ai-workflow-enforcement",
+                AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
+            )
+
+        self.assertIsNone(actual)
 
 
 if __name__ == "__main__":
