@@ -1,0 +1,13 @@
+{
+  "notes_roots": [
+    "../../ai-workflow-incubator"
+  ],
+  "playbook_roots": [
+    "../../ai-workflow-playbook/docs"
+  ],
+  "workspace_root": "../..",
+  "organization": "ctrl-alt-keith",
+  "ignore": [
+    "archive/**"
+  ]
+}

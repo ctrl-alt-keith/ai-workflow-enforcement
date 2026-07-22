@@ -131,6 +131,52 @@ manifest can also narrow or override scope for local workflows. The scanner
 does not require or infer a playbook-owned workspace manifest, and raw local
 checkout layout is never authoritative workspace scope.
 
+## Hosted Workflow Drift Audit
+
+The repository-owned workflow drift audit runs every Monday at `17:40 UTC`
+and supports manual `workflow_dispatch` runs. The hosted job checks out the
+requested enforcement commit, hydrates every visible active repository in the
+`ctrl-alt-keith` organization into a clean scan workspace, runs the canonical
+advisory scan, and then runs `make check`.
+
+The repository contract is:
+
+```sh
+make workflow-drift-setup
+make workflow-drift-audit
+make check
+```
+
+The scanner has no third-party Python package dependencies. The setup target
+therefore verifies the hosted Python and GitHub CLI dependencies instead of
+performing an empty package installation. The workflow requires the
+`WORKFLOW_DRIFT_READ_TOKEN` Actions secret with read-only metadata and contents
+access to every repository in the organization, including private
+repositories. If that complete scope cannot be enumerated or checked out, the
+run is `Unable to verify`; partial visibility is never reported as clean.
+
+The workflow uses these result semantics:
+
+- `Clean`: the scanner, canonical validation, and repository-state check pass,
+  and the scanner reports no candidates.
+- `Drift detected`: the scanner reports overlap or workflow-policy candidates.
+  Findings remain advisory, so this classification is visible in the summary
+  and evidence without failing the job solely because findings exist.
+- `Failed`: checkout, setup, scanner execution, canonical validation,
+  repository-state verification, or evidence upload fails.
+- `Unable to verify`: the organization inventory or one or more required clean
+  repository inputs cannot be retrieved.
+
+Every run writes a concise Actions job summary and retains the complete raw
+evidence artifact for 14 days. The artifact includes the tested enforcement
+SHA, organization inventory, exact hydrated revisions, raw scanner JSON and
+stderr, setup and validation logs, classification, and repository-state
+evidence. The job has only `contents: read` workflow permission, persists no
+checkout credentials, performs no remediation, and creates no commits, pull
+requests, issues, or provider changes. This repository currently has no
+generated workflow artifact family; the checked-in workflow definition and
+its repository contract tests are the applicable consistency surfaces.
+
 Render that JSON into a concise local review packet:
 
 ```sh

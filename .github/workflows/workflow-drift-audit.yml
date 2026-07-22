@@ -1,0 +1,359 @@
+name: Workflow drift audit
+
+on:
+  # GitHub cron is interpreted in UTC. 17:40 UTC is Monday 09:40 during
+  # Pacific standard time and Monday 10:40 during Pacific daylight time.
+  schedule:
+    - cron: "40 17 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflow-drift-audit-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  AUDIT_REPOSITORY_DIR: ${{ github.workspace }}/workflow-drift-workspace/ai-workflow-enforcement
+  SCAN_WORKSPACE: ${{ github.workspace }}/workflow-drift-workspace
+  SCAN_COMMAND: make workflow-drift-audit
+  CANONICAL_COMMAND: make check
+
+jobs:
+  audit:
+    name: Run advisory workflow drift audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Initialize hosted evidence
+        id: initialize
+        shell: bash
+        env:
+          HOSTED_RUNNER_NAME: ${{ runner.name }}
+          HOSTED_RUNNER_OS: ${{ runner.os }}
+          HOSTED_RUNNER_ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/workflow-drift-audit-evidence"
+          printf 'EVIDENCE_DIR=%s\n' "$evidence_dir" >> "$GITHUB_ENV"
+          mkdir -p "$evidence_dir"
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'workflow_run=%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'event=%s\n' "$GITHUB_EVENT_NAME"
+            printf 'requested_sha=%s\n' "$GITHUB_SHA"
+            printf 'runner=%s (%s/%s)\n' "$HOSTED_RUNNER_NAME" "$HOSTED_RUNNER_OS" "$HOSTED_RUNNER_ARCH"
+            printf 'scan_command=%s\n' "$SCAN_COMMAND"
+            printf 'canonical_command=%s\n' "$CANONICAL_COMMAND"
+          } > "$evidence_dir/run-metadata.txt"
+
+      - name: Check out exact requested commit
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          path: workflow-drift-workspace/ai-workflow-enforcement
+          persist-credentials: false
+
+      - name: Verify exact tested commit and clean checkout
+        id: verify_sha
+        if: steps.checkout.outcome == 'success'
+        continue-on-error: true
+        working-directory: ${{ env.AUDIT_REPOSITORY_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tested_sha="$(git rev-parse HEAD)"
+          printf 'tested_sha=%s\n' "$tested_sha" | tee "$EVIDENCE_DIR/tested-sha.txt"
+          test "$tested_sha" = "$GITHUB_SHA"
+          status="$(git status --porcelain=v1 --untracked-files=all)"
+          if [[ -n "$status" ]]; then
+            printf '%s\n' "$status" | tee "$EVIDENCE_DIR/initial-repository-state.txt"
+            printf 'Exact checkout was not clean.\n' >&2
+            exit 1
+          fi
+          printf 'clean\n' > "$EVIDENCE_DIR/initial-repository-state.txt"
+
+      - name: Set up Python
+        id: setup_python
+        if: steps.verify_sha.outcome == 'success'
+        continue-on-error: true
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies through the repository contract
+        id: dependencies
+        if: steps.setup_python.outcome == 'success'
+        continue-on-error: true
+        working-directory: ${{ env.AUDIT_REPOSITORY_DIR }}
+        shell: bash
+        run: |
+          set -o pipefail
+          make workflow-drift-setup 2>&1 | tee "$EVIDENCE_DIR/dependency-setup.log"
+
+      - name: Hydrate exact organization repository inputs
+        id: hydrate
+        if: steps.dependencies.outcome == 'success'
+        continue-on-error: true
+        working-directory: ${{ env.AUDIT_REPOSITORY_DIR }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_DRIFT_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            printf 'WORKFLOW_DRIFT_READ_TOKEN is unavailable; private organization scope cannot be verified.\n' \
+              | tee "$EVIDENCE_DIR/hydration-error.txt" >&2
+            exit 1
+          fi
+
+          if gh auth status >/dev/null 2>&1; then
+            printf 'verified via WORKFLOW_DRIFT_READ_TOKEN\n' > "$EVIDENCE_DIR/github-auth.txt"
+          else
+            printf 'GitHub authentication failed.\n' | tee "$EVIDENCE_DIR/hydration-error.txt" >&2
+            exit 1
+          fi
+          gh repo list ctrl-alt-keith \
+            --json nameWithOwner,isArchived \
+            --limit 1000 \
+            > "$EVIDENCE_DIR/repository-inventory.json"
+
+          python3 - "$EVIDENCE_DIR/repository-inventory.json" \
+            > "$EVIDENCE_DIR/repository-names.txt" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          inventory = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          names = sorted(
+              item["nameWithOwner"]
+              for item in inventory
+              if not item.get("isArchived", False)
+          )
+          if not names:
+              raise SystemExit("organization inventory was empty")
+          print("\n".join(names))
+          PY
+
+          : > "$EVIDENCE_DIR/hydrated-revisions.txt"
+          while IFS= read -r repository; do
+            name="${repository#*/}"
+            if [[ "$name" == "ai-workflow-enforcement" ]]; then
+              printf '%s=%s\n' "$repository" "$GITHUB_SHA" >> "$EVIDENCE_DIR/hydrated-revisions.txt"
+              continue
+            fi
+            gh repo clone "$repository" "$SCAN_WORKSPACE/$name" -- --depth=1 \
+              >> "$EVIDENCE_DIR/hydration.log" 2>&1
+            status="$(git -C "$SCAN_WORKSPACE/$name" status --porcelain=v1 --untracked-files=all)"
+            if [[ -n "$status" ]]; then
+              printf '%s\n' "$status" >> "$EVIDENCE_DIR/hydration-error.txt"
+              printf 'Fresh checkout for %s was not clean.\n' "$repository" >&2
+              exit 1
+            fi
+            revision="$(git -C "$SCAN_WORKSPACE/$name" rev-parse HEAD)"
+            printf '%s=%s\n' "$repository" "$revision" >> "$EVIDENCE_DIR/hydrated-revisions.txt"
+          done < "$EVIDENCE_DIR/repository-names.txt"
+
+          test -d "$SCAN_WORKSPACE/ai-workflow-playbook/docs"
+          test -d "$SCAN_WORKSPACE/ai-workflow-incubator"
+
+      - name: Run canonical workflow drift validation
+        id: drift
+        if: steps.hydrate.outcome == 'success'
+        continue-on-error: true
+        working-directory: ${{ env.AUDIT_REPOSITORY_DIR }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_DRIFT_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          set +e
+          make workflow-drift-audit \
+            > "$EVIDENCE_DIR/workflow-drift-audit.json" \
+            2> "$EVIDENCE_DIR/workflow-drift-audit.stderr"
+          scan_status=$?
+          set -e
+          printf '%s\n' "$scan_status" > "$EVIDENCE_DIR/workflow-drift-audit.status"
+          if [[ "$scan_status" -ne 0 ]]; then
+            cat "$EVIDENCE_DIR/workflow-drift-audit.stderr" >&2
+            exit "$scan_status"
+          fi
+
+          python3 - "$EVIDENCE_DIR/workflow-drift-audit.json" \
+            > "$EVIDENCE_DIR/workflow-drift-counts.txt" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if report.get("report_type") != "notes_playbook_drift_scan" or report.get("advisory") is not True:
+              raise SystemExit("unexpected workflow drift report contract")
+          summary = report["summary"]
+          print(f"candidate_count={summary['candidate_count']}")
+          print(f"advisory_finding_count={summary['advisory_finding_count']}")
+          PY
+
+      - name: Run canonical repository validation
+        id: canonical
+        if: steps.dependencies.outcome == 'success'
+        continue-on-error: true
+        working-directory: ${{ env.AUDIT_REPOSITORY_DIR }}
+        shell: bash
+        run: |
+          set -o pipefail
+          make check 2>&1 | tee "$EVIDENCE_DIR/canonical-validation.log"
+
+      - name: Verify repository state stayed read-only
+        id: repository_state
+        if: steps.verify_sha.outcome == 'success'
+        continue-on-error: true
+        working-directory: ${{ env.AUDIT_REPOSITORY_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          git diff --cached --exit-code
+          status="$(git status --porcelain=v1 --untracked-files=all)"
+          if [[ -n "$status" ]]; then
+            printf '%s\n' "$status" | tee "$EVIDENCE_DIR/final-repository-state.txt"
+            printf 'Unexpected repository changes were detected.\n' >&2
+            exit 1
+          fi
+          printf 'clean; scanner output and hosted evidence are outside the repository checkout\n' \
+            > "$EVIDENCE_DIR/final-repository-state.txt"
+
+      - name: Classify result and publish job summary
+        id: classify
+        if: always() && !cancelled()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          VERIFY_SHA_OUTCOME: ${{ steps.verify_sha.outcome }}
+          SETUP_PYTHON_OUTCOME: ${{ steps.setup_python.outcome }}
+          DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          HYDRATE_OUTCOME: ${{ steps.hydrate.outcome }}
+          DRIFT_OUTCOME: ${{ steps.drift.outcome }}
+          CANONICAL_OUTCOME: ${{ steps.canonical.outcome }}
+          REPOSITORY_STATE_OUTCOME: ${{ steps.repository_state.outcome }}
+          HOSTED_RUNNER_NAME: ${{ runner.name }}
+          HOSTED_RUNNER_OS: ${{ runner.os }}
+          HOSTED_RUNNER_ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          result="Failed"
+          reason="One or more required hosted execution steps failed."
+
+          counts_file="$EVIDENCE_DIR/workflow-drift-counts.txt"
+          candidate_count="$(sed -n 's/^candidate_count=//p' "$counts_file" 2>/dev/null || true)"
+          advisory_finding_count="$(sed -n 's/^advisory_finding_count=//p' "$counts_file" 2>/dev/null || true)"
+          candidate_count="${candidate_count:-unknown}"
+          advisory_finding_count="${advisory_finding_count:-unknown}"
+
+          if [[ "$CHECKOUT_OUTCOME" != "success" || "$VERIFY_SHA_OUTCOME" != "success" || \
+                "$SETUP_PYTHON_OUTCOME" != "success" || "$DEPENDENCIES_OUTCOME" != "success" ]]; then
+            reason="Checkout, exact-SHA verification, runtime setup, or repository dependency setup failed."
+          elif [[ "$CANONICAL_OUTCOME" != "success" || "$REPOSITORY_STATE_OUTCOME" != "success" ]]; then
+            reason="Canonical validation or repository-state verification failed."
+          elif [[ "$HYDRATE_OUTCOME" != "success" ]]; then
+            result="Unable to verify"
+            reason="The complete organization inventory or one or more clean repository inputs could not be hydrated."
+          elif [[ "$DRIFT_OUTCOME" != "success" ]]; then
+            reason="The repository-owned workflow drift validation command failed."
+          elif [[ "$candidate_count" != "0" || "$advisory_finding_count" != "0" ]]; then
+            result="Drift detected"
+            reason="The advisory scanner completed and reported one or more review candidates."
+          else
+            result="Clean"
+            reason="The advisory scanner and canonical validation completed with no drift candidates."
+          fi
+
+          tested_sha="$(cut -d= -f2 "$EVIDENCE_DIR/tested-sha.txt" 2>/dev/null || printf 'unavailable')"
+          repository_count="$(wc -l < "$EVIDENCE_DIR/repository-names.txt" 2>/dev/null || printf '0')"
+          repository_count="${repository_count//[[:space:]]/}"
+
+          {
+            printf '# Workflow drift audit\n\n'
+            printf '**Result:** %s\n\n' "$result"
+            printf '%s\n\n' "$reason"
+            printf '| Evidence | Value |\n'
+            printf '| --- | --- |\n'
+            printf '| Repository | `%s` |\n' "$GITHUB_REPOSITORY"
+            printf '| Workflow run | [%s](%s/%s/actions/runs/%s) |\n' "$GITHUB_RUN_ID" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf '| Event | `%s` |\n' "$GITHUB_EVENT_NAME"
+            printf '| Requested SHA | `%s` |\n' "$GITHUB_SHA"
+            printf '| Tested SHA | `%s` |\n' "$tested_sha"
+            printf '| Runner | `%s` (`%s/%s`) |\n' "$HOSTED_RUNNER_NAME" "$HOSTED_RUNNER_OS" "$HOSTED_RUNNER_ARCH"
+            printf '| Hydrated repositories | `%s` |\n' "$repository_count"
+            printf '| Workflow drift command | `%s` — %s |\n' "$SCAN_COMMAND" "$DRIFT_OUTCOME"
+            printf '| Canonical validation | `%s` — %s |\n' "$CANONICAL_COMMAND" "$CANONICAL_OUTCOME"
+            printf '| Repository state | %s |\n' "$REPOSITORY_STATE_OUTCOME"
+            printf '| Overlap candidates | `%s` |\n' "$candidate_count"
+            printf '| Advisory workflow-policy findings | `%s` |\n' "$advisory_finding_count"
+            printf '\nThe complete evidence artifact contains the repository inventory and revisions, raw scanner JSON, stderr, setup and validation logs, and repository-state evidence.\n'
+            if [[ "$result" == "Drift detected" ]]; then
+              printf '\nDrift findings remain advisory: this result is reported without authorizing remediation or failing the job solely because findings exist.\n'
+            fi
+          } | tee "$EVIDENCE_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+          printf '%s\n' "$result" > "$EVIDENCE_DIR/classification.txt"
+          printf 'result=%s\n' "$result" >> "$GITHUB_OUTPUT"
+
+      - name: Upload complete hosted evidence
+        id: upload
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: workflow-drift-audit-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/workflow-drift-audit-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Finalize evidence retention outcome
+        if: always() && !cancelled()
+        shell: bash
+        env:
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          if [[ "$UPLOAD_OUTCOME" == "success" ]]; then
+            {
+              printf '\n## Evidence retention\n\n'
+              printf 'The complete evidence artifact is retained for 14 days: '
+              printf '[workflow-drift-audit-evidence](%s).\n\n' "$ARTIFACT_URL"
+              printf 'Artifact digest: `%s`\n' "$ARTIFACT_DIGEST"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'Failed\n' > "$EVIDENCE_DIR/classification.txt"
+            {
+              printf '\n## Evidence retention\n\n'
+              printf '**Failed:** the complete hosted evidence artifact could not be uploaded. '
+              printf 'The Actions job conclusion is authoritative.\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Enforce execution conclusion
+        if: always() && !cancelled()
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(cat "$EVIDENCE_DIR/classification.txt" 2>/dev/null || printf 'Failed')"
+          case "$result" in
+            Clean)
+              printf 'Workflow drift audit result: Clean\n'
+              ;;
+            "Drift detected")
+              printf 'Workflow drift audit result: Drift detected (advisory)\n'
+              ;;
+            *)
+              printf 'Workflow drift audit result: %s\n' "$result" >&2
+              exit 1
+              ;;
+          esac
