@@ -19,6 +19,15 @@ small, deterministic, and review-oriented:
 - review-oriented reports
 - reusable reinforcement mechanisms
 
+The Hosted Stewardship Engine is one narrow exception to the report-only tool
+shape: it may construct a validated local documentation proposal and create one
+review-ready pull request for an explicitly eligible repository. It does not
+classify final meaning, update existing proposals, merge, enable auto-merge, or
+otherwise accept its own change. Hosted Stewardship Engine proposals are
+review-ready evidence; human merge remains the remediation boundary.
+
+<!-- hosted-stewardship-policy:review-ready-human-merge -->
+
 The tools in this repository should make existing workflow boundaries easier
 to inspect. They should not replace the human decision that follows inspection.
 
@@ -26,7 +35,10 @@ to inspect. They should not replace the human decision that follows inspection.
 
 Every enforcement output must remain evidence-backed, bounded, and
 review-oriented; it must not become the authority that creates policy,
-classifies final meaning, remediates state, or orchestrates workflow.
+classifies final meaning, remediates state, or orchestrates generalized or
+fleet-wide workflow. The Hosted Stewardship Engine may coordinate its fixed
+single-repository proposal pipeline, but it cannot accept the proposal or
+expand into strategy discovery, scheduling, fan-out, or merge authority.
 
 Evidence-backed means an output points to inspectable inputs, observed state,
 or deterministic checks. Bounded means the tool has a narrow declared scope and
@@ -88,12 +100,12 @@ Use these questions when deciding whether new work belongs here:
 - Does this begin writing policy?
 - Does this begin making human classifications?
 - Does this begin remediating repositories?
-- Does this begin orchestrating workflow?
+- Does this begin generalized or fleet-wide workflow orchestration?
 - Does this become an autonomous governance system?
 
 Prefer changes that improve evidence, verification, or review handoff. Stop or
 move the work elsewhere when it starts creating doctrine, final classification,
-remediation, orchestration, or governance authority.
+remediation, generalized orchestration, or governance authority.
 
 ## Non-Goals
 
@@ -103,7 +115,7 @@ This repository does not own:
 - policy authorship
 - final human classification
 - remediation
-- orchestration
+- generalized or fleet-wide orchestration
 - governance administration
 - autonomous workflow decisions
 - replacing human review
