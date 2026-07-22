@@ -15,8 +15,6 @@ repository-specific behavior.
 
 ## Startup And Interaction Mode
 
-- Start with `ai-workflow-playbook/docs/start-here.md` before repository or
-  software work.
 - Before acting, select the interaction mode from
   `ai-workflow-playbook/docs/repo-readiness.md`: implementation, review/audit,
   or orchestration/prompt-authoring.
@@ -70,6 +68,5 @@ repository-specific behavior.
 
 ## Playbook Reference
 
-- Start with `ai-workflow-playbook/docs/start-here.md`.
 - Use the playbook for reusable workflow rules instead of duplicating them
   here.
