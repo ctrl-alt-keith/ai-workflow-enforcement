@@ -96,49 +96,147 @@ jobs:
           set -o pipefail
           make workflow-drift-setup 2>&1 | tee "$EVIDENCE_DIR/dependency-setup.log"
 
-      - name: Hydrate exact organization repository inputs
-        id: hydrate
+      - name: Generate read-only GitHub App installation token
+        id: app_auth
         if: steps.dependencies.outcome == 'success'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.WORKFLOW_DRIFT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WORKFLOW_DRIFT_APP_PRIVATE_KEY }}
+          owner: ctrl-alt-keith
+          permission-metadata: read
+          permission-contents: read
+
+      - name: Inventory the complete GitHub App installation scope
+        id: inventory
+        if: steps.app_auth.outcome == 'success'
         continue-on-error: true
         working-directory: ${{ env.AUDIT_REPOSITORY_DIR }}
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.WORKFLOW_DRIFT_READ_TOKEN }}
+          APP_CLIENT_ID: ${{ vars.WORKFLOW_DRIFT_APP_CLIENT_ID }}
+          GH_TOKEN: ${{ steps.app_auth.outputs.token }}
         run: |
           set -euo pipefail
-          if [[ -z "$GH_TOKEN" ]]; then
-            printf 'WORKFLOW_DRIFT_READ_TOKEN is unavailable; private organization scope cannot be verified.\n' \
-              | tee "$EVIDENCE_DIR/hydration-error.txt" >&2
+          if gh auth status >/dev/null 2>&1; then
+            {
+              printf 'credential_class=GitHub App installation token\n'
+              printf 'installation_owner=ctrl-alt-keith\n'
+              printf 'client_id=%s\n' "$APP_CLIENT_ID"
+              printf 'installation_id=%s\n' "${{ steps.app_auth.outputs.installation-id }}"
+              printf 'app_slug=%s\n' "${{ steps.app_auth.outputs.app-slug }}"
+              printf 'permissions=metadata:read,contents:read\n'
+            } > "$EVIDENCE_DIR/github-app-auth.txt"
+          else
+            printf 'GitHub App installation-token authentication failed.\n' \
+              | tee "$EVIDENCE_DIR/inventory-error.txt" >&2
             exit 1
           fi
 
-          if gh auth status >/dev/null 2>&1; then
-            printf 'verified via WORKFLOW_DRIFT_READ_TOKEN\n' > "$EVIDENCE_DIR/github-auth.txt"
-          else
-            printf 'GitHub authentication failed.\n' | tee "$EVIDENCE_DIR/hydration-error.txt" >&2
-            exit 1
-          fi
+          gh api --paginate --slurp "/installation/repositories?per_page=100" \
+            > "$EVIDENCE_DIR/installation-repositories.json"
           gh repo list ctrl-alt-keith \
             --json nameWithOwner,isArchived \
             --limit 1000 \
             > "$EVIDENCE_DIR/repository-inventory.json"
 
-          python3 - "$EVIDENCE_DIR/repository-inventory.json" \
-            > "$EVIDENCE_DIR/repository-names.txt" <<'PY'
+          python3 - \
+            "$EVIDENCE_DIR/installation-repositories.json" \
+            "$EVIDENCE_DIR/repository-inventory.json" \
+            "$EVIDENCE_DIR" <<'PY'
           import json
           from pathlib import Path
           import sys
 
-          inventory = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          names = sorted(
-              item["nameWithOwner"]
-              for item in inventory
-              if not item.get("isArchived", False)
+          installation_pages = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          repository_inventory = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          evidence_dir = Path(sys.argv[3])
+
+          if not isinstance(installation_pages, list) or not installation_pages:
+              raise SystemExit("installation repository inventory was empty or malformed")
+          declared_totals = {page.get("total_count") for page in installation_pages}
+          if len(declared_totals) != 1 or None in declared_totals:
+              raise SystemExit("installation repository inventory reported inconsistent totals")
+          declared_total = declared_totals.pop()
+          installation_items = [
+              repository
+              for page in installation_pages
+              for repository in page.get("repositories", [])
+          ]
+          installation_by_name = {
+              repository["full_name"]: repository
+              for repository in installation_items
+          }
+          if len(installation_by_name) != declared_total:
+              raise SystemExit(
+                  "installation repository pagination was incomplete: "
+                  f"expected {declared_total}, received {len(installation_by_name)} unique repositories"
+              )
+          if any(
+              repository.get("owner", {}).get("login", "").casefold() != "ctrl-alt-keith"
+              for repository in installation_by_name.values()
+          ):
+              raise SystemExit("installation inventory included a repository outside ctrl-alt-keith")
+
+          cli_by_name = {
+              repository["nameWithOwner"]: repository
+              for repository in repository_inventory
+          }
+          if len(cli_by_name) != len(repository_inventory):
+              raise SystemExit("GitHub CLI organization inventory contained duplicate repositories")
+          if set(cli_by_name) != set(installation_by_name):
+              missing_from_cli = sorted(set(installation_by_name) - set(cli_by_name))
+              missing_from_installation = sorted(set(cli_by_name) - set(installation_by_name))
+              raise SystemExit(
+                  "organization inventory did not match the installation-visible inventory; "
+                  f"missing_from_cli={missing_from_cli}; "
+                  f"missing_from_installation={missing_from_installation}"
+              )
+
+          active_names = sorted(
+              name
+              for name, repository in installation_by_name.items()
+              if not repository.get("archived", False)
           )
-          if not names:
-              raise SystemExit("organization inventory was empty")
-          print("\n".join(names))
+          archived_names = sorted(set(installation_by_name) - set(active_names))
+          required_names = {
+              "ctrl-alt-keith/ai-workflow-enforcement",
+              "ctrl-alt-keith/ai-workflow-incubator",
+              "ctrl-alt-keith/ai-workflow-playbook",
+          }
+          missing_required = sorted(required_names - set(active_names))
+          if missing_required:
+              raise SystemExit(f"required active repositories were not visible: {missing_required}")
+          if not active_names:
+              raise SystemExit("installation-visible active repository inventory was empty")
+
+          (evidence_dir / "repository-names.txt").write_text(
+              "\n".join(active_names) + "\n", encoding="utf-8"
+          )
+          (evidence_dir / "excluded-archived-repositories.txt").write_text(
+              ("\n".join(archived_names) + "\n") if archived_names else "none\n",
+              encoding="utf-8",
+          )
+          (evidence_dir / "inventory-summary.txt").write_text(
+              f"installation_repository_count={declared_total}\n"
+              f"active_repository_count={len(active_names)}\n"
+              f"archived_repository_count={len(archived_names)}\n"
+              "inventory_completeness=all repositories visible to the organization installation\n",
+              encoding="utf-8",
+          )
           PY
+
+      - name: Hydrate exact organization repository inputs
+        id: hydrate
+        if: steps.inventory.outcome == 'success'
+        continue-on-error: true
+        working-directory: ${{ env.AUDIT_REPOSITORY_DIR }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app_auth.outputs.token }}
+        run: |
+          set -euo pipefail
 
           : > "$EVIDENCE_DIR/hydrated-revisions.txt"
           while IFS= read -r repository; do
@@ -159,6 +257,17 @@ jobs:
             printf '%s=%s\n' "$repository" "$revision" >> "$EVIDENCE_DIR/hydrated-revisions.txt"
           done < "$EVIDENCE_DIR/repository-names.txt"
 
+          expected_count="$(wc -l < "$EVIDENCE_DIR/repository-names.txt")"
+          hydrated_count="$(wc -l < "$EVIDENCE_DIR/hydrated-revisions.txt")"
+          if [[ "$hydrated_count" -ne "$expected_count" ]]; then
+            printf 'Hydration was incomplete: expected %s repositories, hydrated %s.\n' \
+              "$expected_count" "$hydrated_count" \
+              | tee "$EVIDENCE_DIR/hydration-error.txt" >&2
+            exit 1
+          fi
+          printf 'expected_active_repositories=%s\nhydrated_repositories=%s\n' \
+            "$expected_count" "$hydrated_count" > "$EVIDENCE_DIR/hydration-summary.txt"
+
           test -d "$SCAN_WORKSPACE/ai-workflow-playbook/docs"
           test -d "$SCAN_WORKSPACE/ai-workflow-incubator"
 
@@ -169,7 +278,7 @@ jobs:
         working-directory: ${{ env.AUDIT_REPOSITORY_DIR }}
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.WORKFLOW_DRIFT_READ_TOKEN }}
+          GH_TOKEN: ${{ steps.app_auth.outputs.token }}
         run: |
           set -euo pipefail
           set +e
@@ -236,6 +345,8 @@ jobs:
           VERIFY_SHA_OUTCOME: ${{ steps.verify_sha.outcome }}
           SETUP_PYTHON_OUTCOME: ${{ steps.setup_python.outcome }}
           DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          APP_AUTH_OUTCOME: ${{ steps.app_auth.outcome }}
+          INVENTORY_OUTCOME: ${{ steps.inventory.outcome }}
           HYDRATE_OUTCOME: ${{ steps.hydrate.outcome }}
           DRIFT_OUTCOME: ${{ steps.drift.outcome }}
           CANONICAL_OUTCOME: ${{ steps.canonical.outcome }}
@@ -257,11 +368,17 @@ jobs:
           if [[ "$CHECKOUT_OUTCOME" != "success" || "$VERIFY_SHA_OUTCOME" != "success" || \
                 "$SETUP_PYTHON_OUTCOME" != "success" || "$DEPENDENCIES_OUTCOME" != "success" ]]; then
             reason="Checkout, exact-SHA verification, runtime setup, or repository dependency setup failed."
-          elif [[ "$CANONICAL_OUTCOME" != "success" || "$REPOSITORY_STATE_OUTCOME" != "success" ]]; then
-            reason="Canonical validation or repository-state verification failed."
+          elif [[ "$APP_AUTH_OUTCOME" != "success" ]]; then
+            result="Unable to verify"
+            reason="A read-only GitHub App installation token could not be generated or authenticated."
+          elif [[ "$INVENTORY_OUTCOME" != "success" ]]; then
+            result="Unable to verify"
+            reason="The complete installation-visible organization inventory could not be established."
           elif [[ "$HYDRATE_OUTCOME" != "success" ]]; then
             result="Unable to verify"
-            reason="The complete organization inventory or one or more clean repository inputs could not be hydrated."
+            reason="One or more repositories in the complete installation-visible active inventory could not be hydrated cleanly."
+          elif [[ "$CANONICAL_OUTCOME" != "success" || "$REPOSITORY_STATE_OUTCOME" != "success" ]]; then
+            reason="Canonical validation or repository-state verification failed."
           elif [[ "$DRIFT_OUTCOME" != "success" ]]; then
             reason="The repository-owned workflow drift validation command failed."
           elif [[ "$candidate_count" != "0" || "$advisory_finding_count" != "0" ]]; then
@@ -273,8 +390,14 @@ jobs:
           fi
 
           tested_sha="$(cut -d= -f2 "$EVIDENCE_DIR/tested-sha.txt" 2>/dev/null || printf 'unavailable')"
-          repository_count="$(wc -l < "$EVIDENCE_DIR/repository-names.txt" 2>/dev/null || printf '0')"
-          repository_count="${repository_count//[[:space:]]/}"
+          installation_repository_count="$(sed -n 's/^installation_repository_count=//p' "$EVIDENCE_DIR/inventory-summary.txt" 2>/dev/null || true)"
+          active_repository_count="$(sed -n 's/^active_repository_count=//p' "$EVIDENCE_DIR/inventory-summary.txt" 2>/dev/null || true)"
+          archived_repository_count="$(sed -n 's/^archived_repository_count=//p' "$EVIDENCE_DIR/inventory-summary.txt" 2>/dev/null || true)"
+          hydrated_repository_count="$(sed -n 's/^hydrated_repositories=//p' "$EVIDENCE_DIR/hydration-summary.txt" 2>/dev/null || true)"
+          installation_repository_count="${installation_repository_count:-unknown}"
+          active_repository_count="${active_repository_count:-unknown}"
+          archived_repository_count="${archived_repository_count:-unknown}"
+          hydrated_repository_count="${hydrated_repository_count:-unknown}"
 
           {
             printf '# Workflow drift audit\n\n'
@@ -288,13 +411,16 @@ jobs:
             printf '| Requested SHA | `%s` |\n' "$GITHUB_SHA"
             printf '| Tested SHA | `%s` |\n' "$tested_sha"
             printf '| Runner | `%s` (`%s/%s`) |\n' "$HOSTED_RUNNER_NAME" "$HOSTED_RUNNER_OS" "$HOSTED_RUNNER_ARCH"
-            printf '| Hydrated repositories | `%s` |\n' "$repository_count"
+            printf '| GitHub App token generation | %s |\n' "$APP_AUTH_OUTCOME"
+            printf '| Organization inventory | %s — `%s` installation-visible (`%s` active, `%s` archived) |\n' \
+              "$INVENTORY_OUTCOME" "$installation_repository_count" "$active_repository_count" "$archived_repository_count"
+            printf '| Repository hydration | %s — `%s` hydrated |\n' "$HYDRATE_OUTCOME" "$hydrated_repository_count"
             printf '| Workflow drift command | `%s` — %s |\n' "$SCAN_COMMAND" "$DRIFT_OUTCOME"
             printf '| Canonical validation | `%s` — %s |\n' "$CANONICAL_COMMAND" "$CANONICAL_OUTCOME"
             printf '| Repository state | %s |\n' "$REPOSITORY_STATE_OUTCOME"
             printf '| Overlap candidates | `%s` |\n' "$candidate_count"
             printf '| Advisory workflow-policy findings | `%s` |\n' "$advisory_finding_count"
-            printf '\nThe complete evidence artifact contains the repository inventory and revisions, raw scanner JSON, stderr, setup and validation logs, and repository-state evidence.\n'
+            printf '\nThe complete evidence artifact contains GitHub App authentication metadata, installation and organization inventories, completeness counts, exclusions, exact hydrated revisions, raw scanner JSON and stderr, setup and validation logs, and repository-state evidence.\n'
             if [[ "$result" == "Drift detected" ]]; then
               printf '\nDrift findings remain advisory: this result is reported without authorizing remediation or failing the job solely because findings exist.\n'
             fi
