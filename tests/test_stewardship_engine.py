@@ -49,6 +49,8 @@ class FakeGateway:
         self.delivery_fails = False
         self.hydrate_calls = 0
         self.delivery_calls = 0
+        self.existing_pr_calls = 0
+        self.proposed_branch_reads = 0
         self.delivered_proposal: DeliveryProposal | None = None
         self.delivered_patch: str | None = None
         self._base_reads = 0
@@ -66,6 +68,7 @@ class FakeGateway:
             if self.base_changed and self._base_reads > 1:
                 return "f" * 40
             return self.base_sha
+        self.proposed_branch_reads += 1
         return "e" * 40 if self.branch_exists else None
 
     def hydrate(self, repository: str, base_sha: str, destination: Path) -> None:
@@ -79,11 +82,18 @@ class FakeGateway:
         _run_git(destination, "checkout", "--detach", base_sha)
 
     def existing_stewardship_pr(self, repository: str) -> str | None:
+        self.existing_pr_calls += 1
         return self.existing_pr
 
     def deliver(self, repository_root: Path, proposal: DeliveryProposal) -> DeliveryResult:
         self.delivery_calls += 1
         self.delivered_proposal = proposal
+        if not self.write_available:
+            return DeliveryResult(
+                success=False,
+                error="the repository-scoped stewardship write identity was unavailable",
+                mutations=(),
+            )
         self.delivered_patch = _run_git(
             repository_root, "diff", "--binary", "--full-index"
         )
@@ -338,6 +348,41 @@ class StewardshipEngineTests(unittest.TestCase):
         self.assertEqual("remote_delivery", receipt.failure_stage)
         self.assertEqual(["push_branch"], receipt.remote_mutations_attempted)
         self.assertIn("simulated delivery failure", receipt.bounded_error)
+
+    def test_missing_write_identity_fails_only_at_remote_delivery_boundary(self) -> None:
+        gateway = FakeGateway(self.source, self.base_sha)
+        gateway.write_available = False
+
+        receipt, gateway, evidence = self._run(mode="propose", gateway=gateway)
+
+        self.assertEqual("eligible", receipt.eligibility["decision"])
+        self.assertEqual(1, gateway.hydrate_calls)
+        self.assertEqual("changed", receipt.strategy_result["outcome"])
+        self.assertEqual(["README.md"], receipt.changed_paths)
+        self.assertIsNotNone(receipt.diff_digest)
+        self.assertEqual("proposal.patch", receipt.patch_artifact)
+        self.assertTrue((evidence / "proposal.patch").is_file())
+        self.assertEqual("passed", receipt.validation["status"])
+        self.assertTrue((evidence / "validation.log").is_file())
+        self.assertEqual(1, gateway.existing_pr_calls)
+        self.assertEqual(1, gateway.proposed_branch_reads)
+        self.assertEqual(2, gateway._base_reads)
+        self.assertEqual("clear", receipt.collision["decision"])
+        self.assertTrue(receipt.would_create_pr)
+        self.assertIsNotNone(receipt.proposed_branch)
+        self.assertIsNotNone(receipt.proposed_commit_message)
+        self.assertIsNotNone(receipt.proposed_pr_title)
+        self.assertIsNotNone(receipt.proposed_pr_body)
+        self.assertEqual(1, gateway.delivery_calls)
+        self.assertIsNotNone(gateway.delivered_proposal)
+        self.assertEqual([], receipt.remote_mutations_attempted)
+        self.assertEqual([], receipt.remote_mutation_results)
+        self.assertEqual("delivery_failed", receipt.final_terminal_state)
+        self.assertEqual("remote_delivery", receipt.failure_stage)
+        self.assertEqual(
+            "the repository-scoped stewardship write identity was unavailable",
+            receipt.bounded_error,
+        )
 
     def test_secrets_are_redacted_from_receipt_errors(self) -> None:
         secret = "super-secret-private-key-material"
