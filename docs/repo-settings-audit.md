@@ -130,7 +130,8 @@ currently enforces that behavior through classic branch protection or rulesets:
 - Actions workflow presence and hosted workflow state
 - Dependabot config presence and weekly update entries for supported
   ecosystems
-- merge method settings as hosted values
+- merge method and merge-hygiene settings as hosted values, including the
+  repository auto-merge capability
 - repo-local governance docs and canonical local validation
 
 Statuses are advisory:
@@ -239,10 +240,25 @@ accepted as not maintained under the repo-family governance baseline.
 The central baseline keeps auto-merge disabled and enables delete branch on
 merge.
 
+The central `auto_merge` policy field accepts only `enabled` or `disabled`.
+Repositories inherit the baseline unless their entry under `repositories`
+defines an explicit override. Invalid baseline or selected-repository values
+fail the audit instead of silently removing the expectation.
+
 Auto-merge stays disabled because it can move a pull request from reviewed to
 merged without a final explicit operator action once checks pass. That is useful
 for some high-throughput team queues, but it works against the repo family's
 human-controlled merge posture.
+
+`ctrl-alt-keith/ai-workflow-incubator` carries an explicit central
+`auto_merge: enabled` exception for deterministic generated dashboard-update
+pull requests. GitHub's repository-level permission is broader than that
+intended workflow: only the designated dashboard automation should enable
+auto-merge on its pull requests, other pull requests remain manually merged,
+and required status checks remain the acceptance boundary. A failed check
+stops the merge and requires operator attention. The scanner enforces this
+through the ordinary central override; it does not hard-code the repository or
+use an invocation-time suppression.
 
 Delete-branch-on-merge is baseline-enabled because the repo family uses
 squash-only pull requests and short-lived topic branches. Deleting merged
@@ -255,7 +271,8 @@ a central policy exception.
 Central repo-specific overrides live under `repositories` in
 `config/repo-settings-policy.json`. Use them for intentional exceptions, such
 as private repositories, exact hosted required-check names, or Dependabot
-exceptions.
+exceptions. Fields not present in an override continue to inherit the central
+baseline.
 
 Example:
 
@@ -274,6 +291,9 @@ Example:
       "dependabot": {
         "enabled": false
       }
+    },
+    "ctrl-alt-keith/example-generated-prs": {
+      "auto_merge": "enabled"
     },
     "ctrl-alt-keith/example-daily-dependabot": {
       "dependabot": {
