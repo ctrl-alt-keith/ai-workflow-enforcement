@@ -243,6 +243,17 @@ provider changes. This repository currently has no generated workflow artifact
 family; the checked-in workflow definition and its repository contract tests
 are the applicable consistency surfaces.
 
+## Hosted Stewardship Engine
+
+The manually dispatched Hosted Stewardship Engine is a separate, bounded
+proposal path. It targets one explicitly allowlisted repository, hydrates an
+exact base SHA, runs the single Docs Drift strategy, executes repository-native
+validation, and records a versioned receipt plus exact patch. `dry-run` stops
+without remote mutation; `propose` may use a separate repository-scoped
+delivery App to open one ready-for-review PR. It never merges or enables
+auto-merge. See `docs/hosted-stewardship.md` for operation, permissions,
+eligibility, collision handling, receipts, and deferred scope.
+
 Render that JSON into a concise local review packet:
 
 ```sh
