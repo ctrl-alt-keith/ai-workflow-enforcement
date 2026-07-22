@@ -12,10 +12,7 @@ import tempfile
 from typing import Iterator
 from urllib.parse import quote
 
-from .models import DeliveryProposal, DeliveryResult, RepositoryInfo, STRATEGY_ID
-
-
-PR_MARKER = f"<!-- hosted-stewardship:{STRATEGY_ID} -->"
+from .models import DeliveryProposal, DeliveryResult, RepositoryInfo
 
 
 class GitHubError(RuntimeError):
@@ -105,7 +102,9 @@ class GitHubGateway:
         ).stdout:
             raise GitHubError("fresh hydrated checkout was not clean")
 
-    def existing_stewardship_pr(self, repository: str) -> str | None:
+    def existing_stewardship_pr(
+        self, repository: str, collision_marker: str
+    ) -> str | None:
         pages = self._gh_json(
             (
                 "api",
@@ -117,7 +116,7 @@ class GitHubGateway:
         )
         for page in pages:
             for pull_request in page:
-                if PR_MARKER in (pull_request.get("body") or ""):
+                if collision_marker in (pull_request.get("body") or ""):
                     return str(pull_request["html_url"])
         return None
 

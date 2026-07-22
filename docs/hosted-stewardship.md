@@ -4,7 +4,9 @@ The Hosted Stewardship Engine is a manually dispatched, single-repository MVP
 that constructs a validated local documentation proposal and either stops with
 durable evidence or creates one review-ready pull request. It is not the former
 `docs-drift-sweep` automation and does not implement discovery, scheduling, or
-multiple strategies.
+dynamic strategy loading. The engine supports exactly two fixed strategies:
+`docs-drift` revision `1` and `agents-startup-routing` revision `1`. It has no
+plugin framework, runtime registry, entry points, hooks, or dynamic discovery.
 
 The workflow is `.github/workflows/hosted-stewardship.yml`. Its only eligible
 MVP target is `ctrl-alt-keith/ai-workflow-enforcement`, declared in
@@ -12,11 +14,13 @@ MVP target is `ctrl-alt-keith/ai-workflow-enforcement`, declared in
 
 ## Modes And Shared Pipeline
 
-Manual dispatch requires `repository` and `mode` and accepts an optional
-`target_ref`. The GitHub **Run workflow from** selector chooses the stewardship
-engine revision. It does not choose the target repository state. `target_ref`
-chooses the branch, tag, or commit inspected in a dry-run; blank means the
-repository's current default branch.
+Manual dispatch requires `repository`, `mode`, and `strategy` and accepts an
+optional `target_ref`. `strategy` is an explicit choice between `docs-drift`
+and `agents-startup-routing`; `docs-drift` remains the default. The GitHub
+**Run workflow from** selector chooses the stewardship engine revision. It does
+not choose the target repository state. `target_ref` chooses the branch, tag,
+or commit inspected in a dry-run; blank means the repository's current default
+branch.
 
 The modes are exactly:
 
@@ -33,7 +37,8 @@ Both modes use the same Python entrypoint. Blank-target runs continue to differ
 only after proposal construction, repository-native validation, collision
 detection, and the base-SHA recheck. A targeted dry-run shares the pipeline
 through repository-native validation, then stops without constructing a
-delivery proposal. The Docs Drift strategy has no mode input.
+delivery proposal. Neither strategy receives the execution mode or performs
+GitHub operations.
 
 The shared pipeline is:
 
@@ -44,7 +49,8 @@ The shared pipeline is:
 4. hydrate a new clean checkout at that SHA;
 5. retrieve `AGENTS.md` and the configured repo-local policy source;
 6. resolve repository-native validation from current `AGENTS.md` guidance;
-7. execute Docs Drift against the clean checkout;
+7. construct the selected strategy's narrow context and execute it against the
+   clean checkout;
 8. capture the exact binary/full-index patch and SHA-256 digest;
 9. run repository-native validation with credential variables removed;
 10. for blank-target runs, check for an open strategy-marked PR, an existing
@@ -95,6 +101,35 @@ The strategy reports outcome, rationale, changed paths, evidence, and
 validation requirements. It does not clone, authenticate, select branches,
 commit, push, create PRs, inspect mode, handle collisions, or store evidence.
 
+## AGENTS Startup Routing Strategy
+
+`agents-startup-routing` revision `1` restores one missing active route from
+root `AGENTS.md` to `ai-workflow-playbook/docs/start-here.md`. The Playbook path
+is implementation traceability for the reviewed rule; strategy execution does
+not hydrate or claim to verify live Playbook content.
+
+The strategy ignores fenced code and recognizes positive active prose using
+`start with`, `start from`, or `read`, including ordinary Markdown line
+wrapping. An active route returns `no_change`. If the exact path and the
+reserved `## Shared Workflow Entry Point` heading are both absent from active
+or ambiguous prose, the strategy appends exactly this fixed block:
+
+```markdown
+## Shared Workflow Entry Point
+
+Start with `ai-workflow-playbook/docs/start-here.md` before repository or software work. Use this `AGENTS.md` only for repository-specific execution guidance.
+```
+
+The strategy blocks rather than guessing when the path appears only in
+negative, historical, example-only, or otherwise ambiguous prose; when the
+reserved heading exists without a valid active route; or when root `AGENTS.md`
+is missing, unreadable, non-UTF-8, or a symlink. It never creates a missing
+file, repairs another AGENTS finding, or rewrites existing bytes. A successful
+mutation verifies that the original bytes are the exact prefix of the result
+and reports `AGENTS.md` as the only allowed changed path. The shared engine then
+independently verifies reported paths against the working tree and runs the
+repository-native validation command.
+
 ## Authentication And Authority
 
 Read and delivery identities are distinct:
@@ -143,17 +178,20 @@ be described as having a provider-enforced branch-write-without-merge scope.
 
 ## Collision And Delivery Boundary
 
-Every generated PR body contains:
+Every generated PR body contains the selected strategy's fixed marker. The two
+markers are:
 
 ```text
 <!-- hosted-stewardship:docs-drift -->
+<!-- hosted-stewardship:agents-startup-routing -->
 ```
 
-An open PR with that marker blocks another Docs Drift proposal. Branch names
-are deterministic:
+An open PR blocks only another proposal with the same strategy marker; one
+strategy's PR does not collide with the other. Branch names are deterministic
+and include the selected strategy identifier:
 
 ```text
-stewardship/docs-drift/<base-sha-prefix>-<diff-digest-prefix>
+stewardship/<strategy-identifier>/<base-sha-prefix>-<diff-digest-prefix>
 ```
 
 Any existing branch at that name blocks delivery. The engine never updates a
@@ -181,7 +219,10 @@ identity, requested and effective target refs, resolved base SHA, engine and
 strategy revisions, eligibility, strategy result, changed paths, diff digest,
 validation, proposed delivery metadata, collision result, `would_create_pr`,
 remote mutations, final terminal state, failure stage, and a bounded redacted
-error.
+error. Schema version `1` accepts exactly the `docs-drift`/`1` and
+`agents-startup-routing`/`1` identity pairs, so historical Docs Drift receipts
+remain valid. The selected fixed metadata also supplies the commit message, PR
+title, collision marker, and deterministic branch namespace.
 
 For a blank input, `requested_target_ref` is `null`, `effective_target_ref` is
 the current default branch, and the existing `base_branch` and `base_sha`
@@ -207,8 +248,8 @@ collision, changed base, delivery failure, and delivery success.
 ## Deferred Scope
 
 The MVP intentionally defers fleet discovery and scheduling, fan-out, queues,
-concurrency control beyond one target, budgets, additional strategies, plugin
-loading, provider abstraction, retries, rebasing, PR updates, force-pushes,
-branch cleanup, generalized policy and validation layers, dashboards,
-notifications, comments, labels, auto-merge, merge, settings changes, and
-marketplace packaging.
+concurrency control beyond one target, budgets, any strategy beyond the two
+fixed choices, plugins, dynamic discovery or loading, provider abstraction,
+retries, rebasing, PR updates, force-pushes, branch cleanup, generalized policy
+and validation layers, dashboards, notifications, comments, labels,
+auto-merge, merge, settings changes, and marketplace packaging.

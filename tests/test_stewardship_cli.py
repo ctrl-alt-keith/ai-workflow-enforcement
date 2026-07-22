@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from enforcement.stewardship.cli import main
+from enforcement.stewardship.cli import build_parser, main
 from enforcement.stewardship.docs_drift import DocsDriftStrategy
 from enforcement.stewardship.engine import StewardshipEngine
 from enforcement.stewardship.github import GitHubGateway
@@ -20,6 +20,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StewardshipCliTests(unittest.TestCase):
+    def test_strategy_selection_has_exact_choices_and_docs_drift_default(self) -> None:
+        parser = build_parser()
+        strategy_action = next(
+            action for action in parser._actions if action.dest == "strategy"
+        )
+
+        self.assertEqual(
+            ("docs-drift", "agents-startup-routing"), strategy_action.choices
+        )
+        self.assertEqual("docs-drift", strategy_action.default)
+
     def test_child_process_environment_omits_all_token_variables(self) -> None:
         with mock.patch.dict(
             os.environ,
@@ -80,6 +91,8 @@ class StewardshipCliTests(unittest.TestCase):
             self.assertEqual([], receipt["changed_paths"])
             self.assertEqual([], receipt["remote_mutations_attempted"])
             self.assertEqual([], receipt["remote_mutation_results"])
+            self.assertEqual("docs-drift", receipt["strategy_identifier"])
+            self.assertEqual("1", receipt["strategy_revision"])
             hydrate.assert_not_called()
             strategy.assert_not_called()
             validation.assert_not_called()
@@ -104,6 +117,8 @@ class StewardshipCliTests(unittest.TestCase):
                             "ctrl-alt-keith/ai-workflow-enforcement",
                             "--mode",
                             "propose",
+                            "--strategy",
+                            "agents-startup-routing",
                             "--run-identifier",
                             "run-1",
                             "--engine-revision",
@@ -122,6 +137,8 @@ class StewardshipCliTests(unittest.TestCase):
             self.assertEqual(1, exit_code)
             self.assertEqual("blocked_before_strategy", receipt["final_terminal_state"])
             self.assertEqual("engine_initialization", receipt["failure_stage"])
+            self.assertEqual("agents-startup-routing", receipt["strategy_identifier"])
+            self.assertEqual("1", receipt["strategy_revision"])
             self.assertNotIn(secret, receipt_text)
 
     def test_propose_target_ref_writes_blocked_receipt_before_hydration(self) -> None:

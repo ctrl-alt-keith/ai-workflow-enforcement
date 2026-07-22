@@ -31,6 +31,16 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertIn("group: hosted-stewardship-${{ inputs.repository }}", self.workflow)
         self.assertIn("cancel-in-progress: false", self.workflow)
 
+    def test_strategy_input_has_exact_two_choices_and_docs_drift_default(self) -> None:
+        strategy_input = self.workflow.split("      strategy:", 1)[1].split(
+            "      target_ref:", 1
+        )[0]
+        self.assertIn("default: docs-drift", strategy_input)
+        self.assertEqual(1, strategy_input.count("          - docs-drift"))
+        self.assertEqual(
+            1, strategy_input.count("          - agents-startup-routing")
+        )
+
     def test_read_and_write_identities_are_distinct_and_narrow(self) -> None:
         self.assertIn("permissions:\n  contents: read", self.workflow)
         self.assertIn("WORKFLOW_DRIFT_APP_CLIENT_ID", self.workflow)
@@ -48,6 +58,7 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
     def test_modes_share_one_cli_pipeline_and_only_propose_receives_write_token(self) -> None:
         self.assertEqual(1, self.workflow.count("python3 -m enforcement.stewardship.cli"))
         self.assertIn('--mode "${{ inputs.mode }}"', self.workflow)
+        self.assertIn('--strategy "${{ inputs.strategy }}"', self.workflow)
         self.assertIn('--target-ref "${TARGET_REF}"', self.workflow)
         execute_step = self.workflow.split(
             "- name: Execute the shared stewardship pipeline", 1
@@ -55,11 +66,12 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertIn("STEWARDSHIP_READ_TOKEN", execute_step)
         self.assertIn("STEWARDSHIP_WRITE_TOKEN", execute_step)
         self.assertIn("TARGET_REF: ${{ inputs.target_ref }}", execute_step)
-        strategy = (ROOT / "enforcement" / "stewardship" / "docs_drift.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("dry-run", strategy)
-        self.assertNotIn("propose", strategy)
+        for name in ("docs_drift.py", "agents_startup_routing.py"):
+            strategy = (ROOT / "enforcement" / "stewardship" / name).read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn("dry-run", strategy)
+            self.assertNotIn("propose", strategy)
 
     def test_exact_engine_identity_evidence_and_no_forbidden_delivery(self) -> None:
         self.assertIn("ref: ${{ github.sha }}", self.workflow)
@@ -99,6 +111,22 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         policy = self.config["repositories"]["ctrl-alt-keith/ai-workflow-enforcement"]
         self.assertIn(policy["required_policy_marker"], self.product_boundary)
         self.assertEqual(1, self.schema["properties"]["schema_version"]["const"])
+        self.assertEqual(
+            ["docs-drift", "agents-startup-routing"],
+            self.schema["properties"]["strategy_identifier"]["enum"],
+        )
+        self.assertEqual("1", self.schema["properties"]["strategy_revision"]["const"])
+        identity_pairs = {
+            (
+                option["properties"]["strategy_identifier"]["const"],
+                option["properties"]["strategy_revision"]["const"],
+            )
+            for option in self.schema["allOf"][0]["oneOf"]
+        }
+        self.assertEqual(
+            {("docs-drift", "1"), ("agents-startup-routing", "1")},
+            identity_pairs,
+        )
         required = set(self.schema["required"])
         self.assertEqual(
             {"string", "null"},

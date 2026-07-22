@@ -11,7 +11,13 @@ from pathlib import Path
 from .config import load_config
 from .engine import StewardshipEngine
 from .github import GitHubGateway
-from .models import ENGINE_SCHEMA_VERSION, STRATEGY_ID, STRATEGY_REVISION, StewardshipReceipt
+from .models import (
+    DEFAULT_STRATEGY_IDENTIFIER,
+    ENGINE_SCHEMA_VERSION,
+    SUPPORTED_STRATEGY_IDENTIFIERS,
+    StewardshipReceipt,
+    strategy_metadata,
+)
 
 
 SUCCESS_TERMINALS = {
@@ -26,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--mode", required=True, choices=("dry-run", "propose"))
+    parser.add_argument(
+        "--strategy",
+        choices=SUPPORTED_STRATEGY_IDENTIFIERS,
+        default=DEFAULT_STRATEGY_IDENTIFIER,
+    )
     parser.add_argument("--target-ref", default="")
     parser.add_argument("--run-identifier", required=True)
     parser.add_argument("--engine-revision", required=True)
@@ -51,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         engine = StewardshipEngine(
             config=config,
             gateway=gateway,
+            strategy_identifier=args.strategy,
             redactions=(read_token, write_token),
         )
         receipt = engine.run(
@@ -89,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _failure_receipt(args: argparse.Namespace, error: str) -> StewardshipReceipt:
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    metadata = strategy_metadata(args.strategy)
     return StewardshipReceipt(
         schema_version=ENGINE_SCHEMA_VERSION,
         run_identifier=args.run_identifier,
@@ -101,8 +114,8 @@ def _failure_receipt(args: argparse.Namespace, error: str) -> StewardshipReceipt
         base_branch=None,
         base_sha=None,
         engine_revision=args.engine_revision,
-        strategy_identifier=STRATEGY_ID,
-        strategy_revision=STRATEGY_REVISION,
+        strategy_identifier=metadata.identifier,
+        strategy_revision=metadata.revision,
         eligibility={
             "decision": "blocked",
             "reason": "Engine initialization failed before eligibility could complete.",
