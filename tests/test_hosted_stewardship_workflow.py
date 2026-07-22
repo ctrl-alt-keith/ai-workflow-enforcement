@@ -31,7 +31,7 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertIn("group: hosted-stewardship-${{ inputs.repository }}", self.workflow)
         self.assertIn("cancel-in-progress: false", self.workflow)
 
-    def test_strategy_input_has_exact_two_choices_and_docs_drift_default(self) -> None:
+    def test_strategy_input_has_exact_three_choices_and_docs_drift_default(self) -> None:
         strategy_input = self.workflow.split("      strategy:", 1)[1].split(
             "      target_ref:", 1
         )[0]
@@ -39,6 +39,9 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertEqual(1, strategy_input.count("          - docs-drift"))
         self.assertEqual(
             1, strategy_input.count("          - agents-startup-routing")
+        )
+        self.assertEqual(
+            1, strategy_input.count("          - worktree-ignore-baseline")
         )
 
     def test_read_and_write_identities_are_distinct_and_narrow(self) -> None:
@@ -66,7 +69,11 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertIn("STEWARDSHIP_READ_TOKEN", execute_step)
         self.assertIn("STEWARDSHIP_WRITE_TOKEN", execute_step)
         self.assertIn("TARGET_REF: ${{ inputs.target_ref }}", execute_step)
-        for name in ("docs_drift.py", "agents_startup_routing.py"):
+        for name in (
+            "docs_drift.py",
+            "agents_startup_routing.py",
+            "worktree_ignore_baseline.py",
+        ):
             strategy = (ROOT / "enforcement" / "stewardship" / name).read_text(
                 encoding="utf-8"
             )
@@ -112,7 +119,11 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertIn(policy["required_policy_marker"], self.product_boundary)
         self.assertEqual(1, self.schema["properties"]["schema_version"]["const"])
         self.assertEqual(
-            ["docs-drift", "agents-startup-routing"],
+            [
+                "docs-drift",
+                "agents-startup-routing",
+                "worktree-ignore-baseline",
+            ],
             self.schema["properties"]["strategy_identifier"]["enum"],
         )
         self.assertEqual("1", self.schema["properties"]["strategy_revision"]["const"])
@@ -124,7 +135,11 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
             for option in self.schema["allOf"][0]["oneOf"]
         }
         self.assertEqual(
-            {("docs-drift", "1"), ("agents-startup-routing", "1")},
+            {
+                ("docs-drift", "1"),
+                ("agents-startup-routing", "1"),
+                ("worktree-ignore-baseline", "1"),
+            },
             identity_pairs,
         )
         required = set(self.schema["required"])

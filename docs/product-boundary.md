@@ -20,9 +20,9 @@ small, deterministic, and review-oriented:
 - reusable reinforcement mechanisms
 
 The Hosted Stewardship Engine is one narrow exception to the report-only tool
-shape: it may construct a validated local documentation proposal and create one
+shape: it may construct a validated local repository proposal and create one
 review-ready pull request for an explicitly eligible repository through one of
-two fixed strategies. It does not provide a plugin framework or dynamic
+three fixed strategies. It does not provide a plugin framework or dynamic
 strategy discovery, classify final meaning, update existing proposals, merge,
 enable auto-merge, or otherwise accept its own change. Hosted Stewardship
 Engine proposals are review-ready evidence; human merge remains the remediation

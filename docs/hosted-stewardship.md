@@ -1,12 +1,14 @@
 # Hosted Stewardship Engine
 
 The Hosted Stewardship Engine is a manually dispatched, single-repository MVP
-that constructs a validated local documentation proposal and either stops with
+that constructs a validated local repository proposal and either stops with
 durable evidence or creates one review-ready pull request. It is not the former
 `docs-drift-sweep` automation and does not implement discovery, scheduling, or
-dynamic strategy loading. The engine supports exactly two fixed strategies:
-`docs-drift` revision `1` and `agents-startup-routing` revision `1`. It has no
-plugin framework, runtime registry, entry points, hooks, or dynamic discovery.
+dynamic strategy loading. The engine supports exactly three fixed strategies:
+`docs-drift` revision `1`, `agents-startup-routing` revision `1`, and
+`worktree-ignore-baseline` revision `1`. It has no plugin framework, runtime
+registry, entry points, hooks, generalized strategy abstraction, shared append
+framework, or dynamic discovery.
 
 The workflow is `.github/workflows/hosted-stewardship.yml`. Its only eligible
 MVP target is `ctrl-alt-keith/ai-workflow-enforcement`, declared in
@@ -15,8 +17,9 @@ MVP target is `ctrl-alt-keith/ai-workflow-enforcement`, declared in
 ## Modes And Shared Pipeline
 
 Manual dispatch requires `repository`, `mode`, and `strategy` and accepts an
-optional `target_ref`. `strategy` is an explicit choice between `docs-drift`
-and `agents-startup-routing`; `docs-drift` remains the default. The GitHub
+optional `target_ref`. `strategy` is an explicit choice among `docs-drift`,
+`agents-startup-routing`, and `worktree-ignore-baseline`; `docs-drift` remains
+the default. The GitHub
 **Run workflow from** selector chooses the stewardship engine revision. It does
 not choose the target repository state. `target_ref` chooses the branch, tag,
 or commit inspected in a dry-run; blank means the repository's current default
@@ -130,6 +133,31 @@ and reports `AGENTS.md` as the only allowed changed path. The shared engine then
 independently verifies reported paths against the working tree and runs the
 repository-native validation command.
 
+## Worktree Ignore Baseline Strategy
+
+`worktree-ignore-baseline` revision `1` maintains exactly one repository
+invariant in root `.gitignore`: the exact active logical line `.worktrees/`.
+The governing
+`ctrl-alt-keith/ai-workflow-playbook/docs/new-repo-bootstrap.md` path is
+implementation traceability for the reviewed rule only; runtime execution does
+not hydrate or verify live Playbook content.
+
+When the `.worktrees` token is wholly absent, the strategy appends only
+`.worktrees/` and a final newline. It preserves the original bytes as an exact
+prefix, uses the file's unambiguous existing LF or CRLF convention, and reports
+`.gitignore` as its only changed path. It does not create a missing `.gitignore`,
+rewrite or reorder rules, normalize unrelated whitespace, infer equivalence,
+or repair another ignore rule.
+
+The exact active rule returns `no_change`. Any other `.worktrees` occurrence
+blocks the strategy, including commented, negated, rooted, recursive, globbed,
+escaped, whitespace-altered, or mixed exact-and-alternate forms. Missing,
+unreadable, non-UTF-8, or symlinked `.gitignore` files block, as do ambiguous
+newline conventions and append or verification failures. This is a fixed
+strategy, not a generalized append strategy or reusable append subsystem. The
+shared engine independently verifies the one-file scope and runs
+repository-native validation. Human merge remains the acceptance boundary.
+
 ## Authentication And Authority
 
 Read and delivery identities are distinct:
@@ -178,12 +206,13 @@ be described as having a provider-enforced branch-write-without-merge scope.
 
 ## Collision And Delivery Boundary
 
-Every generated PR body contains the selected strategy's fixed marker. The two
+Every generated PR body contains the selected strategy's fixed marker. The three
 markers are:
 
 ```text
 <!-- hosted-stewardship:docs-drift -->
 <!-- hosted-stewardship:agents-startup-routing -->
+<!-- hosted-stewardship:worktree-ignore-baseline -->
 ```
 
 An open PR blocks only another proposal with the same strategy marker; one
@@ -219,10 +248,11 @@ identity, requested and effective target refs, resolved base SHA, engine and
 strategy revisions, eligibility, strategy result, changed paths, diff digest,
 validation, proposed delivery metadata, collision result, `would_create_pr`,
 remote mutations, final terminal state, failure stage, and a bounded redacted
-error. Schema version `1` accepts exactly the `docs-drift`/`1` and
-`agents-startup-routing`/`1` identity pairs, so historical Docs Drift receipts
-remain valid. The selected fixed metadata also supplies the commit message, PR
-title, collision marker, and deterministic branch namespace.
+error. Schema version `1` accepts exactly the `docs-drift`/`1`,
+`agents-startup-routing`/`1`, and `worktree-ignore-baseline`/`1` identity pairs,
+so historical receipts remain valid. The selected fixed metadata also supplies
+the commit message, PR title, collision marker, and deterministic branch
+namespace.
 
 For a blank input, `requested_target_ref` is `null`, `effective_target_ref` is
 the current default branch, and the existing `base_branch` and `base_sha`
@@ -248,7 +278,7 @@ collision, changed base, delivery failure, and delivery success.
 ## Deferred Scope
 
 The MVP intentionally defers fleet discovery and scheduling, fan-out, queues,
-concurrency control beyond one target, budgets, any strategy beyond the two
+concurrency control beyond one target, budgets, any strategy beyond the three
 fixed choices, plugins, dynamic discovery or loading, provider abstraction,
 retries, rebasing, PR updates, force-pushes, branch cleanup, generalized policy
 and validation layers, dashboards, notifications, comments, labels,

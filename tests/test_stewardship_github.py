@@ -9,6 +9,7 @@ from enforcement.stewardship.github import GitHubError, GitHubGateway
 from enforcement.stewardship.models import (
     AGENTS_STARTUP_ROUTING_METADATA,
     DOCS_DRIFT_METADATA,
+    WORKTREE_IGNORE_BASELINE_METADATA,
 )
 
 
@@ -73,6 +74,10 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
                     "body": AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
                     "html_url": "https://github.com/example/pull/2",
                 },
+                {
+                    "body": WORKTREE_IGNORE_BASELINE_METADATA.collision_marker,
+                    "html_url": "https://github.com/example/pull/3",
+                },
             ]
         ]
         with mock.patch.object(self.gateway, "_gh_json", return_value=pages):
@@ -99,6 +104,27 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
             )
 
         self.assertIsNone(actual)
+
+    def test_worktree_strategy_marker_matches_only_worktree_pr(self) -> None:
+        pages = [
+            [
+                {
+                    "body": AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
+                    "html_url": "https://github.com/example/pull/2",
+                },
+                {
+                    "body": WORKTREE_IGNORE_BASELINE_METADATA.collision_marker,
+                    "html_url": "https://github.com/example/pull/3",
+                },
+            ]
+        ]
+        with mock.patch.object(self.gateway, "_gh_json", return_value=pages):
+            actual = self.gateway.existing_stewardship_pr(
+                "ctrl-alt-keith/ai-workflow-enforcement",
+                WORKTREE_IGNORE_BASELINE_METADATA.collision_marker,
+            )
+
+        self.assertEqual("https://github.com/example/pull/3", actual)
 
 
 if __name__ == "__main__":

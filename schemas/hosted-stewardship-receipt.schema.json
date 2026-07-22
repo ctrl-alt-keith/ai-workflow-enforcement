@@ -48,7 +48,7 @@
     "base_branch": {"type": ["string", "null"]},
     "base_sha": {"type": ["string", "null"]},
     "engine_revision": {"type": "string", "minLength": 1},
-    "strategy_identifier": {"enum": ["docs-drift", "agents-startup-routing"]},
+    "strategy_identifier": {"enum": ["docs-drift", "agents-startup-routing", "worktree-ignore-baseline"]},
     "strategy_revision": {"const": "1"},
     "eligibility": {"type": "object"},
     "strategy_result": {"type": "object"},
@@ -82,6 +82,12 @@
         {
           "properties": {
             "strategy_identifier": {"const": "agents-startup-routing"},
+            "strategy_revision": {"const": "1"}
+          }
+        },
+        {
+          "properties": {
+            "strategy_identifier": {"const": "worktree-ignore-baseline"},
             "strategy_revision": {"const": "1"}
           }
         }

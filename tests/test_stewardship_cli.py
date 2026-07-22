@@ -27,7 +27,12 @@ class StewardshipCliTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ("docs-drift", "agents-startup-routing"), strategy_action.choices
+            (
+                "docs-drift",
+                "agents-startup-routing",
+                "worktree-ignore-baseline",
+            ),
+            strategy_action.choices,
         )
         self.assertEqual("docs-drift", strategy_action.default)
 
