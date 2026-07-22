@@ -25,6 +25,7 @@ on:
         options:
           - docs-drift
           - agents-startup-routing
+          - worktree-ignore-baseline
       target_ref:
         description: Optional branch, tag, or commit to inspect in dry-run only; blank uses the default branch
         required: false

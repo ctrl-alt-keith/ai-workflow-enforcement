@@ -24,6 +24,11 @@ from enforcement.stewardship.models import (
     DeliveryResult,
     RepositoryInfo,
     StrategyResult,
+    WORKTREE_IGNORE_BASELINE_METADATA,
+)
+from enforcement.stewardship.worktree_ignore_baseline import (
+    WorktreeIgnoreBaselineContext,
+    WorktreeIgnoreBaselineStrategy,
 )
 
 
@@ -178,6 +183,17 @@ class SpyAgentsStartupRoutingStrategy(AgentsStartupRoutingStrategy):
         return StrategyResult(outcome="no_change", summary="injected AGENTS strategy")
 
 
+class SpyWorktreeIgnoreBaselineStrategy(WorktreeIgnoreBaselineStrategy):
+    def __init__(self) -> None:
+        self.contexts: list[WorktreeIgnoreBaselineContext] = []
+
+    def run(self, context: WorktreeIgnoreBaselineContext) -> StrategyResult:
+        self.contexts.append(context)
+        return StrategyResult(
+            outcome="no_change", summary="injected worktree strategy"
+        )
+
+
 class StewardshipEngineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -199,6 +215,7 @@ class StewardshipEngineTests(unittest.TestCase):
             encoding="utf-8",
         )
         (self.source / "README.md").write_text("# Example\n", encoding="utf-8")
+        (self.source / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
         self._set_validation(passes=True)
         _run_git(self.source, "add", ".")
         _run_git(self.source, "commit", "-m", "fixture")
@@ -236,6 +253,9 @@ class StewardshipEngineTests(unittest.TestCase):
         gateway: FakeGateway | None = None,
         docs_drift_strategy: DocsDriftStrategy | None = None,
         agents_startup_routing_strategy: AgentsStartupRoutingStrategy | None = None,
+        worktree_ignore_baseline_strategy: (
+            WorktreeIgnoreBaselineStrategy | None
+        ) = None,
         strategy_identifier: str = "docs-drift",
         repository: str = REPOSITORY,
         target_ref: str = "",
@@ -248,6 +268,7 @@ class StewardshipEngineTests(unittest.TestCase):
             strategy_identifier=strategy_identifier,
             docs_drift_strategy=docs_drift_strategy,
             agents_startup_routing_strategy=agents_startup_routing_strategy,
+            worktree_ignore_baseline_strategy=worktree_ignore_baseline_strategy,
             clock=lambda: datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc),
             redactions=redactions,
         )
@@ -307,6 +328,21 @@ class StewardshipEngineTests(unittest.TestCase):
             strategy.contexts[0].repository_root.name,
         )
 
+    def test_injected_worktree_strategy_receives_narrow_context(self) -> None:
+        strategy = SpyWorktreeIgnoreBaselineStrategy()
+
+        receipt, _, _ = self._run(
+            strategy_identifier="worktree-ignore-baseline",
+            worktree_ignore_baseline_strategy=strategy,
+        )
+
+        self.assertEqual("eligible_no_change", receipt.final_terminal_state)
+        self.assertEqual(1, len(strategy.contexts))
+        self.assertEqual(
+            "ctrl-alt-keith--ai-workflow-enforcement",
+            strategy.contexts[0].repository_root.name,
+        )
+
     def test_unsupported_strategy_is_rejected_during_engine_construction(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported stewardship strategy"):
             StewardshipEngine(
@@ -324,6 +360,17 @@ class StewardshipEngineTests(unittest.TestCase):
                 gateway=FakeGateway(self.source, self.base_sha),
                 strategy_identifier="agents-startup-routing",
                 docs_drift_strategy=SpyStrategy(),
+            )
+
+    def test_agents_implementation_cannot_execute_as_worktree_strategy(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "AGENTS startup routing implementation cannot execute"
+        ):
+            StewardshipEngine(
+                config=self.config,
+                gateway=FakeGateway(self.source, self.base_sha),
+                strategy_identifier="worktree-ignore-baseline",
+                agents_startup_routing_strategy=SpyAgentsStartupRoutingStrategy(),
             )
 
     def test_branch_target_ref_resolves_and_hydrates_exact_sha_in_dry_run(self) -> None:
@@ -426,6 +473,21 @@ class StewardshipEngineTests(unittest.TestCase):
         self.assertEqual(0, gateway.delivery_calls)
         self.assertEqual([], receipt.remote_mutations_attempted)
         self.assertIn("## Shared Workflow Entry Point", (evidence / "proposal.patch").read_text(encoding="utf-8"))
+
+    def test_worktree_dry_run_changes_only_gitignore_without_delivery(self) -> None:
+        receipt, gateway, evidence = self._run(
+            mode="dry-run",
+            strategy_identifier="worktree-ignore-baseline",
+        )
+
+        self.assertEqual("dry_run_complete", receipt.final_terminal_state)
+        self.assertEqual([".gitignore"], receipt.changed_paths)
+        self.assertEqual("passed", receipt.validation["status"])
+        self.assertEqual(0, gateway.delivery_calls)
+        self.assertEqual([], receipt.remote_mutations_attempted)
+        patch = (evidence / "proposal.patch").read_text(encoding="utf-8")
+        self.assertIn("diff --git a/.gitignore b/.gitignore", patch)
+        self.assertNotIn("diff --git a/README.md b/README.md", patch)
 
     def test_propose_uses_same_pipeline_and_delivers_exact_validated_patch(self) -> None:
         dry_receipt, _, dry_evidence = self._run(mode="dry-run")
@@ -609,6 +671,64 @@ class StewardshipEngineTests(unittest.TestCase):
             [AGENTS_STARTUP_ROUTING_METADATA.collision_marker],
             gateway.collision_markers,
         )
+
+    def test_same_strategy_pr_suppresses_worktree_proposal(self) -> None:
+        gateway = FakeGateway(self.source, self.base_sha)
+        gateway.existing_pr_by_marker[
+            WORKTREE_IGNORE_BASELINE_METADATA.collision_marker
+        ] = "https://github.com/example/pull/3"
+
+        receipt, gateway, _ = self._run(
+            mode="propose",
+            gateway=gateway,
+            strategy_identifier="worktree-ignore-baseline",
+        )
+
+        self.assertEqual("skipped_existing_pr", receipt.final_terminal_state)
+        self.assertEqual(0, gateway.delivery_calls)
+
+    def test_other_strategy_pr_does_not_suppress_worktree_proposal(self) -> None:
+        gateway = FakeGateway(self.source, self.base_sha)
+        gateway.existing_pr_by_marker[DOCS_DRIFT_METADATA.collision_marker] = (
+            "https://github.com/example/pull/1"
+        )
+
+        receipt, gateway, _ = self._run(
+            mode="propose",
+            gateway=gateway,
+            strategy_identifier="worktree-ignore-baseline",
+        )
+
+        self.assertEqual("delivery_succeeded", receipt.final_terminal_state)
+        self.assertEqual(1, gateway.delivery_calls)
+        self.assertEqual(
+            [WORKTREE_IGNORE_BASELINE_METADATA.collision_marker],
+            gateway.collision_markers,
+        )
+
+    def test_worktree_strategy_controls_receipt_branch_and_pr_identity(self) -> None:
+        receipt, gateway, _ = self._run(
+            mode="propose",
+            strategy_identifier="worktree-ignore-baseline",
+        )
+
+        self.assertEqual("worktree-ignore-baseline", receipt.strategy_identifier)
+        self.assertEqual("1", receipt.strategy_revision)
+        self.assertTrue(
+            receipt.proposed_branch.startswith("stewardship/worktree-ignore-baseline/")
+        )
+        self.assertEqual(
+            "chore: restore the worktree ignore baseline",
+            receipt.proposed_commit_message,
+        )
+        self.assertEqual(
+            "chore: restore the worktree ignore baseline", receipt.proposed_pr_title
+        )
+        self.assertIn(
+            WORKTREE_IGNORE_BASELINE_METADATA.collision_marker,
+            receipt.proposed_pr_body,
+        )
+        self.assertEqual(receipt.proposed_branch, gateway.delivered_proposal.branch)
 
     def test_agents_strategy_controls_receipt_branch_and_pr_identity(self) -> None:
         receipt, gateway, _ = self._run(

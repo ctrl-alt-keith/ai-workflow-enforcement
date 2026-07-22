@@ -33,6 +33,10 @@ from .models import (
     artifact_reference,
     strategy_metadata,
 )
+from .worktree_ignore_baseline import (
+    WorktreeIgnoreBaselineContext,
+    WorktreeIgnoreBaselineStrategy,
+)
 
 
 VALIDATION_PATTERN = re.compile(
@@ -82,6 +86,9 @@ class StewardshipEngine:
         strategy_identifier: str = DEFAULT_STRATEGY_IDENTIFIER,
         docs_drift_strategy: DocsDriftStrategy | None = None,
         agents_startup_routing_strategy: AgentsStartupRoutingStrategy | None = None,
+        worktree_ignore_baseline_strategy: (
+            WorktreeIgnoreBaselineStrategy | None
+        ) = None,
         clock: Callable[[], datetime] | None = None,
         redactions: tuple[str, ...] = (),
     ) -> None:
@@ -91,6 +98,7 @@ class StewardshipEngine:
             strategy_identifier,
             docs_drift_strategy=docs_drift_strategy,
             agents_startup_routing_strategy=agents_startup_routing_strategy,
+            worktree_ignore_baseline_strategy=worktree_ignore_baseline_strategy,
         )
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._redactions = tuple(value for value in redactions if value)
@@ -682,12 +690,17 @@ def _select_strategy(
     *,
     docs_drift_strategy: DocsDriftStrategy | None = None,
     agents_startup_routing_strategy: AgentsStartupRoutingStrategy | None = None,
+    worktree_ignore_baseline_strategy: WorktreeIgnoreBaselineStrategy | None = None,
 ) -> SelectedStrategy:
     metadata = strategy_metadata(identifier)
     if identifier == "docs-drift":
         if agents_startup_routing_strategy is not None:
             raise ValueError(
                 "an AGENTS startup routing implementation cannot execute as docs-drift"
+            )
+        if worktree_ignore_baseline_strategy is not None:
+            raise ValueError(
+                "a worktree ignore baseline implementation cannot execute as docs-drift"
             )
         selected_docs_drift_strategy = docs_drift_strategy or DocsDriftStrategy()
 
@@ -711,6 +724,10 @@ def _select_strategy(
             raise ValueError(
                 "a Docs Drift implementation cannot execute as agents-startup-routing"
             )
+        if worktree_ignore_baseline_strategy is not None:
+            raise ValueError(
+                "a worktree ignore baseline implementation cannot execute as agents-startup-routing"
+            )
         selected_agents_strategy = (
             agents_startup_routing_strategy or AgentsStartupRoutingStrategy()
         )
@@ -728,6 +745,34 @@ def _select_strategy(
         return SelectedStrategy(
             metadata=metadata,
             execute=execute_agents_startup_routing,
+        )
+
+    if identifier == "worktree-ignore-baseline":
+        if docs_drift_strategy is not None:
+            raise ValueError(
+                "a Docs Drift implementation cannot execute as worktree-ignore-baseline"
+            )
+        if agents_startup_routing_strategy is not None:
+            raise ValueError(
+                "an AGENTS startup routing implementation cannot execute as worktree-ignore-baseline"
+            )
+        selected_worktree_strategy = (
+            worktree_ignore_baseline_strategy or WorktreeIgnoreBaselineStrategy()
+        )
+
+        def execute_worktree_ignore_baseline(
+            repository_root: Path,
+            policy: RepositoryPolicy,
+            validation_command: tuple[str, ...],
+        ) -> StrategyResult:
+            del policy, validation_command
+            return selected_worktree_strategy.run(
+                WorktreeIgnoreBaselineContext(repository_root=repository_root)
+            )
+
+        return SelectedStrategy(
+            metadata=metadata,
+            execute=execute_worktree_ignore_baseline,
         )
 
     raise ValueError(f"unsupported stewardship strategy: {identifier}")

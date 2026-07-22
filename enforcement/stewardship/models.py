@@ -12,6 +12,7 @@ DEFAULT_STRATEGY_IDENTIFIER = "docs-drift"
 SUPPORTED_STRATEGY_IDENTIFIERS = (
     "docs-drift",
     "agents-startup-routing",
+    "worktree-ignore-baseline",
 )
 
 Mode = Literal["dry-run", "propose"]
@@ -59,14 +60,24 @@ AGENTS_STARTUP_ROUTING_METADATA = StrategyMetadata(
     collision_marker="<!-- hosted-stewardship:agents-startup-routing -->",
 )
 
+WORKTREE_IGNORE_BASELINE_METADATA = StrategyMetadata(
+    identifier="worktree-ignore-baseline",
+    revision="1",
+    commit_message="chore: restore the worktree ignore baseline",
+    pr_title="chore: restore the worktree ignore baseline",
+    collision_marker="<!-- hosted-stewardship:worktree-ignore-baseline -->",
+)
+
 
 def strategy_metadata(identifier: str) -> StrategyMetadata:
-    """Return metadata for one of the two deliberately fixed strategies."""
+    """Return metadata for one of the three deliberately fixed strategies."""
 
     if identifier == DOCS_DRIFT_METADATA.identifier:
         return DOCS_DRIFT_METADATA
     if identifier == AGENTS_STARTUP_ROUTING_METADATA.identifier:
         return AGENTS_STARTUP_ROUTING_METADATA
+    if identifier == WORKTREE_IGNORE_BASELINE_METADATA.identifier:
+        return WORKTREE_IGNORE_BASELINE_METADATA
     raise ValueError(f"unsupported stewardship strategy: {identifier}")
 
 
