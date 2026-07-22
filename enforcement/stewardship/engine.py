@@ -64,10 +64,6 @@ class Gateway(Protocol):
     def deliver(self, repository_root: Path, proposal: DeliveryProposal) -> DeliveryResult: ...
 
 
-class Strategy(Protocol):
-    def run(self, context: object) -> StrategyResult: ...
-
-
 @dataclass(frozen=True)
 class SelectedStrategy:
     metadata: StrategyMetadata
@@ -84,13 +80,18 @@ class StewardshipEngine:
         config: StewardshipConfig,
         gateway: Gateway,
         strategy_identifier: str = DEFAULT_STRATEGY_IDENTIFIER,
-        strategy: Strategy | None = None,
+        docs_drift_strategy: DocsDriftStrategy | None = None,
+        agents_startup_routing_strategy: AgentsStartupRoutingStrategy | None = None,
         clock: Callable[[], datetime] | None = None,
         redactions: tuple[str, ...] = (),
     ) -> None:
         self._config = config
         self._gateway = gateway
-        self._strategy = _select_strategy(strategy_identifier, strategy)
+        self._strategy = _select_strategy(
+            strategy_identifier,
+            docs_drift_strategy=docs_drift_strategy,
+            agents_startup_routing_strategy=agents_startup_routing_strategy,
+        )
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._redactions = tuple(value for value in redactions if value)
 
@@ -678,18 +679,24 @@ def _build_pr_body(
 
 def _select_strategy(
     identifier: str,
-    implementation: Strategy | None = None,
+    *,
+    docs_drift_strategy: DocsDriftStrategy | None = None,
+    agents_startup_routing_strategy: AgentsStartupRoutingStrategy | None = None,
 ) -> SelectedStrategy:
     metadata = strategy_metadata(identifier)
     if identifier == "docs-drift":
-        strategy = implementation or DocsDriftStrategy()
+        if agents_startup_routing_strategy is not None:
+            raise ValueError(
+                "an AGENTS startup routing implementation cannot execute as docs-drift"
+            )
+        selected_docs_drift_strategy = docs_drift_strategy or DocsDriftStrategy()
 
-        def execute(
+        def execute_docs_drift(
             repository_root: Path,
             policy: RepositoryPolicy,
             validation_command: tuple[str, ...],
         ) -> StrategyResult:
-            return strategy.run(
+            return selected_docs_drift_strategy.run(
                 DocsDriftContext(
                     repository_root=repository_root,
                     documentation_path=policy.documentation_path,
@@ -697,21 +704,30 @@ def _select_strategy(
                 )
             )
 
-        return SelectedStrategy(metadata=metadata, execute=execute)
+        return SelectedStrategy(metadata=metadata, execute=execute_docs_drift)
 
     if identifier == "agents-startup-routing":
-        strategy = implementation or AgentsStartupRoutingStrategy()
+        if docs_drift_strategy is not None:
+            raise ValueError(
+                "a Docs Drift implementation cannot execute as agents-startup-routing"
+            )
+        selected_agents_strategy = (
+            agents_startup_routing_strategy or AgentsStartupRoutingStrategy()
+        )
 
-        def execute(
+        def execute_agents_startup_routing(
             repository_root: Path,
             policy: RepositoryPolicy,
             validation_command: tuple[str, ...],
         ) -> StrategyResult:
             del policy, validation_command
-            return strategy.run(
+            return selected_agents_strategy.run(
                 AgentsStartupRoutingContext(repository_root=repository_root)
             )
 
-        return SelectedStrategy(metadata=metadata, execute=execute)
+        return SelectedStrategy(
+            metadata=metadata,
+            execute=execute_agents_startup_routing,
+        )
 
     raise ValueError(f"unsupported stewardship strategy: {identifier}")

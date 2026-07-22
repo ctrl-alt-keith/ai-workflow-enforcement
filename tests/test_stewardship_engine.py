@@ -10,8 +10,12 @@ import tempfile
 import unittest
 from unittest import mock
 
+from enforcement.stewardship.agents_startup_routing import (
+    AgentsStartupRoutingContext,
+    AgentsStartupRoutingStrategy,
+)
 from enforcement.stewardship.config import RepositoryPolicy, StewardshipConfig
-from enforcement.stewardship.docs_drift import DocsDriftContext
+from enforcement.stewardship.docs_drift import DocsDriftContext, DocsDriftStrategy
 from enforcement.stewardship.engine import StewardshipEngine
 from enforcement.stewardship.models import (
     AGENTS_STARTUP_ROUTING_METADATA,
@@ -132,7 +136,7 @@ class FakeGateway:
         )
 
 
-class RaisingStrategy:
+class RaisingStrategy(DocsDriftStrategy):
     def __init__(self, message: str = "simulated strategy failure") -> None:
         self.message = message
         self.calls = 0
@@ -142,17 +146,19 @@ class RaisingStrategy:
         raise RuntimeError(self.message)
 
 
-class SpyStrategy:
+class SpyStrategy(DocsDriftStrategy):
     def __init__(self) -> None:
         self.calls = 0
+        self.contexts: list[DocsDriftContext] = []
 
     def run(self, context: DocsDriftContext) -> StrategyResult:
         self.calls += 1
+        self.contexts.append(context)
         return StrategyResult(outcome="no_change", summary="not used")
 
 
-class MismatchedChangedPathStrategy:
-    def run(self, context) -> StrategyResult:
+class MismatchedChangedPathStrategy(AgentsStartupRoutingStrategy):
+    def run(self, context: AgentsStartupRoutingContext) -> StrategyResult:
         (context.repository_root / "README.md").write_text(
             "unexpected change\n", encoding="utf-8"
         )
@@ -161,6 +167,15 @@ class MismatchedChangedPathStrategy:
             summary="reported a different path",
             changed_paths=("AGENTS.md",),
         )
+
+
+class SpyAgentsStartupRoutingStrategy(AgentsStartupRoutingStrategy):
+    def __init__(self) -> None:
+        self.contexts: list[AgentsStartupRoutingContext] = []
+
+    def run(self, context: AgentsStartupRoutingContext) -> StrategyResult:
+        self.contexts.append(context)
+        return StrategyResult(outcome="no_change", summary="injected AGENTS strategy")
 
 
 class StewardshipEngineTests(unittest.TestCase):
@@ -219,7 +234,8 @@ class StewardshipEngineTests(unittest.TestCase):
         *,
         mode: str = "dry-run",
         gateway: FakeGateway | None = None,
-        strategy=None,
+        docs_drift_strategy: DocsDriftStrategy | None = None,
+        agents_startup_routing_strategy: AgentsStartupRoutingStrategy | None = None,
         strategy_identifier: str = "docs-drift",
         repository: str = REPOSITORY,
         target_ref: str = "",
@@ -230,7 +246,8 @@ class StewardshipEngineTests(unittest.TestCase):
             config=self.config,
             gateway=gateway,
             strategy_identifier=strategy_identifier,
-            strategy=strategy,
+            docs_drift_strategy=docs_drift_strategy,
+            agents_startup_routing_strategy=agents_startup_routing_strategy,
             clock=lambda: datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc),
             redactions=redactions,
         )
@@ -264,6 +281,50 @@ class StewardshipEngineTests(unittest.TestCase):
         self.assertEqual(self.base_sha, receipt.base_sha)
         self.assertEqual([self.base_sha], gateway.hydrated_shas)
         self.assertEqual([], gateway.resolve_ref_calls)
+
+    def test_injected_docs_drift_strategy_receives_docs_context(self) -> None:
+        strategy = SpyStrategy()
+
+        receipt, _, _ = self._run(docs_drift_strategy=strategy)
+
+        self.assertEqual("eligible_no_change", receipt.final_terminal_state)
+        self.assertEqual(1, strategy.calls)
+        self.assertEqual("README.md", strategy.contexts[0].documentation_path)
+        self.assertEqual(("make", "check"), strategy.contexts[0].validation_command)
+
+    def test_injected_agents_strategy_receives_agents_context(self) -> None:
+        strategy = SpyAgentsStartupRoutingStrategy()
+
+        receipt, _, _ = self._run(
+            strategy_identifier="agents-startup-routing",
+            agents_startup_routing_strategy=strategy,
+        )
+
+        self.assertEqual("eligible_no_change", receipt.final_terminal_state)
+        self.assertEqual(1, len(strategy.contexts))
+        self.assertEqual(
+            "ctrl-alt-keith--ai-workflow-enforcement",
+            strategy.contexts[0].repository_root.name,
+        )
+
+    def test_unsupported_strategy_is_rejected_during_engine_construction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported stewardship strategy"):
+            StewardshipEngine(
+                config=self.config,
+                gateway=FakeGateway(self.source, self.base_sha),
+                strategy_identifier="unsupported",
+            )
+
+    def test_docs_implementation_cannot_execute_as_agents_strategy(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "Docs Drift implementation cannot execute"
+        ):
+            StewardshipEngine(
+                config=self.config,
+                gateway=FakeGateway(self.source, self.base_sha),
+                strategy_identifier="agents-startup-routing",
+                docs_drift_strategy=SpyStrategy(),
+            )
 
     def test_branch_target_ref_resolves_and_hydrates_exact_sha_in_dry_run(self) -> None:
         target_sha = self._target_commit()
@@ -395,7 +456,7 @@ class StewardshipEngineTests(unittest.TestCase):
         strategy = SpyStrategy()
         receipt, gateway, _ = self._run(
             gateway=gateway,
-            strategy=strategy,
+            docs_drift_strategy=strategy,
             repository="ctrl-alt-keith/not-allowed",
         )
 
@@ -480,7 +541,7 @@ class StewardshipEngineTests(unittest.TestCase):
     def test_changed_path_mismatch_fails_closed(self) -> None:
         receipt, gateway, _ = self._run(
             strategy_identifier="agents-startup-routing",
-            strategy=MismatchedChangedPathStrategy(),
+            agents_startup_routing_strategy=MismatchedChangedPathStrategy(),
         )
 
         self.assertEqual("blocked_before_strategy", receipt.final_terminal_state)
@@ -490,7 +551,9 @@ class StewardshipEngineTests(unittest.TestCase):
 
     def test_strategy_failure_has_distinct_receipt(self) -> None:
         strategy = RaisingStrategy()
-        receipt, gateway, _ = self._run(mode="propose", strategy=strategy)
+        receipt, gateway, _ = self._run(
+            mode="propose", docs_drift_strategy=strategy
+        )
 
         self.assertEqual("strategy_failed", receipt.final_terminal_state)
         self.assertEqual("failed", receipt.strategy_result["outcome"])
@@ -640,7 +703,7 @@ class StewardshipEngineTests(unittest.TestCase):
     def test_secrets_are_redacted_from_receipt_errors(self) -> None:
         secret = "super-secret-private-key-material"
         receipt, _, _ = self._run(
-            strategy=RaisingStrategy(f"failure exposed {secret}"),
+            docs_drift_strategy=RaisingStrategy(f"failure exposed {secret}"),
             redactions=(secret,),
         )
 
