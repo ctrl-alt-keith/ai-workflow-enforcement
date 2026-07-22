@@ -131,6 +131,118 @@ manifest can also narrow or override scope for local workflows. The scanner
 does not require or infer a playbook-owned workspace manifest, and raw local
 checkout layout is never authoritative workspace scope.
 
+## Hosted Workflow Drift Audit
+
+The repository-owned workflow drift audit runs every Monday at `17:40 UTC`
+and supports manual `workflow_dispatch` runs. The hosted job checks out the
+requested enforcement commit, hydrates every visible active repository in the
+`ctrl-alt-keith` organization into a clean scan workspace, runs the canonical
+advisory scan, and then runs `make check`.
+
+The repository contract is:
+
+```sh
+make workflow-drift-setup
+make workflow-drift-audit
+make check
+```
+
+The scanner has no third-party Python package dependencies. The setup target
+therefore verifies the hosted Python and GitHub CLI dependencies instead of
+performing an empty package installation.
+
+Cross-repository access uses a dedicated GitHub App installation token. The
+workflow's built-in `GITHUB_TOKEN` is scoped to this repository, so it cannot
+provide the complete private organization inventory. A personal access token
+would bind the automation to a user and persist a longer-lived credential.
+Instead, `actions/create-github-app-token@v3` creates a masked, short-lived
+installation token for each run and revokes it in the action's post step. The
+App and generated token are narrowed to exactly these repository permissions:
+
+- Metadata: read
+- Contents: read
+
+No organization or account permissions are required. Install the App on the
+`ctrl-alt-keith` organization with access to all repositories, including
+private repositories, and configure:
+
+- repository variable `WORKFLOW_DRIFT_APP_CLIENT_ID`: the GitHub App client ID;
+- repository secret `WORKFLOW_DRIFT_APP_PRIVATE_KEY`: one complete PEM private
+  key generated for the App.
+
+The token is exposed only as step-local `GH_TOKEN` for organization inventory,
+checkout hydration, and the canonical scanner. It is not placed in a global
+workflow environment, written to evidence, or persisted by checkout.
+
+Inventory completeness is measured before scanning. The workflow paginates
+`GET /installation/repositories`, verifies that the number of unique entries
+matches the API's `total_count`, compares that set with `gh repo list`, records
+archived exclusions, verifies the required enforcement, incubator, and
+playbook repositories, and hydrates every active repository in that
+installation-visible set. The evidence records the expected and hydrated
+counts plus every exact revision. A token can prove complete coverage of its
+installation scope; it cannot independently prove that an organization owner
+configured the installation for all repositories rather than a selected
+subset. Selecting **All repositories** during installation is therefore part
+of the operator contract. Missing credentials, App authentication failure,
+inventory disagreement, incomplete pagination, or incomplete hydration is
+`Unable to verify`; partial visibility is never reported as clean.
+
+Initial setup and representative-run verification:
+
+1. Create a dedicated GitHub App owned by the appropriate account for the
+   `ctrl-alt-keith` organization.
+2. Set repository permissions to only Metadata: read and Contents: read; leave
+   all organization and account permissions unset.
+3. Install the App on the `ctrl-alt-keith` organization.
+4. Select **All repositories** so the audit covers current private repositories
+   and automatically includes repositories created later.
+5. Set repository variable `WORKFLOW_DRIFT_APP_CLIENT_ID` to the App's client
+   ID.
+6. Generate a private key and set repository secret
+   `WORKFLOW_DRIFT_APP_PRIVATE_KEY` to the entire PEM, including its begin and
+   end lines.
+7. Dispatch `Workflow drift audit` manually after the workflow is available on
+   the default branch.
+8. Verify the summary reports successful token generation, matching inventory
+   totals, and complete hydration; inspect the retained artifact for inventory,
+   exclusions, revisions, and scanner evidence.
+9. Rotate or revoke the private key using the procedure below when the key is
+   replaced or no longer needed.
+
+The previous local scheduler registration remains unchanged by this repository
+work. Cut it over only after the representative hosted run is accepted.
+
+To rotate the private key, generate a new App private key, replace
+`WORKFLOW_DRIFT_APP_PRIVATE_KEY`, dispatch and verify a representative run, and
+then delete the old private key from the App. Do not commit, paste into a pull
+request, or retain private-key material in evidence.
+
+The workflow uses these result semantics:
+
+- `Clean`: the scanner, canonical validation, and repository-state check pass,
+  and the scanner reports no candidates.
+- `Drift detected`: the scanner reports overlap or workflow-policy candidates.
+  Findings remain advisory, so this classification is visible in the summary
+  and evidence without failing the job solely because findings exist.
+- `Failed`: checkout, setup, scanner execution, canonical validation,
+  repository-state verification, or evidence upload fails.
+- `Unable to verify`: the App token cannot be generated or authenticated, the
+  complete installation-visible organization inventory cannot be established,
+  or one or more required clean repository inputs cannot be retrieved.
+
+Every run writes a concise Actions job summary and retains the complete raw
+evidence artifact for 14 days. The artifact includes the tested enforcement
+SHA, non-secret App authentication metadata, installation and organization
+inventories, completeness counts, archived exclusions, exact hydrated
+revisions, raw scanner JSON and stderr, setup and validation logs,
+classification, and repository-state evidence. The job has only
+`contents: read` workflow permission, persists no checkout credentials,
+performs no remediation, and creates no commits, pull requests, issues, or
+provider changes. This repository currently has no generated workflow artifact
+family; the checked-in workflow definition and its repository contract tests
+are the applicable consistency surfaces.
+
 Render that JSON into a concise local review packet:
 
 ```sh
