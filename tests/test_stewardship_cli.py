@@ -75,6 +75,8 @@ class StewardshipCliTests(unittest.TestCase):
             self.assertEqual("github_read_access", receipt["failure_stage"])
             self.assertEqual("blocked", receipt["eligibility"]["decision"])
             self.assertEqual("blocked", receipt["validation"]["status"])
+            self.assertIsNone(receipt["requested_target_ref"])
+            self.assertIsNone(receipt["effective_target_ref"])
             self.assertEqual([], receipt["changed_paths"])
             self.assertEqual([], receipt["remote_mutations_attempted"])
             self.assertEqual([], receipt["remote_mutation_results"])
@@ -121,6 +123,48 @@ class StewardshipCliTests(unittest.TestCase):
             self.assertEqual("blocked_before_strategy", receipt["final_terminal_state"])
             self.assertEqual("engine_initialization", receipt["failure_stage"])
             self.assertNotIn(secret, receipt_text)
+
+    def test_propose_target_ref_writes_blocked_receipt_before_hydration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evidence = root / "evidence"
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch.object(GitHubGateway, "repository_info") as repository_info,
+                mock.patch.object(GitHubGateway, "hydrate") as hydrate,
+                mock.patch.object(GitHubGateway, "deliver") as delivery,
+                redirect_stdout(io.StringIO()),
+            ):
+                exit_code = main(
+                    [
+                        "--repository",
+                        "ctrl-alt-keith/ai-workflow-enforcement",
+                        "--mode",
+                        "propose",
+                        "--target-ref",
+                        "test/controlled-drift",
+                        "--run-identifier",
+                        "target-ref-run",
+                        "--engine-revision",
+                        "engine-sha",
+                        "--workspace",
+                        str(root / "workspace"),
+                        "--evidence-dir",
+                        str(evidence),
+                        "--config",
+                        str(ROOT / "config" / "hosted-stewardship.json"),
+                    ]
+                )
+
+            receipt = json.loads((evidence / "receipt.json").read_text(encoding="utf-8"))
+            self.assertEqual(1, exit_code)
+            self.assertEqual("blocked_before_strategy", receipt["final_terminal_state"])
+            self.assertEqual("target_ref_validation", receipt["failure_stage"])
+            self.assertEqual("test/controlled-drift", receipt["requested_target_ref"])
+            self.assertIsNone(receipt["effective_target_ref"])
+            repository_info.assert_not_called()
+            hydrate.assert_not_called()
+            delivery.assert_not_called()
 
 
 if __name__ == "__main__":

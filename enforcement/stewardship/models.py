@@ -99,6 +99,8 @@ class StewardshipReceipt:
     completed_at: str | None
     mode: Mode
     repository: str
+    requested_target_ref: str | None
+    effective_target_ref: str | None
     base_branch: str | None
     base_sha: str | None
     engine_revision: str

@@ -17,6 +17,11 @@ on:
         options:
           - dry-run
           - propose
+      target_ref:
+        description: Optional branch, tag, or commit to inspect in dry-run only; blank uses the default branch
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -65,7 +70,7 @@ jobs:
 
       - name: Generate repository-scoped delivery identity
         id: write_auth
-        if: steps.setup_python.outcome == 'success' && inputs.mode == 'propose'
+        if: steps.setup_python.outcome == 'success' && inputs.mode == 'propose' && inputs.target_ref == ''
         continue-on-error: true
         uses: actions/create-github-app-token@v3
         with:
@@ -86,11 +91,13 @@ jobs:
         env:
           STEWARDSHIP_READ_TOKEN: ${{ steps.read_auth.outputs.token }}
           STEWARDSHIP_WRITE_TOKEN: ${{ steps.write_auth.outputs.token }}
+          TARGET_REF: ${{ inputs.target_ref }}
         run: |
           set -euo pipefail
           python3 -m enforcement.stewardship.cli \
             --repository "${{ inputs.repository }}" \
             --mode "${{ inputs.mode }}" \
+            --target-ref "${TARGET_REF}" \
             --run-identifier "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --engine-revision "${GITHUB_SHA}" \
             --workspace "${RUNNER_TEMP}/hosted-stewardship-workspace" \

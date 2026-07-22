@@ -49,6 +49,8 @@ class Gateway(Protocol):
 
     def branch_sha(self, repository: str, branch: str) -> str | None: ...
 
+    def resolve_ref(self, repository: str, target_ref: str) -> str | None: ...
+
     def hydrate(self, repository: str, base_sha: str, destination: Path) -> None: ...
 
     def existing_stewardship_pr(self, repository: str) -> str | None: ...
@@ -81,6 +83,7 @@ class StewardshipEngine:
         *,
         repository: str,
         mode: Mode,
+        target_ref: str = "",
         run_identifier: str,
         engine_revision: str,
         workspace_root: Path,
@@ -93,6 +96,7 @@ class StewardshipEngine:
             run_identifier=run_identifier,
             engine_revision=engine_revision,
             started_at=started,
+            target_ref=target_ref,
         )
         evidence_dir.mkdir(parents=True, exist_ok=True)
         stage = "target_resolution"
@@ -104,6 +108,13 @@ class StewardshipEngine:
                     terminal="blocked_before_strategy",
                     failure_stage=stage,
                     error="a repository must be explicitly targeted",
+                )
+            if mode == "propose" and target_ref:
+                return self._stop(
+                    receipt,
+                    terminal="blocked_before_strategy",
+                    failure_stage="target_ref_validation",
+                    error="target_ref is supported only in dry-run mode",
                 )
             policy = self._config.policy_for(repository)
             if policy is None:
@@ -139,6 +150,7 @@ class StewardshipEngine:
 
             repository_info = self._gateway.repository_info(repository)
             receipt.base_branch = repository_info.default_branch
+            receipt.effective_target_ref = target_ref or repository_info.default_branch
             if repository_info.archived:
                 receipt.eligibility = asdict(
                     EligibilityResult(
@@ -154,10 +166,16 @@ class StewardshipEngine:
                     failure_stage="eligibility",
                 )
 
-            stage = "base_resolution"
-            base_sha = self._gateway.branch_sha(repository, repository_info.default_branch)
+            if target_ref:
+                stage = "target_resolution"
+                base_sha = self._gateway.resolve_ref(repository, target_ref)
+            else:
+                stage = "base_resolution"
+                base_sha = self._gateway.branch_sha(
+                    repository, repository_info.default_branch
+                )
             if not base_sha:
-                raise RuntimeError("the target base branch did not resolve to a commit")
+                raise RuntimeError("the effective target ref did not resolve to a commit")
             receipt.base_sha = base_sha
 
             stage = "hydration"
@@ -302,6 +320,12 @@ class StewardshipEngine:
                     terminal="validation_failed",
                     failure_stage=stage,
                 )
+
+            if target_ref:
+                receipt.would_create_pr_reason = (
+                    "A non-default target ref is inspection-only and cannot produce a delivery proposal."
+                )
+                return self._stop(receipt, terminal="dry_run_complete")
 
             branch = (
                 f"stewardship/{STRATEGY_ID}/{base_sha[:12]}-{diff_digest[:12]}"
@@ -489,6 +513,7 @@ class StewardshipEngine:
         run_identifier: str,
         engine_revision: str,
         started_at: str,
+        target_ref: str,
     ) -> StewardshipReceipt:
         return StewardshipReceipt(
             schema_version=ENGINE_SCHEMA_VERSION,
@@ -497,6 +522,8 @@ class StewardshipEngine:
             completed_at=None,
             mode=mode,
             repository=repository,
+            requested_target_ref=target_ref or None,
+            effective_target_ref=None,
             base_branch=None,
             base_sha=None,
             engine_revision=engine_revision,

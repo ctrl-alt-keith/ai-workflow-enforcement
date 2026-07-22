@@ -48,14 +48,19 @@ class FakeGateway:
         self.base_changed = False
         self.delivery_fails = False
         self.hydrate_calls = 0
+        self.hydrated_shas: list[str] = []
         self.delivery_calls = 0
         self.existing_pr_calls = 0
         self.proposed_branch_reads = 0
+        self.repository_info_calls = 0
+        self.resolve_ref_calls: list[str] = []
+        self.resolved_refs: dict[str, str] = {}
         self.delivered_proposal: DeliveryProposal | None = None
         self.delivered_patch: str | None = None
         self._base_reads = 0
 
     def repository_info(self, repository: str) -> RepositoryInfo:
+        self.repository_info_calls += 1
         return RepositoryInfo(
             full_name=repository,
             default_branch="main",
@@ -71,8 +76,13 @@ class FakeGateway:
         self.proposed_branch_reads += 1
         return "e" * 40 if self.branch_exists else None
 
+    def resolve_ref(self, repository: str, target_ref: str) -> str | None:
+        self.resolve_ref_calls.append(target_ref)
+        return self.resolved_refs.get(target_ref)
+
     def hydrate(self, repository: str, base_sha: str, destination: Path) -> None:
         self.hydrate_calls += 1
+        self.hydrated_shas.append(base_sha)
         subprocess.run(
             ("git", "clone", "--quiet", "--no-hardlinks", str(self.source), str(destination)),
             check=True,
@@ -143,6 +153,7 @@ class StewardshipEngineTests(unittest.TestCase):
         _run_git(self.source, "init", "-b", "main")
         _run_git(self.source, "config", "user.name", "Test")
         _run_git(self.source, "config", "user.email", "test@example.com")
+        _run_git(self.source, "config", "commit.gpgsign", "false")
         (self.source / "docs").mkdir()
         (self.source / "AGENTS.md").write_text(
             "# Instructions\n\n"
@@ -191,6 +202,7 @@ class StewardshipEngineTests(unittest.TestCase):
         gateway: FakeGateway | None = None,
         strategy=None,
         repository: str = REPOSITORY,
+        target_ref: str = "",
         redactions: tuple[str, ...] = (),
     ):
         gateway = gateway or FakeGateway(self.source, self.base_sha)
@@ -206,12 +218,98 @@ class StewardshipEngineTests(unittest.TestCase):
         receipt = engine.run(
             repository=repository,
             mode=mode,
+            target_ref=target_ref,
             run_identifier="run-1",
             engine_revision="engine-sha",
             workspace_root=workspace,
             evidence_dir=evidence,
         )
         return receipt, gateway, evidence
+
+    def _target_commit(self) -> str:
+        _run_git(self.source, "switch", "-c", "test/controlled-drift")
+        (self.source / "README.md").write_text("# Controlled target\n", encoding="utf-8")
+        _run_git(self.source, "add", "README.md")
+        _run_git(self.source, "commit", "-m", "controlled target")
+        target_sha = _run_git(self.source, "rev-parse", "HEAD")
+        _run_git(self.source, "switch", "main")
+        return target_sha
+
+    def test_blank_target_ref_preserves_default_branch_resolution(self) -> None:
+        receipt, gateway, _ = self._run()
+
+        self.assertIsNone(receipt.requested_target_ref)
+        self.assertEqual("main", receipt.effective_target_ref)
+        self.assertEqual(self.base_sha, receipt.base_sha)
+        self.assertEqual([self.base_sha], gateway.hydrated_shas)
+        self.assertEqual([], gateway.resolve_ref_calls)
+
+    def test_branch_target_ref_resolves_and_hydrates_exact_sha_in_dry_run(self) -> None:
+        target_sha = self._target_commit()
+        gateway = FakeGateway(self.source, self.base_sha)
+        gateway.resolved_refs["test/controlled-drift"] = target_sha
+
+        receipt, gateway, _ = self._run(
+            gateway=gateway,
+            target_ref="test/controlled-drift",
+        )
+
+        self.assertEqual("dry_run_complete", receipt.final_terminal_state)
+        self.assertEqual("test/controlled-drift", receipt.requested_target_ref)
+        self.assertEqual("test/controlled-drift", receipt.effective_target_ref)
+        self.assertEqual(target_sha, receipt.base_sha)
+        self.assertEqual(["test/controlled-drift"], gateway.resolve_ref_calls)
+        self.assertEqual([target_sha], gateway.hydrated_shas)
+        self.assertFalse(receipt.would_create_pr)
+        self.assertEqual(0, gateway.existing_pr_calls)
+        self.assertEqual(0, gateway.delivery_calls)
+
+    def test_commit_sha_target_ref_is_supported_in_dry_run(self) -> None:
+        target_sha = self._target_commit()
+        gateway = FakeGateway(self.source, self.base_sha)
+        gateway.resolved_refs[target_sha] = target_sha
+
+        receipt, gateway, _ = self._run(gateway=gateway, target_ref=target_sha)
+
+        self.assertEqual("dry_run_complete", receipt.final_terminal_state)
+        self.assertEqual(target_sha, receipt.effective_target_ref)
+        self.assertEqual(target_sha, receipt.base_sha)
+        self.assertEqual([target_sha], gateway.hydrated_shas)
+
+    def test_invalid_target_ref_fails_closed_with_receipt_before_hydration(self) -> None:
+        gateway = FakeGateway(self.source, self.base_sha)
+
+        receipt, gateway, _ = self._run(
+            gateway=gateway,
+            target_ref="missing/ref",
+        )
+
+        self.assertEqual("blocked_before_strategy", receipt.final_terminal_state)
+        self.assertEqual("target_resolution", receipt.failure_stage)
+        self.assertEqual("missing/ref", receipt.requested_target_ref)
+        self.assertEqual("missing/ref", receipt.effective_target_ref)
+        self.assertIsNone(receipt.base_sha)
+        self.assertIn("did not resolve", receipt.bounded_error)
+        self.assertEqual(0, gateway.hydrate_calls)
+        self.assertEqual(0, gateway.delivery_calls)
+
+    def test_propose_rejects_target_ref_before_repository_reads_or_delivery(self) -> None:
+        gateway = FakeGateway(self.source, self.base_sha)
+
+        receipt, gateway, _ = self._run(
+            mode="propose",
+            gateway=gateway,
+            target_ref="test/controlled-drift",
+        )
+
+        self.assertEqual("blocked_before_strategy", receipt.final_terminal_state)
+        self.assertEqual("target_ref_validation", receipt.failure_stage)
+        self.assertEqual("test/controlled-drift", receipt.requested_target_ref)
+        self.assertIsNone(receipt.effective_target_ref)
+        self.assertEqual(0, gateway.repository_info_calls)
+        self.assertEqual([], gateway.resolve_ref_calls)
+        self.assertEqual(0, gateway.hydrate_calls)
+        self.assertEqual(0, gateway.delivery_calls)
 
     def test_dry_run_builds_real_validated_patch_and_would_create_pr(self) -> None:
         receipt, gateway, evidence = self._run()
@@ -242,6 +340,8 @@ class StewardshipEngineTests(unittest.TestCase):
         )
 
         self.assertEqual("delivery_succeeded", propose_receipt.final_terminal_state)
+        self.assertIsNone(propose_receipt.requested_target_ref)
+        self.assertEqual("main", propose_receipt.effective_target_ref)
         self.assertEqual(dry_receipt.diff_digest, propose_receipt.diff_digest)
         self.assertEqual(
             (dry_evidence / "proposal.patch").read_text(encoding="utf-8"),

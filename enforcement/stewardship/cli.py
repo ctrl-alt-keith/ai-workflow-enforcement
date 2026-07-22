@@ -26,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--mode", required=True, choices=("dry-run", "propose"))
+    parser.add_argument("--target-ref", default="")
     parser.add_argument("--run-identifier", required=True)
     parser.add_argument("--engine-revision", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
@@ -55,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         receipt = engine.run(
             repository=args.repository,
             mode=args.mode,
+            target_ref=args.target_ref,
             run_identifier=args.run_identifier,
             engine_revision=args.engine_revision,
             workspace_root=args.workspace,
@@ -94,6 +96,8 @@ def _failure_receipt(args: argparse.Namespace, error: str) -> StewardshipReceipt
         completed_at=timestamp,
         mode=args.mode,
         repository=args.repository,
+        requested_target_ref=args.target_ref or None,
+        effective_target_ref=None,
         base_branch=None,
         base_sha=None,
         engine_revision=args.engine_revision,
