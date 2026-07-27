@@ -148,6 +148,17 @@ class SafeRefreshReposTests(unittest.TestCase):
         self.assertFalse(hasattr(config, "protected_branches"))
         self.assertFalse(hasattr(config, "stale_approvals"))
 
+    def test_config_rejects_duplicate_object_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "branch-cleanup.json"
+            config_path.write_text(
+                '{"repositories":[{"name":"visible","name":"hidden","path":"repo"}]}',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(json.JSONDecodeError, "duplicate object key: name"):
+                load_config(config_path)
+
     def test_cli_json_returns_one_when_any_repo_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
