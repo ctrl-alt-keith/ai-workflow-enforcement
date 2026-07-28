@@ -51,8 +51,11 @@ class GitHubGateway:
             return None
         if result.returncode != 0:
             raise GitHubError(_bounded(result.stderr or result.stdout))
-        data = json.loads(result.stdout)
-        return str(data["object"]["sha"])
+        try:
+            data = json.loads(result.stdout)
+            return str(data["object"]["sha"])
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise GitHubError("GitHub returned malformed branch ref JSON") from exc
 
     def resolve_ref(self, repository: str, target_ref: str) -> str | None:
         """Resolve a branch, tag, or commit reference to an exact commit SHA."""
