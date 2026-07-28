@@ -63,6 +63,30 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
                     "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
                 )
 
+    def test_branch_sha_fails_closed_for_invalid_json(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=(), returncode=0, stdout="{not-json", stderr=""
+        )
+        with mock.patch.object(self.gateway, "_run", return_value=result):
+            with self.assertRaisesRegex(
+                GitHubError, "GitHub returned malformed branch ref JSON"
+            ):
+                self.gateway.branch_sha(
+                    "ctrl-alt-keith/ai-workflow-enforcement", "main"
+                )
+
+    def test_branch_sha_fails_closed_for_missing_sha_shape(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=(), returncode=0, stdout=json.dumps({"object": None}), stderr=""
+        )
+        with mock.patch.object(self.gateway, "_run", return_value=result):
+            with self.assertRaisesRegex(
+                GitHubError, "GitHub returned malformed branch ref JSON"
+            ):
+                self.gateway.branch_sha(
+                    "ctrl-alt-keith/ai-workflow-enforcement", "main"
+                )
+
     def test_existing_pr_lookup_matches_only_selected_strategy_marker(self) -> None:
         pages = [
             [
