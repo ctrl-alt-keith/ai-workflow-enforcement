@@ -71,7 +71,10 @@ class SafeRefreshReport:
 
 def load_config(path: Path) -> SafeRefreshConfig:
     """Load repository inventory from branch-cleanup-compatible JSON config."""
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=_unique_object,
+    )
     base = path.parent
     raw_repositories = data.get("repositories", ())
     repositories = tuple(_repo_target(item, base) for item in raw_repositories)
@@ -82,6 +85,15 @@ def load_config(path: Path) -> SafeRefreshConfig:
     if duplicate_names:
         raise ValueError(f"repository names must be unique: {duplicate_names}")
     return SafeRefreshConfig(repositories=repositories)
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise json.JSONDecodeError(f"duplicate object key: {key}", "", 0)
+        result[key] = value
+    return result
 
 
 def safe_refresh_repos(
