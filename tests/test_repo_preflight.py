@@ -48,11 +48,12 @@ class RepoPreflightTests(unittest.TestCase):
         self.assertEqual("unknown", facts["default_branch"])
         self.assertEqual("origin", facts["remotes"][0]["name"])
 
-    def test_remote_urls_strip_only_url_userinfo(self) -> None:
+    def test_remote_urls_strip_non_repository_credentials_and_parameters(self) -> None:
         remotes = _parse_remotes(
             "ordinary https://github.com/example/ordinary.git (fetch)\n"
             "credential https://username:token@github.com/example/credential.git (fetch)\n"
             "token https://token@github.com/example/token.git (push)\n"
+            "query https://github.com/example/query.git?access_token=secret#credential (fetch)\n"
             "ssh git@github.com:example/ssh.git (fetch)\n"
         )
 
@@ -60,11 +61,17 @@ class RepoPreflightTests(unittest.TestCase):
             [
                 {"name": "credential", "url": "https://github.com/example/credential.git", "kind": "fetch"},
                 {"name": "ordinary", "url": "https://github.com/example/ordinary.git", "kind": "fetch"},
+                {"name": "query", "url": "https://github.com/example/query.git", "kind": "fetch"},
                 {"name": "ssh", "url": "git@github.com:example/ssh.git", "kind": "fetch"},
                 {"name": "token", "url": "https://github.com/example/token.git", "kind": "push"},
             ],
             remotes,
         )
+
+        rendered = json.dumps(remotes)
+        self.assertNotIn("access_token", rendered)
+        self.assertNotIn("secret", rendered)
+        self.assertNotIn("credential#", rendered)
 
     def test_hosted_identity_uses_sanitized_remote_and_renderers_do_not_leak_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
