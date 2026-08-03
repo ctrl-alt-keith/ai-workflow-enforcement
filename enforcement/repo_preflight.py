@@ -229,10 +229,10 @@ def _parse_remotes(output: str) -> list[dict[str, str]]:
 
 def _sanitize_remote_url(url: str) -> str:
     parsed = urlsplit(url)
-    if not parsed.scheme or not parsed.netloc or "@" not in parsed.netloc:
+    if not parsed.scheme or not parsed.netloc:
         return url
-    sanitized_netloc = parsed.netloc.rsplit("@", 1)[1]
-    return urlunsplit((parsed.scheme, sanitized_netloc, parsed.path, parsed.query, parsed.fragment))
+    sanitized_netloc = parsed.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parsed.scheme, sanitized_netloc, parsed.path, "", ""))
 
 
 def _github_repo_identity(remotes: object) -> str | None:

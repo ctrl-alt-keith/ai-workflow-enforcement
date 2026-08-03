@@ -25,7 +25,9 @@ The local report keeps evidence source-specific:
   unavailable rather than guessed.
 - `git_metadata` runs read-only Git commands for the current branch, configured
   remotes, working-tree state, and `origin/HEAD`. A default branch is unknown
-  when that direct symbolic-ref evidence is unavailable.
+  when that direct symbolic-ref evidence is unavailable. Structured remote URLs
+  omit user information, query parameters, and fragments so report output does
+  not reproduce embedded credentials or transport-only parameters.
 
 Hosted GitHub metadata is excluded by default. Opt in explicitly when an
 existing authenticated `gh` session is appropriate:
