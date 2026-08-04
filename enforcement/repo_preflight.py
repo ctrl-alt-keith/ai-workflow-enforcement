@@ -152,7 +152,7 @@ def _agents_source(root: Path, captured_at: str) -> EvidenceSource:
         return EvidenceSource("repo_local_agents", "unavailable", captured_at, str(path), {"exists": False}, ("AGENTS.md not found",))
     try:
         content = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         return EvidenceSource("repo_local_agents", "unavailable", captured_at, str(path), {"exists": True}, (f"{type(exc).__name__}: {exc}",))
     headings = [line.lstrip("#").strip() for line in content.splitlines() if re.match(r"^#{1,6}\s+\S", line)]
     return EvidenceSource("repo_local_agents", "available", captured_at, str(path), {"exists": True, "headings": headings})
@@ -164,7 +164,7 @@ def _make_source(root: Path, captured_at: str) -> EvidenceSource:
         return EvidenceSource("validation_tooling", "unavailable", captured_at, str(path), {"makefile_exists": False, "targets": []}, ("Makefile not found; equivalent tooling was not inferred",))
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         return EvidenceSource("validation_tooling", "unavailable", captured_at, str(path), {"makefile_exists": True, "targets": []}, (f"{type(exc).__name__}: {exc}",))
     targets = []
     for line_number, line in enumerate(lines, 1):
