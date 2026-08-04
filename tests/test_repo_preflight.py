@@ -120,6 +120,23 @@ class RepoPreflightTests(unittest.TestCase):
         self.assertEqual("unavailable", tooling.status)
         self.assertIn("not inferred", tooling.errors[0])
 
+    def test_invalid_utf8_sources_are_unavailable_without_aborting_other_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = _repo(Path(raw), agents="# Agent\n", makefile="check:\n\ttrue\n")
+            (repo / "AGENTS.md").write_bytes(b"# Agent\n\xff\n")
+            (repo / "Makefile").write_bytes(b"check:\n\ttrue\n\xff\n")
+
+            report = inspect_repository(repo, clock=lambda: STAMP)
+
+        self.assertEqual("partial", report.overall_source_status)
+        for source_name in ("repo_local_agents", "validation_tooling"):
+            source = _source(report, source_name)
+            self.assertEqual("unavailable", source.status)
+            self.assertIn("UnicodeDecodeError", source.errors[0])
+        git_source = _source(report, "git_metadata")
+        self.assertEqual("partial", git_source.status)
+        self.assertEqual("main", git_source.facts["current_branch"])
+
     def test_non_repository_path_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             with self.assertRaisesRegex(ValueError, "not a Git repository"):
