@@ -272,6 +272,78 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("done", linked_branch)
         self.assertEqual(0, ref_check.returncode)
 
+    def test_occupied_original_path_blocks_worktree_restoration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+            original_path = branch_cleanup._worktree_branches(repo)["done"]
+            real_git = branch_cleanup._git
+            calls: list[tuple[str, ...]] = []
+            race: dict[str, object] = {"delete_attempts": 0}
+
+            def fail_branch_delete(cwd: Path, *argv: str) -> branch_cleanup.GitCommand:
+                calls.append(argv)
+                if argv[:3] == ("branch", "-d", "--"):
+                    race["delete_attempts"] = int(race["delete_attempts"]) + 1
+                    if race["delete_attempts"] == 1:
+                        race["original_path_removed"] = not linked.exists()
+                        worktree_list = real_git(cwd, "worktree", "list", "--porcelain")
+                        race["original_registration_removed"] = (
+                            f"worktree {original_path}\n" not in worktree_list.stdout
+                        )
+                        linked.mkdir()
+                        race["occupant_inode"] = linked.stat().st_ino
+                        race["occupant_device"] = linked.stat().st_dev
+                        race["occupant_entries"] = tuple(linked.iterdir())
+                        race["occupant_is_symlink"] = linked.is_symlink()
+                    return branch_cleanup.GitCommand(
+                        ("git", *argv),
+                        1,
+                        "",
+                        "simulated branch deletion failure",
+                    )
+                return real_git(cwd, *argv)
+
+            with mock.patch.object(branch_cleanup, "_git", side_effect=fail_branch_delete):
+                first_report = cleanup_branches(_config(repo), apply=True)
+                second_report = cleanup_branches(_config(repo), apply=True)
+
+            occupant_stat = linked.stat()
+            occupant_entries = tuple(linked.iterdir())
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/done")
+            final_worktree_list = _git(repo, "worktree", "list", "--porcelain").stdout
+
+        first_action = _action(first_report, "done", "local", "normal_cleanup")
+        first_worktree = _worktree(first_report, linked)
+        second_action = _action(second_report, "done", "local", "normal_cleanup")
+        self.assertTrue(race["original_path_removed"])
+        self.assertTrue(race["original_registration_removed"])
+        self.assertEqual(race["occupant_inode"], occupant_stat.st_ino)
+        self.assertEqual(race["occupant_device"], occupant_stat.st_dev)
+        self.assertEqual(race["occupant_entries"], occupant_entries)
+        self.assertEqual((), occupant_entries)
+        self.assertFalse(race["occupant_is_symlink"])
+        self.assertFalse(any("--force" in argv for argv in calls))
+        self.assertFalse(any(argv[:2] == ("worktree", "add") for argv in calls))
+        self.assertEqual(0, ref_check.returncode)
+        self.assertNotIn(f"worktree {original_path}\n", final_worktree_list)
+        self.assertEqual("failed", first_action.action)
+        self.assertIn(
+            f"worktree restoration failed: original worktree path is occupied: {original_path}",
+            first_action.reason,
+        )
+        self.assertEqual(original_path, first_worktree.path)
+        self.assertEqual("done", first_worktree.branch)
+        self.assertEqual("branch_deletion_failed_after_worktree_removal", first_worktree.cleanup_classification)
+        self.assertEqual("failed", first_worktree.action_result)
+        self.assertTrue(first_worktree.path_exists)
+        self.assertEqual("verification_failed", first_worktree.final_verification_state)
+        self.assertTrue(first_worktree.residual_manual_action)
+        self.assertEqual("failed", second_action.action)
+
     def test_detached_clean_worktree_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

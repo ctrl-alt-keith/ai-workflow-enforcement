@@ -11,6 +11,7 @@ import argparse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -1286,6 +1287,8 @@ def _restore_worktree_after_branch_delete_failure(path: Path, branch: str, raw_w
     branch_ref = f"refs/heads/{branch}"
     if _verify_ref(path, branch_ref).returncode != 0:
         return f"branch is unavailable: {branch_ref}"
+    if os.path.lexists(raw_worktree_path):
+        return f"original worktree path is occupied: {raw_worktree_path}"
     result = _git(path, "worktree", "add", raw_worktree_path, branch)
     if result.returncode != 0:
         return _command_failure_detail(result)
@@ -1689,7 +1692,7 @@ def _classify_worktree(
         branch=before.branch,
         detached_commit=before.head_oid if before.detached else "",
         head_oid=before.head_oid,
-        path_exists=after.path_exists if after is not None else False,
+        path_exists=after.path_exists if after is not None else os.path.lexists(before.path),
         git_dir=state.git_dir,
         admin_consistent=state.admin_consistent,
         cleanliness=state.cleanliness,

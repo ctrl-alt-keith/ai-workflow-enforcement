@@ -90,9 +90,11 @@ not inferred to belong to a branch from its commit identity. A removal or final
 verification failure stops deletion of the related branch and is reported. If
 Git unexpectedly rejects branch deletion after removing its clean linked
 worktree, the tool recreates that worktree with `git worktree add` and verifies
-the restored clean registration; restoration failure remains a reported manual
-recovery condition. The tool does not force removal or delete a directory
-directly.
+the restored clean registration. Restoration fails closed if the exact original
+path has reappeared, including as a symlink; the tool does not clear, overwrite,
+relocate, or force-reuse that path. Restoration failure remains a reported
+manual recovery condition. The tool does not force removal or delete a
+directory directly.
 
 The audit also distinguishes live worktrees from stale administrative metadata.
 Git's stable porcelain `prunable` annotation is the authority for missing-path
