@@ -30,7 +30,7 @@ python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json --au
 
 ## Safety Model
 
-The single-pass tool uses five phases:
+The single-pass tool uses six phases:
 
 1. discover configured repo targets and current Git state
 2. audit local and remote branch refs
@@ -38,7 +38,9 @@ The single-pass tool uses five phases:
    remote default branch
 4. plan or apply approved stale cleanup for non-ancestor refs only when config
    contains explicit approval and matching evidence
-5. emit a text or JSON report
+5. audit every registered worktree, prune only Git-classified stale metadata in
+   apply mode, and verify final worktree state
+6. emit a text or JSON report
 
 Dry-run is the default. Mutation is limited to `--apply`.
 
@@ -47,10 +49,10 @@ symbolic remote refs, and ambiguous branch names.
 
 For local branches checked out in linked worktrees, normal cleanup is allowed
 only when Git proves the branch is an ancestor of the remote default branch and
-the linked worktree is clean, including untracked files. Apply mode removes the
-clean linked worktree with `git worktree remove` before deleting the branch. It
-skips worktrees with uncommitted changes, untracked files, failed status
-inspection, or the configured target worktree itself.
+the linked worktree passes every worktree safety check below. Apply mode removes
+the clean linked worktree with `git worktree remove` before deleting the branch,
+then verifies that both its filesystem path and registered metadata are gone.
+It never passes `--force`.
 
 Approved stale cleanup mirrors that linked-worktree guard for local branches.
 If a non-ancestor local branch has explicit stale approval, matching evidence,
@@ -59,6 +61,73 @@ and is checked out only in a clean linked worktree, dry-run reports it as
 worktree before deleting the branch. Apply mode re-checks the worktree state
 and branch tip before removing the worktree. Dirty, uninspectable, target, and
 changed-tip worktrees remain preserve/fail closed.
+
+## Worktree Safety And Final Audit
+
+Worktree removal authority is derived from the exact local branch-cleanup
+action. A branch being merged, deleted elsewhere, or named like an old topic is
+not sufficient. A live linked worktree is removable only when its related local
+branch action is currently authorized as `would_delete`, the action is being
+applied, and all of these checks pass immediately before removal:
+
+- the repository is an explicit config target and is not blocked
+- the worktree is neither the primary worktree nor the configured target path
+- `git worktree list --porcelain -z --expire now` identifies the registration
+  and its branch or detached state
+- the live path resolves to the same Git common directory as the configured
+  repository, with the expected linked-worktree administrative directory
+- the worktree is unlocked
+- `git status --porcelain=v1 -z --untracked-files=all` is empty
+- no merge, rebase, cherry-pick, revert, bisect, or sequencer state is present
+- the checked-out branch is not protected or ambiguous
+- normal cleanup still proves ancestry, or stale cleanup still proves the exact
+  approved branch tip, immediately before removal
+
+Dirty, staged, unstaged, untracked, conflicted, uninspectable, locked, primary,
+configured-target, protected, detached, ambiguous, active-operation, skipped,
+or failed-deletion worktrees are preserve-only. A detached clean worktree is
+not inferred to belong to a branch from its commit identity. A removal or final
+verification failure stops deletion of the related branch and is reported. If
+Git unexpectedly rejects branch deletion after removing its clean linked
+worktree, the tool recreates that worktree with `git worktree add` and verifies
+the restored clean registration. Restoration fails closed if the exact original
+path has reappeared, including as a symlink; the tool does not clear, overwrite,
+relocate, or force-reuse that path. Restoration failure remains a reported
+manual recovery condition. The tool does not force removal or delete a
+directory directly.
+
+The audit also distinguishes live worktrees from stale administrative metadata.
+Git's stable porcelain `prunable` annotation is the authority for missing-path
+metadata. Dry-run reports that metadata without mutation. Apply mode invokes
+`git worktree prune --expire now` only when an unlocked, non-primary prunable
+entry was discovered, then re-runs porcelain discovery to prove which entries
+were pruned. Pruning stale metadata never authorizes deletion of a live
+filesystem checkout or its branch. Locked missing-path entries remain
+preserved.
+
+Every repository report includes every discovered worktree, including the
+primary worktree and entries removed or pruned during that pass. Each worktree
+record contains:
+
+- repository, path, primary flag, branch or detached commit, and HEAD
+- path, Git administrative consistency, porcelain cleanliness, and exact
+  porcelain entries
+- operation, lock, and prunable state with available reasons
+- related branch-cleanup classification, outcome, and reason
+- worktree cleanup classification, attempted action, result, and blocker
+- stale-metadata prune status, final verification state, and residual manual
+  action
+
+Human-readable reports include aggregate discovered, removed, stale-metadata,
+dirty/locked, failure, and remaining-related-cleanup counts plus per-worktree
+details. JSON reports expose the same stable fields under each repository's
+`worktrees` list and provide a top-level `worktree_summary`. The JSON schema
+version is `2`.
+
+Repeated apply is idempotent: a removed worktree or pruned metadata entry is not
+rediscovered on the next pass. Branches preserved solely because missing-path
+metadata first required safe pruning may become eligible on a later bounded
+pass, after fresh branch and worktree inspection.
 
 Built-in protected branches are always kept as a safety floor: `main`,
 `master`, `trunk`, and `develop`. Configured `protected_branches` add to that
@@ -78,9 +147,11 @@ reported but preserved during the sequence. Use a single-pass `--apply` run
 without `--retry-normal-cleanup` for explicitly approved stale cleanup.
 
 Codex command enforcement for this workflow should allow the direct Git argv
-forms needed for safe cleanup: `git worktree list --porcelain`, `git status
---porcelain=v1 -z --untracked-files=all`, `git worktree remove <path>`, and
-the existing branch deletion forms such as `git branch -d -- <branch>`.
+forms needed for safe cleanup: `git worktree list --porcelain -z --expire now`,
+`git status --porcelain=v1 -z --untracked-files=all`, `git worktree remove
+<path>`, `git worktree prune --expire now`, the branch deletion forms such as
+`git branch -d -- <branch>`, and `git worktree add <path> <branch>` only for
+verified restoration after an unexpected branch-deletion failure.
 
 Normal cleanup stays separate from stale cleanup. Normal cleanup uses Git
 ancestor proof. Stale cleanup requires config approval plus evidence such as a
