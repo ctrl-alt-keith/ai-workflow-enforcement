@@ -101,6 +101,7 @@ class BranchCleanupTests(unittest.TestCase):
         action = _action(report, "done", "local", "normal_cleanup")
         worktree = _worktree(report, linked)
         self.assertEqual("deleted", action.action)
+        self.assertEqual("apply_policy_authorized", action.worktree_cleanup_authority)
         self.assertIn("worktree=", action.evidence[1])
         self.assertEqual("removed_clean_linked_worktree", worktree.cleanup_classification)
         self.assertEqual("apply_policy_authorized", worktree.cleanup_authority)
@@ -238,7 +239,10 @@ class BranchCleanupTests(unittest.TestCase):
             with mock.patch.object(
                 branch_cleanup,
                 "_remove_worktree_for_branch",
-                return_value="branch is no longer proven merged into refs/remotes/origin/main",
+                return_value=branch_cleanup._WorktreeRemovalDecision(
+                    path=str(linked),
+                    error="branch is no longer proven merged into refs/remotes/origin/main",
+                ),
             ):
                 report = cleanup_branches(_config(repo), apply=True)
             linked_exists = linked.exists()
@@ -246,7 +250,9 @@ class BranchCleanupTests(unittest.TestCase):
         action = _action(report, "done", "local", "normal_cleanup")
         worktree = _worktree(report, linked)
         self.assertEqual("failed", action.action)
+        self.assertEqual("preserve_policy", action.worktree_cleanup_authority)
         self.assertEqual("branch_deletion_failed_worktree_preserved", worktree.cleanup_classification)
+        self.assertEqual("preserve_policy", worktree.cleanup_authority)
         self.assertTrue(linked_exists)
 
     def test_branch_delete_command_failure_restores_clean_worktree(self) -> None:
@@ -440,6 +446,8 @@ class BranchCleanupTests(unittest.TestCase):
 
         worktree = _worktree(report, linked)
         self.assertEqual("worktree_removal_failed", worktree.cleanup_classification)
+        action = _action(report, "done", "local", "normal_cleanup")
+        self.assertEqual("apply_policy_authorized", action.worktree_cleanup_authority)
         self.assertEqual("apply_policy_authorized", worktree.cleanup_authority)
         self.assertEqual("failed", worktree.action_result)
         self.assertEqual(1, report_to_dict(report)["worktree_summary"]["failed_removals"])
@@ -564,7 +572,7 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("removed_clean_linked_worktree", worktree["cleanup_classification"])
         self.assertEqual("apply_policy_authorized", worktree["cleanup_authority"])
         self.assertEqual(1, payload["worktree_summary"]["automatically_removed_safe_worktrees"])
-        self.assertEqual(0, payload["worktree_summary"]["unexpected_confirmation_requests"])
+        self.assertNotIn("unexpected_confirmation_requests", payload["worktree_summary"])
         self.assertNotIn("Yes, delete the safe worktrees.", output.getvalue())
 
     def test_apply_succeeds_with_closed_stdin(self) -> None:
@@ -650,6 +658,7 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual(1, first_json["worktree_summary"]["preserved_worktrees_by_reason"]["locked_worktree_preserved"])
         self.assertIn("automatically_removed_safe=1", first_text)
         self.assertIn("authority: apply_policy_authorized", first_text)
+        self.assertNotIn("unexpected_confirmation_requests", first_text)
         self.assertFalse(any(item.cleanup_classification == "removed_clean_linked_worktree" for item in second.repos[0].worktrees))
 
     def test_repeated_apply_is_idempotent(self) -> None:

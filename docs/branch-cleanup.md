@@ -136,16 +136,19 @@ record contains:
   action
 
 Human-readable reports include aggregate discovered, removed, stale-metadata,
-preservation-reason, failed-removal, verification-failure, unexpected-
-confirmation, human-review, and residual-manual-inspection counts plus
-per-worktree details. JSON reports expose the same stable fields under each
-repository's `worktrees` list and provide a top-level `worktree_summary`.
-`unexpected_confirmation_requests` is always zero for this non-interactive
-CLI; any external runner that observes a prompt must treat it as a tool defect
-instead of supplying input. The JSON schema version is `3`; the schema-2
-`removed` and `preserved_by_reason` summary aliases remain available. An
-`apply_policy_authorized` record identifies the CLI policy boundary; it does
-not claim that a human approved that individual worktree interactively.
+preservation-reason, failed-removal, verification-failure, human-review, and
+residual-manual-inspection counts plus per-worktree details. JSON reports expose
+the same stable fields under each repository's `worktrees` list and provide a
+top-level `worktree_summary`. The CLI cannot observe prompting by an external
+runner, so it does not emit an `unexpected_confirmation_requests` counter. A
+runner that observes a prompt must treat it as a tool defect instead of
+supplying input. The JSON schema version is `3`; the schema-2 `removed` and
+`preserved_by_reason` summary aliases remain available.
+
+`cleanup_authority` comes from the policy decision that authorized a safe
+worktree removal or metadata prune, not from the later attempted-action field.
+An `apply_policy_authorized` record identifies that CLI policy boundary; it
+does not claim that a human approved that individual worktree interactively.
 
 Repeated apply is idempotent: a removed worktree or pruned metadata entry is not
 rediscovered on the next pass. Branches preserved solely because missing-path

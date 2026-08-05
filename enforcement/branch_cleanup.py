@@ -103,6 +103,14 @@ class BranchAction:
     action: str
     reason: str
     evidence: tuple[str, ...] = ()
+    worktree_cleanup_authority: str = PRESERVE_POLICY
+
+
+@dataclass(frozen=True)
+class _WorktreeRemovalDecision:
+    path: str = ""
+    authority: str = PRESERVE_POLICY
+    error: str = ""
 
 
 @dataclass(frozen=True)
@@ -369,7 +377,6 @@ def render_text_report(report: BranchCleanupReport) -> str:
             f"stale_metadata_pruned={worktree_summary['stale_metadata_pruned']} "
             f"failed_removals={worktree_summary['failed_removals']} "
             f"verification_failures={worktree_summary['verification_failures']} "
-            f"unexpected_confirmation_requests={worktree_summary['unexpected_confirmation_requests']} "
             f"human_review_cases={worktree_summary['human_review_cases']} "
             f"residual_manual_inspection={worktree_summary['residual_manual_inspection_required']}"
         ),
@@ -548,7 +555,6 @@ def _worktree_summary(repos: Iterable[RepoReport]) -> dict[str, object]:
         "preserved_worktrees_by_reason": preserved,
         "failed_removals": failed_removals,
         "verification_failures": verification_failures,
-        "unexpected_confirmation_requests": 0,
         "human_review_cases": human_review_cases,
         "residual_manual_inspection_required": residual_manual_inspection,
         "stale_metadata_pruned": sum(item.stale_metadata_pruned for item in worktrees),
@@ -714,9 +720,9 @@ def _cleanup_repo(
             _apply_action(path, target.remote, default_ref, action, normal_only=apply_normal_only)
             for action in report.actions
         ]
-    prune_attempted = False
+    prune_cleanup_authority = PRESERVE_POLICY
     if apply and any(worktree.prunable and not worktree.locked and not worktree.primary for worktree in initial_worktrees):
-        prune_attempted = True
+        prune_cleanup_authority = APPLY_POLICY_AUTHORIZED
         prune = _git(path, "worktree", "prune", "--expire", "now")
         if prune.returncode != 0:
             report.worktree_prune_error = _command_failure_detail(prune)
@@ -730,7 +736,7 @@ def _cleanup_repo(
         initial_worktrees,
         final_worktrees,
         tuple(report.actions),
-        prune_attempted=prune_attempted,
+        prune_cleanup_authority=prune_cleanup_authority,
         prune_error=report.worktree_prune_error,
         final_inspection_error=final_error,
     )
@@ -1126,17 +1132,30 @@ def _apply_action(
             "not applied during retry-normal-cleanup; stale cleanup requires single-pass --apply",
         )
     removed_worktree_path = ""
+    worktree_cleanup_authority = PRESERVE_POLICY
     if action.scope == "local" and action.phase == "normal_cleanup":
-        removed_worktree_path = _worktree_branches(path).get(action.branch, "")
-        worktree_error = _remove_worktree_for_branch(path, action.branch, default_ref)
-        if worktree_error:
-            return _replace_action(action, "failed", worktree_error)
+        removal = _remove_worktree_for_branch(path, action.branch, default_ref)
+        removed_worktree_path = removal.path
+        worktree_cleanup_authority = removal.authority
+        if removal.error:
+            return _replace_action(
+                action,
+                "failed",
+                removal.error,
+                worktree_cleanup_authority=worktree_cleanup_authority,
+            )
         result = _git(path, "branch", "-d", "--", action.branch)
     elif action.scope == "local" and action.phase == "stale_cleanup":
-        removed_worktree_path = _worktree_branches(path).get(action.branch, "")
-        worktree_error = _remove_stale_worktree_for_branch(path, action.branch, _action_tip_oid(action))
-        if worktree_error:
-            return _replace_action(action, "failed", worktree_error)
+        removal = _remove_stale_worktree_for_branch(path, action.branch, _action_tip_oid(action))
+        removed_worktree_path = removal.path
+        worktree_cleanup_authority = removal.authority
+        if removal.error:
+            return _replace_action(
+                action,
+                "failed",
+                removal.error,
+                worktree_cleanup_authority=worktree_cleanup_authority,
+            )
         result = _git(path, "branch", "-D", "--", action.branch)
     elif action.scope == "remote":
         result = _git(path, "push", remote, "--delete", "--", action.branch)
@@ -1144,7 +1163,12 @@ def _apply_action(
         return _replace_action(action, "failed", "unsupported action scope or phase")
 
     if result.returncode == 0:
-        return _replace_action(action, "deleted", action.reason)
+        return _replace_action(
+            action,
+            "deleted",
+            action.reason,
+            worktree_cleanup_authority=worktree_cleanup_authority,
+        )
     detail = (result.stderr or result.stdout or "no output").splitlines()[0]
     if removed_worktree_path:
         restore_error = _restore_worktree_after_branch_delete_failure(path, action.branch, removed_worktree_path)
@@ -1152,7 +1176,12 @@ def _apply_action(
             detail = f"branch deletion failed: {detail}; worktree restoration failed: {restore_error}"
         else:
             detail = f"branch deletion failed: {detail}; clean linked worktree restored at {removed_worktree_path}"
-    return _replace_action(action, "failed", detail)
+    return _replace_action(
+        action,
+        "failed",
+        detail,
+        worktree_cleanup_authority=worktree_cleanup_authority,
+    )
 
 
 def _validate_stale_approval(
@@ -1256,54 +1285,98 @@ def _worktree_delete_skip_reason(path: Path, branch: str, worktree_branches: dic
     return f"could not inspect worktree state: {raw_worktree_path}"
 
 
-def _remove_worktree_for_branch(path: Path, branch: str, default_ref: str) -> str:
+def _remove_worktree_for_branch(path: Path, branch: str, default_ref: str) -> _WorktreeRemovalDecision:
     worktree_branches = _worktree_branches(path)
     raw_worktree_path = worktree_branches.get(branch)
     if not raw_worktree_path:
-        return ""
+        return _WorktreeRemovalDecision()
     reason = _worktree_delete_skip_reason(path, branch, worktree_branches)
     if reason:
-        return reason
+        return _WorktreeRemovalDecision(path=raw_worktree_path, error=reason)
     branch_ref = f"refs/heads/{branch}"
     if _verify_ref(path, branch_ref).returncode != 0:
-        return f"branch is no longer available: {branch_ref}"
+        return _WorktreeRemovalDecision(
+            path=raw_worktree_path,
+            error=f"branch is no longer available: {branch_ref}",
+        )
     if not _is_ancestor(path, branch_ref, default_ref):
-        return f"branch is no longer proven merged into {default_ref}"
+        return _WorktreeRemovalDecision(
+            path=raw_worktree_path,
+            error=f"branch is no longer proven merged into {default_ref}",
+        )
     result = _git(path, "worktree", "remove", raw_worktree_path)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "git worktree remove failed").splitlines()[0]
-        return f"worktree removal failed: {detail}"
+        return _WorktreeRemovalDecision(
+            path=raw_worktree_path,
+            authority=APPLY_POLICY_AUTHORIZED,
+            error=f"worktree removal failed: {detail}",
+        )
     verification_error = _verify_worktree_removed(path, raw_worktree_path)
     if verification_error:
-        return verification_error
-    return ""
+        return _WorktreeRemovalDecision(
+            path=raw_worktree_path,
+            authority=APPLY_POLICY_AUTHORIZED,
+            error=verification_error,
+        )
+    return _WorktreeRemovalDecision(
+        path=raw_worktree_path,
+        authority=APPLY_POLICY_AUTHORIZED,
+    )
 
 
-def _remove_stale_worktree_for_branch(path: Path, branch: str, expected_oid: str) -> str:
+def _remove_stale_worktree_for_branch(
+    path: Path,
+    branch: str,
+    expected_oid: str,
+) -> _WorktreeRemovalDecision:
     worktree_branches = _worktree_branches(path)
     raw_worktree_path = worktree_branches.get(branch)
     if not raw_worktree_path:
-        return ""
+        return _WorktreeRemovalDecision()
     if not expected_oid:
-        return "stale cleanup action is missing branch tip evidence"
+        return _WorktreeRemovalDecision(
+            path=raw_worktree_path,
+            error="stale cleanup action is missing branch tip evidence",
+        )
     reason = _worktree_delete_skip_reason(path, branch, worktree_branches)
     if reason:
-        return reason
+        return _WorktreeRemovalDecision(path=raw_worktree_path, error=reason)
     branch_ref = f"refs/heads/{branch}"
     current = _git(path, "rev-parse", "--verify", branch_ref)
     if current.returncode != 0:
-        return f"branch is no longer available: {branch_ref}"
+        return _WorktreeRemovalDecision(
+            path=raw_worktree_path,
+            error=f"branch is no longer available: {branch_ref}",
+        )
     current_oid = current.stdout.strip()
     if current_oid != expected_oid:
-        return f"branch tip changed since stale approval planning: expected {expected_oid}, found {current_oid}"
+        return _WorktreeRemovalDecision(
+            path=raw_worktree_path,
+            error=(
+                "branch tip changed since stale approval planning: "
+                f"expected {expected_oid}, found {current_oid}"
+            ),
+        )
     result = _git(path, "worktree", "remove", raw_worktree_path)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "git worktree remove failed").splitlines()[0]
-        return f"worktree removal failed: {detail}"
+        return _WorktreeRemovalDecision(
+            path=raw_worktree_path,
+            authority=APPLY_POLICY_AUTHORIZED,
+            error=f"worktree removal failed: {detail}",
+        )
     verification_error = _verify_worktree_removed(path, raw_worktree_path)
     if verification_error:
-        return verification_error
-    return ""
+        return _WorktreeRemovalDecision(
+            path=raw_worktree_path,
+            authority=APPLY_POLICY_AUTHORIZED,
+            error=verification_error,
+        )
+    return _WorktreeRemovalDecision(
+        path=raw_worktree_path,
+        authority=APPLY_POLICY_AUTHORIZED,
+    )
 
 
 def _verify_worktree_removed(path: Path, raw_worktree_path: str) -> str:
@@ -1564,7 +1637,7 @@ def _classify_worktrees(
     actions: tuple[BranchAction, ...],
     *,
     repo_blocker: str = "",
-    prune_attempted: bool = False,
+    prune_cleanup_authority: str = PRESERVE_POLICY,
     prune_error: str = "",
     final_inspection_error: str = "",
 ) -> list[WorktreeDisposition]:
@@ -1580,7 +1653,7 @@ def _classify_worktrees(
             final_by_path.get(_worktree_path_key(before.path)),
             _related_branch_action(actions, before.branch),
             repo_blocker=repo_blocker,
-            prune_attempted=prune_attempted,
+            prune_cleanup_authority=prune_cleanup_authority,
             prune_error=prune_error,
             final_inspection_error=final_inspection_error,
         )
@@ -1596,7 +1669,7 @@ def _classify_worktree(
     related: BranchAction | None,
     *,
     repo_blocker: str,
-    prune_attempted: bool,
+    prune_cleanup_authority: str,
     prune_error: str,
     final_inspection_error: str,
 ) -> WorktreeDisposition:
@@ -1625,8 +1698,9 @@ def _classify_worktree(
         reason = f"worktree is locked{': ' + before.lock_reason if before.lock_reason else ''}"
         manual = "Inspect the lock reason and worktree state manually; automated cleanup will not unlock it."
     elif before.prunable:
-        attempted = "git worktree prune --expire now" if prune_attempted else ""
-        if after is None and prune_attempted and not prune_error:
+        prune_policy_authorized = prune_cleanup_authority == APPLY_POLICY_AUTHORIZED
+        attempted = "git worktree prune --expire now" if prune_policy_authorized else ""
+        if after is None and prune_policy_authorized and not prune_error:
             classification = "pruned_stale_worktree_metadata"
             result = "succeeded"
             reason = before.prunable_reason or "Git classified missing-path metadata as prunable"
@@ -1740,7 +1814,11 @@ def _classify_worktree(
         related_branch_outcome=related.action if related else "",
         related_branch_reason=related.reason if related else "",
         cleanup_classification=classification,
-        cleanup_authority=_worktree_cleanup_authority(classification, related, attempted),
+        cleanup_authority=_worktree_cleanup_authority(
+            classification,
+            related,
+            prune_cleanup_authority,
+        ),
         action_attempted=attempted,
         action_result=result,
         preservation_or_blocker_reason=reason,
@@ -1753,9 +1831,14 @@ def _classify_worktree(
 def _worktree_cleanup_authority(
     classification: str,
     related: BranchAction | None,
-    attempted: str,
+    prune_cleanup_authority: str,
 ) -> str:
-    if attempted and classification not in {"stale_worktree_metadata_prunable"}:
+    if related and related.worktree_cleanup_authority == APPLY_POLICY_AUTHORIZED:
+        return APPLY_POLICY_AUTHORIZED
+    if (
+        classification in {"pruned_stale_worktree_metadata", "worktree_metadata_prune_failed"}
+        and prune_cleanup_authority == APPLY_POLICY_AUTHORIZED
+    ):
         return APPLY_POLICY_AUTHORIZED
     if classification == "ambiguous_detached_worktree_preserved":
         return HUMAN_APPROVAL_REQUIRED
@@ -1924,7 +2007,13 @@ def _preserved(
     return BranchAction(repo, phase, scope, branch, "preserved", reason, evidence)
 
 
-def _replace_action(action: BranchAction, new_action: str, reason: str) -> BranchAction:
+def _replace_action(
+    action: BranchAction,
+    new_action: str,
+    reason: str,
+    *,
+    worktree_cleanup_authority: str | None = None,
+) -> BranchAction:
     return BranchAction(
         repo=action.repo,
         phase=action.phase,
@@ -1933,6 +2022,11 @@ def _replace_action(action: BranchAction, new_action: str, reason: str) -> Branc
         action=new_action,
         reason=reason,
         evidence=action.evidence,
+        worktree_cleanup_authority=(
+            action.worktree_cleanup_authority
+            if worktree_cleanup_authority is None
+            else worktree_cleanup_authority
+        ),
     )
 
 
