@@ -44,6 +44,21 @@ The single-pass tool uses six phases:
 
 Dry-run is the default. Mutation is limited to `--apply`.
 
+`--apply` is also the complete non-interactive authority boundary for
+policy-proven cleanup. It automatically removes a secondary worktree when the
+related branch action is authorized and every worktree safety check passes; it
+does not request a second confirmation for that worktree. The CLI never reads
+stdin or depends on a TTY, and its Git and GitHub child processes run with
+stdin closed and interactive credential prompts disabled. Audit/report-only
+mode remains read-only. Unsafe, uncertain, and human-review classifications are
+preserved without prompting.
+
+This unattended behavior is deliberately narrower than a generic confirmation
+bypass. There is no `--yes`, `--force`, or `--assume-yes` option, and apply mode
+does not weaken any classification or removal invariant. A safe worktree is
+removed only with Git's non-force `git worktree remove` mechanism and only as
+part of its authorized branch-cleanup action.
+
 The tool skips dirty repos, missing default remote refs, protected branches,
 symbolic remote refs, and ambiguous branch names.
 
@@ -115,14 +130,25 @@ record contains:
 - operation, lock, and prunable state with available reasons
 - related branch-cleanup classification, outcome, and reason
 - worktree cleanup classification, attempted action, result, and blocker
+- cleanup authority (`apply_policy_authorized`, `preserve_policy`, or
+  `human_approval_required`)
 - stale-metadata prune status, final verification state, and residual manual
   action
 
 Human-readable reports include aggregate discovered, removed, stale-metadata,
-dirty/locked, failure, and remaining-related-cleanup counts plus per-worktree
-details. JSON reports expose the same stable fields under each repository's
-`worktrees` list and provide a top-level `worktree_summary`. The JSON schema
-version is `2`.
+preservation-reason, failed-removal, verification-failure, human-review, and
+residual-manual-inspection counts plus per-worktree details. JSON reports expose
+the same stable fields under each repository's `worktrees` list and provide a
+top-level `worktree_summary`. The CLI cannot observe prompting by an external
+runner, so it does not emit an `unexpected_confirmation_requests` counter. A
+runner that observes a prompt must treat it as a tool defect instead of
+supplying input. The JSON schema version is `3`; the schema-2 `removed` and
+`preserved_by_reason` summary aliases remain available.
+
+`cleanup_authority` comes from the policy decision that authorized a safe
+worktree removal or metadata prune, not from the later attempted-action field.
+An `apply_policy_authorized` record identifies that CLI policy boundary; it
+does not claim that a human approved that individual worktree interactively.
 
 Repeated apply is idempotent: a removed worktree or pruned metadata entry is not
 rediscovered on the next pass. Branches preserved solely because missing-path
