@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -100,6 +103,7 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("deleted", action.action)
         self.assertIn("worktree=", action.evidence[1])
         self.assertEqual("removed_clean_linked_worktree", worktree.cleanup_classification)
+        self.assertEqual("apply_policy_authorized", worktree.cleanup_authority)
         self.assertEqual("succeeded", worktree.action_result)
         self.assertEqual("removed_verified", worktree.final_verification_state)
         self.assertFalse(linked_exists)
@@ -123,6 +127,7 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("preserved", action.action)
         self.assertIn("worktree has uncommitted changes", action.reason)
         self.assertEqual("dirty_worktree_blocked", worktree.cleanup_classification)
+        self.assertEqual("preserve_policy", worktree.cleanup_authority)
         self.assertEqual("dirty", worktree.cleanliness)
         self.assertTrue(linked_exists)
         self.assertEqual(0, ref_check.returncode)
@@ -167,6 +172,7 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("preserved", action.action)
         self.assertIn("metadata requires pruning", action.reason)
         self.assertEqual("pruned_stale_worktree_metadata", worktree.cleanup_classification)
+        self.assertEqual("apply_policy_authorized", worktree.cleanup_authority)
         self.assertTrue(worktree.stale_metadata_pruned)
         self.assertEqual("metadata_absent_verified", worktree.final_verification_state)
         self.assertNotIn(str(linked), listed)
@@ -188,6 +194,7 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("preserved", action.action)
         self.assertIn("locked", action.reason)
         self.assertEqual("locked_worktree_preserved", worktree.cleanup_classification)
+        self.assertEqual("preserve_policy", worktree.cleanup_authority)
         self.assertEqual("manual hold", worktree.lock_reason)
 
     def test_primary_worktree_is_always_reported_and_preserved(self) -> None:
@@ -356,6 +363,7 @@ class BranchCleanupTests(unittest.TestCase):
 
         worktree = _worktree(report, linked)
         self.assertEqual("ambiguous_detached_worktree_preserved", worktree.cleanup_classification)
+        self.assertEqual("human_approval_required", worktree.cleanup_authority)
         self.assertTrue(worktree.detached_commit)
         self.assertTrue(linked_exists)
 
@@ -432,7 +440,9 @@ class BranchCleanupTests(unittest.TestCase):
 
         worktree = _worktree(report, linked)
         self.assertEqual("worktree_removal_failed", worktree.cleanup_classification)
+        self.assertEqual("apply_policy_authorized", worktree.cleanup_authority)
         self.assertEqual("failed", worktree.action_result)
+        self.assertEqual(1, report_to_dict(report)["worktree_summary"]["failed_removals"])
         self.assertEqual(0, ref_check.returncode)
         self.assertTrue(linked_exists)
 
@@ -453,7 +463,9 @@ class BranchCleanupTests(unittest.TestCase):
 
         worktree = _worktree(report, linked)
         self.assertEqual("worktree_removal_verification_failed", worktree.cleanup_classification)
+        self.assertEqual("apply_policy_authorized", worktree.cleanup_authority)
         self.assertEqual("verification_failed", worktree.final_verification_state)
+        self.assertEqual(1, report_to_dict(report)["worktree_summary"]["verification_failures"])
 
     def test_report_only_mode_does_not_remove_worktree_or_prune_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -482,7 +494,7 @@ class BranchCleanupTests(unittest.TestCase):
 
         data = report_to_dict(report)
         worktree = data["repositories"][0]["worktrees"][0]
-        self.assertEqual(2, data["schema_version"])
+        self.assertEqual(3, data["schema_version"])
         for field in (
             "repo",
             "path",
@@ -495,6 +507,7 @@ class BranchCleanupTests(unittest.TestCase):
             "related_branch_classification",
             "related_branch_outcome",
             "cleanup_classification",
+            "cleanup_authority",
             "action_attempted",
             "action_result",
             "preservation_or_blocker_reason",
@@ -503,6 +516,141 @@ class BranchCleanupTests(unittest.TestCase):
             "residual_manual_action",
         ):
             self.assertIn(field, worktree)
+
+    def test_apply_removes_safe_worktree_without_confirmation_or_stdin_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+            config_path = root / "branch-cleanup.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "repositories": [
+                            {
+                                "name": "sample",
+                                "path": str(repo),
+                                "remote": "origin",
+                                "default_branch": "main",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+
+            with (
+                mock.patch("builtins.input", side_effect=AssertionError("unexpected confirmation prompt")),
+                mock.patch.object(sys, "stdin", _FailOnReadStdin()),
+                mock.patch.object(sys, "stdout", output),
+            ):
+                exit_code = branch_cleanup.main(
+                    ["--config", str(config_path), "--apply", "--output-format", "json"]
+                )
+
+            payload = json.loads(output.getvalue())
+            worktree = next(
+                item
+                for item in payload["repositories"][0]["worktrees"]
+                if Path(item["path"]).resolve(strict=False) == linked.resolve(strict=False)
+            )
+            linked_exists = linked.exists()
+
+        self.assertEqual(0, exit_code)
+        self.assertFalse(linked_exists)
+        self.assertEqual("removed_clean_linked_worktree", worktree["cleanup_classification"])
+        self.assertEqual("apply_policy_authorized", worktree["cleanup_authority"])
+        self.assertEqual(1, payload["worktree_summary"]["automatically_removed_safe_worktrees"])
+        self.assertEqual(0, payload["worktree_summary"]["unexpected_confirmation_requests"])
+        self.assertNotIn("Yes, delete the safe worktrees.", output.getvalue())
+
+    def test_apply_succeeds_with_closed_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+            config_path = root / "branch-cleanup.json"
+            config_path.write_text(
+                json.dumps({"repositories": [{"name": "sample", "path": str(repo)}]}),
+                encoding="utf-8",
+            )
+            closed_stdin = io.StringIO()
+            closed_stdin.close()
+
+            with (
+                mock.patch.object(sys, "stdin", closed_stdin),
+                mock.patch.object(sys, "stdout", io.StringIO()),
+            ):
+                exit_code = branch_cleanup.main(["--config", str(config_path), "--apply"])
+            linked_exists = linked.exists()
+
+        self.assertEqual(0, exit_code)
+        self.assertFalse(linked_exists)
+
+    def test_child_commands_are_explicitly_noninteractive(self) -> None:
+        completed = subprocess.CompletedProcess(("git", "status"), 0, "", "")
+        with mock.patch.object(branch_cleanup.subprocess, "run", return_value=completed) as run:
+            branch_cleanup._git(Path("."), "status")
+
+        kwargs = run.call_args.kwargs
+        self.assertEqual(subprocess.DEVNULL, kwargs["stdin"])
+        self.assertFalse(kwargs["shell"])
+        self.assertEqual("0", kwargs["env"]["GIT_TERMINAL_PROMPT"])
+        self.assertEqual("1", kwargs["env"]["GH_PROMPT_DISABLED"])
+
+    def test_cli_has_no_generic_confirmation_bypass_options(self) -> None:
+        option_strings = {
+            option
+            for action in branch_cleanup.build_parser()._actions
+            for option in action.option_strings
+        }
+        self.assertTrue({"--yes", "--force", "--assume-yes"}.isdisjoint(option_strings))
+
+    def test_end_to_end_unattended_apply_removes_only_safe_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            safe = root / "safe"
+            dirty = root / "dirty"
+            locked = root / "locked"
+            for branch in ("safe", "dirty", "locked"):
+                _commit_and_merge_branch(repo, branch)
+            _git(repo, "worktree", "add", str(safe), "safe")
+            _git(repo, "worktree", "add", str(dirty), "dirty")
+            _git(repo, "worktree", "add", str(locked), "locked")
+            (dirty / "scratch.txt").write_text("preserve me\n", encoding="utf-8")
+            _git(repo, "worktree", "lock", "--reason", "manual hold", str(locked))
+
+            with (
+                mock.patch("builtins.input", side_effect=AssertionError("unexpected confirmation prompt")),
+                mock.patch.object(sys, "stdin", _FailOnReadStdin()),
+            ):
+                first = cleanup_branches(_config(repo), apply=True)
+                second = cleanup_branches(_config(repo), apply=True)
+            first_json = report_to_dict(first)
+            first_text = branch_cleanup.render_text_report(first)
+
+            safe_exists = safe.exists()
+            dirty_exists = dirty.exists()
+            locked_exists = locked.exists()
+
+        self.assertFalse(safe_exists)
+        self.assertTrue(dirty_exists)
+        self.assertTrue(locked_exists)
+        self.assertEqual("apply_policy_authorized", _worktree(first, safe).cleanup_authority)
+        self.assertEqual("preserve_policy", _worktree(first, dirty).cleanup_authority)
+        self.assertEqual("preserve_policy", _worktree(first, locked).cleanup_authority)
+        self.assertEqual(1, first_json["worktree_summary"]["automatically_removed_safe_worktrees"])
+        self.assertEqual(1, first_json["worktree_summary"]["preserved_worktrees_by_reason"]["dirty_worktree_blocked"])
+        self.assertEqual(1, first_json["worktree_summary"]["preserved_worktrees_by_reason"]["locked_worktree_preserved"])
+        self.assertIn("automatically_removed_safe=1", first_text)
+        self.assertIn("authority: apply_policy_authorized", first_text)
+        self.assertFalse(any(item.cleanup_classification == "removed_clean_linked_worktree" for item in second.repos[0].worktrees))
 
     def test_repeated_apply_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -992,7 +1140,11 @@ class BranchCleanupTests(unittest.TestCase):
                 evidence={"kind": "github_merged_pr_exact_head"},
             )
 
-            with mock.patch.object(branch_cleanup, "_gh", return_value=_merged_pr_command(oid)):
+            with (
+                mock.patch.object(branch_cleanup, "_gh", return_value=_merged_pr_command(oid)),
+                mock.patch("builtins.input", side_effect=AssertionError("unexpected confirmation prompt")),
+                mock.patch.object(sys, "stdin", _FailOnReadStdin()),
+            ):
                 report = cleanup_branches(
                     BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
                     apply=True,
@@ -1003,7 +1155,9 @@ class BranchCleanupTests(unittest.TestCase):
             linked_exists = linked.exists()
 
         action = _action(report, "stale", "local", "stale_cleanup")
+        worktree = _worktree(report, linked)
         self.assertEqual("deleted", action.action)
+        self.assertEqual("apply_policy_authorized", worktree.cleanup_authority)
         self.assertFalse(linked_exists)
         self.assertNotEqual(0, ref_check.returncode)
 
@@ -1303,6 +1457,17 @@ class BranchCleanupTests(unittest.TestCase):
 
         self.assertEqual("main", report.repos[0].default_branch)
         self.assertEqual("remote HEAD missing for origin; fell back to main", report.repos[0].default_branch_evidence)
+
+
+class _FailOnReadStdin:
+    def read(self, *_args, **_kwargs):
+        raise AssertionError("branch cleanup attempted to read stdin")
+
+    def readline(self, *_args, **_kwargs):
+        raise AssertionError("branch cleanup attempted to read stdin")
+
+    def isatty(self) -> bool:
+        return False
 
 
 def _config(repo: Path) -> BranchCleanupConfig:

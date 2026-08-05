@@ -19,6 +19,9 @@ from typing import Iterable
 
 
 DEFAULT_PROTECTED_BRANCHES = ("main", "master", "trunk", "develop")
+APPLY_POLICY_AUTHORIZED = "apply_policy_authorized"
+PRESERVE_POLICY = "preserve_policy"
+HUMAN_APPROVAL_REQUIRED = "human_approval_required"
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,7 @@ class WorktreeDisposition:
     related_branch_outcome: str
     related_branch_reason: str
     cleanup_classification: str
+    cleanup_authority: str
     action_attempted: str
     action_result: str
     preservation_or_blocker_reason: str
@@ -206,7 +210,7 @@ def cleanup_branches(
     )
     finished = _utc_now()
     return BranchCleanupReport(
-        schema_version=2,
+        schema_version=3,
         dry_run=not apply,
         started_at=started,
         finished_at=finished,
@@ -253,7 +257,7 @@ def cleanup_branches_with_retries(
                 stopped_reason = f"max apply passes reached ({max_apply_passes})"
     finished = _utc_now()
     return BranchCleanupSequenceReport(
-        schema_version=2,
+        schema_version=3,
         report_type="branch_cleanup_sequence",
         dry_run=not apply,
         started_at=started,
@@ -267,7 +271,14 @@ def cleanup_branches_with_retries(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Plan or apply evidence-gated Git branch cleanup.")
     parser.add_argument("--config", required=True, type=Path, help="JSON branch cleanup configuration.")
-    parser.add_argument("--apply", action="store_true", help="Mutate refs. Omit for dry-run planning.")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "Apply every policy-authorized ref and safe linked-worktree cleanup without prompting. "
+            "Omit for read-only planning."
+        ),
+    )
     parser.add_argument(
         "--retry-normal-cleanup",
         action="store_true",
@@ -354,12 +365,15 @@ def render_text_report(report: BranchCleanupReport) -> str:
         (
             "Worktrees: "
             f"discovered={worktree_summary['discovered']} "
-            f"removed={worktree_summary['removed']} "
+            f"automatically_removed_safe={worktree_summary['automatically_removed_safe_worktrees']} "
             f"stale_metadata_pruned={worktree_summary['stale_metadata_pruned']} "
-            f"dirty_or_locked={worktree_summary['dirty_or_locked']} "
-            f"failures={worktree_summary['failures']} "
-            f"remaining_related_cleanup={worktree_summary['remaining_related_cleanup']}"
+            f"failed_removals={worktree_summary['failed_removals']} "
+            f"verification_failures={worktree_summary['verification_failures']} "
+            f"unexpected_confirmation_requests={worktree_summary['unexpected_confirmation_requests']} "
+            f"human_review_cases={worktree_summary['human_review_cases']} "
+            f"residual_manual_inspection={worktree_summary['residual_manual_inspection_required']}"
         ),
+        f"Preserved worktrees by reason: {worktree_summary['preserved_worktrees_by_reason']}",
         "",
     ]
     for repo in report.repos:
@@ -416,6 +430,7 @@ def _append_worktree_text(lines: list[str], repo: RepoReport) -> None:
             f"{worktree.action_result or 'not_attempted'}; "
             f"final={worktree.final_verification_state}"
         )
+        lines.append(f"      authority: {worktree.cleanup_authority}")
         if worktree.preservation_or_blocker_reason:
             lines.append(f"      reason: {worktree.preservation_or_blocker_reason}")
         if worktree.residual_manual_action:
@@ -484,6 +499,7 @@ def _cleanup_report_to_json(report: BranchCleanupReport) -> dict[str, object]:
                         "related_branch_outcome": worktree.related_branch_outcome,
                         "related_branch_reason": worktree.related_branch_reason,
                         "cleanup_classification": worktree.cleanup_classification,
+                        "cleanup_authority": worktree.cleanup_authority,
                         "action_attempted": worktree.action_attempted,
                         "action_result": worktree.action_result,
                         "preservation_or_blocker_reason": worktree.preservation_or_blocker_reason,
@@ -516,11 +532,29 @@ def _worktree_summary(repos: Iterable[RepoReport]) -> dict[str, object]:
         "worktree_removal_verification_failed",
         "branch_deletion_failed_after_worktree_removal",
     }
+    automatically_removed = sum(
+        item.cleanup_classification == "removed_clean_linked_worktree" for item in worktrees
+    )
+    failed_removals = sum(item.cleanup_classification == "worktree_removal_failed" for item in worktrees)
+    verification_failures = sum(
+        item.cleanup_classification == "worktree_removal_verification_failed" for item in worktrees
+    )
+    human_review_cases = sum(item.cleanup_authority == HUMAN_APPROVAL_REQUIRED for item in worktrees)
+    residual_manual_inspection = sum(bool(item.residual_manual_action) for item in worktrees)
+    preserved = {key: preserved_by_reason[key] for key in sorted(preserved_by_reason)}
     return {
         "discovered": len(worktrees),
-        "removed": sum(item.cleanup_classification == "removed_clean_linked_worktree" for item in worktrees),
+        "automatically_removed_safe_worktrees": automatically_removed,
+        "preserved_worktrees_by_reason": preserved,
+        "failed_removals": failed_removals,
+        "verification_failures": verification_failures,
+        "unexpected_confirmation_requests": 0,
+        "human_review_cases": human_review_cases,
+        "residual_manual_inspection_required": residual_manual_inspection,
         "stale_metadata_pruned": sum(item.stale_metadata_pruned for item in worktrees),
-        "preserved_by_reason": {key: preserved_by_reason[key] for key in sorted(preserved_by_reason)},
+        # Compatibility aliases retained for schema-2 report consumers.
+        "removed": automatically_removed,
+        "preserved_by_reason": preserved,
         "dirty_or_locked": sum(
             item.cleanup_classification in {"dirty_worktree_blocked", "locked_worktree_preserved"}
             for item in worktrees
@@ -1706,6 +1740,7 @@ def _classify_worktree(
         related_branch_outcome=related.action if related else "",
         related_branch_reason=related.reason if related else "",
         cleanup_classification=classification,
+        cleanup_authority=_worktree_cleanup_authority(classification, related, attempted),
         action_attempted=attempted,
         action_result=result,
         preservation_or_blocker_reason=reason,
@@ -1713,6 +1748,20 @@ def _classify_worktree(
         final_verification_state=final_state,
         residual_manual_action=manual,
     )
+
+
+def _worktree_cleanup_authority(
+    classification: str,
+    related: BranchAction | None,
+    attempted: str,
+) -> str:
+    if attempted and classification not in {"stale_worktree_metadata_prunable"}:
+        return APPLY_POLICY_AUTHORIZED
+    if classification == "ambiguous_detached_worktree_preserved":
+        return HUMAN_APPROVAL_REQUIRED
+    if related and related.phase == "needs_human_review":
+        return HUMAN_APPROVAL_REQUIRED
+    return PRESERVE_POLICY
 
 
 def _worktree_branches(path: Path) -> dict[str, str]:
@@ -1765,9 +1814,11 @@ def _git(cwd: Path, *argv: str) -> GitCommand:
         ("git",) + tuple(argv),
         cwd=str(cwd),
         text=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         shell=False,
+        env=_noninteractive_environment(),
     )
     return GitCommand(
         argv=("git",) + tuple(argv),
@@ -1782,9 +1833,11 @@ def _gh(cwd: Path, *argv: str) -> GitCommand:
         ("gh",) + tuple(argv),
         cwd=str(cwd),
         text=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         shell=False,
+        env=_noninteractive_environment(),
     )
     return GitCommand(
         argv=("gh",) + tuple(argv),
@@ -1792,6 +1845,13 @@ def _gh(cwd: Path, *argv: str) -> GitCommand:
         stdout=process.stdout.rstrip("\n"),
         stderr=process.stderr.rstrip("\n"),
     )
+
+
+def _noninteractive_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["GH_PROMPT_DISABLED"] = "1"
+    return environment
 
 
 def _command_failure_detail(result: GitCommand) -> str:
