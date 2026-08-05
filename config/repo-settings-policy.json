@@ -30,6 +30,10 @@
         "markdownlint"
       ]
     },
+    "ctrl-alt-keith/base-execution-surface-qualification": {
+      "visibility": "private",
+      "require_status_checks": false
+    },
     "ctrl-alt-keith/leadership-workbench": {
       "visibility": "private",
       "require_status_checks": false,
