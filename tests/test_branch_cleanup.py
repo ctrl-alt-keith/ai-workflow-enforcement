@@ -15,6 +15,7 @@ from enforcement.branch_cleanup import (
     cleanup_branches,
     cleanup_branches_with_retries,
     load_config,
+    report_to_dict,
     remote_branch_name,
 )
 
@@ -95,8 +96,12 @@ class BranchCleanupTests(unittest.TestCase):
             linked_exists = linked.exists()
 
         action = _action(report, "done", "local", "normal_cleanup")
+        worktree = _worktree(report, linked)
         self.assertEqual("deleted", action.action)
         self.assertIn("worktree=", action.evidence[1])
+        self.assertEqual("removed_clean_linked_worktree", worktree.cleanup_classification)
+        self.assertEqual("succeeded", worktree.action_result)
+        self.assertEqual("removed_verified", worktree.final_verification_state)
         self.assertFalse(linked_exists)
         self.assertNotEqual(0, ref_check.returncode)
 
@@ -114,8 +119,11 @@ class BranchCleanupTests(unittest.TestCase):
             linked_exists = linked.exists()
 
         action = _action(report, "done", "local", "normal_cleanup")
+        worktree = _worktree(report, linked)
         self.assertEqual("preserved", action.action)
         self.assertIn("worktree has uncommitted changes", action.reason)
+        self.assertEqual("dirty_worktree_blocked", worktree.cleanup_classification)
+        self.assertEqual("dirty", worktree.cleanliness)
         self.assertTrue(linked_exists)
         self.assertEqual(0, ref_check.returncode)
 
@@ -133,12 +141,15 @@ class BranchCleanupTests(unittest.TestCase):
             linked_exists = linked.exists()
 
         action = _action(report, "done", "local", "normal_cleanup")
+        worktree = _worktree(report, linked)
         self.assertEqual("preserved", action.action)
         self.assertIn("worktree has untracked files", action.reason)
+        self.assertEqual("dirty_worktree_blocked", worktree.cleanup_classification)
+        self.assertEqual("untracked", worktree.cleanliness)
         self.assertTrue(linked_exists)
         self.assertEqual(0, ref_check.returncode)
 
-    def test_missing_worktree_path_is_preserved_as_inspection_failure(self) -> None:
+    def test_missing_worktree_path_metadata_is_pruned_without_deleting_branch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = _make_repo(root)
@@ -149,11 +160,293 @@ class BranchCleanupTests(unittest.TestCase):
 
             report = cleanup_branches(_config(repo), apply=True)
             ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/done")
+            listed = _git(repo, "worktree", "list", "--porcelain", "--expire", "now").stdout
 
         action = _action(report, "done", "local", "normal_cleanup")
+        worktree = _worktree(report, linked)
         self.assertEqual("preserved", action.action)
-        self.assertIn("could not inspect worktree state", action.reason)
+        self.assertIn("metadata requires pruning", action.reason)
+        self.assertEqual("pruned_stale_worktree_metadata", worktree.cleanup_classification)
+        self.assertTrue(worktree.stale_metadata_pruned)
+        self.assertEqual("metadata_absent_verified", worktree.final_verification_state)
+        self.assertNotIn(str(linked), listed)
         self.assertEqual(0, ref_check.returncode)
+
+    def test_locked_worktree_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+            _git(repo, "worktree", "lock", "--reason", "manual hold", str(linked))
+
+            report = cleanup_branches(_config(repo), apply=True)
+
+        action = _action(report, "done", "local", "normal_cleanup")
+        worktree = _worktree(report, linked)
+        self.assertEqual("preserved", action.action)
+        self.assertIn("locked", action.reason)
+        self.assertEqual("locked_worktree_preserved", worktree.cleanup_classification)
+        self.assertEqual("manual hold", worktree.lock_reason)
+
+    def test_primary_worktree_is_always_reported_and_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+
+            report = cleanup_branches(_config(repo), apply=True)
+
+        worktree = _worktree(report, repo)
+        self.assertTrue(worktree.primary)
+        self.assertEqual("primary_worktree_preserved", worktree.cleanup_classification)
+        self.assertEqual("present_verified", worktree.final_verification_state)
+
+    def test_protected_branch_worktree_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _git(repo, "branch", "release", "main")
+            _git(repo, "worktree", "add", str(linked), "release")
+            config = BranchCleanupConfig(
+                repositories=(RepoTarget("sample", repo),),
+                protected_branches=("release",),
+            )
+
+            report = cleanup_branches(config, apply=True)
+            linked_exists = linked.exists()
+
+        worktree = _worktree(report, linked)
+        self.assertEqual("protected_branch_worktree_preserved", worktree.cleanup_classification)
+        self.assertTrue(linked_exists)
+
+    def test_failed_branch_deletion_revalidation_preserves_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+
+            with mock.patch.object(
+                branch_cleanup,
+                "_remove_worktree_for_branch",
+                return_value="branch is no longer proven merged into refs/remotes/origin/main",
+            ):
+                report = cleanup_branches(_config(repo), apply=True)
+            linked_exists = linked.exists()
+
+        action = _action(report, "done", "local", "normal_cleanup")
+        worktree = _worktree(report, linked)
+        self.assertEqual("failed", action.action)
+        self.assertEqual("branch_deletion_failed_worktree_preserved", worktree.cleanup_classification)
+        self.assertTrue(linked_exists)
+
+    def test_branch_delete_command_failure_restores_clean_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+            real_git = branch_cleanup._git
+
+            def fail_branch_delete(cwd: Path, *argv: str) -> branch_cleanup.GitCommand:
+                if argv[:3] == ("branch", "-d", "--"):
+                    return branch_cleanup.GitCommand(("git", *argv), 1, "", "simulated branch deletion failure")
+                return real_git(cwd, *argv)
+
+            with mock.patch.object(branch_cleanup, "_git", side_effect=fail_branch_delete):
+                report = cleanup_branches(_config(repo), apply=True)
+
+            linked_exists = linked.exists()
+            linked_branch = _git(linked, "branch", "--show-current").stdout.strip()
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/done")
+
+        action = _action(report, "done", "local", "normal_cleanup")
+        worktree = _worktree(report, linked)
+        self.assertEqual("failed", action.action)
+        self.assertIn("clean linked worktree restored", action.reason)
+        self.assertEqual("branch_deletion_failed_worktree_preserved", worktree.cleanup_classification)
+        self.assertTrue(linked_exists)
+        self.assertEqual("done", linked_branch)
+        self.assertEqual(0, ref_check.returncode)
+
+    def test_detached_clean_worktree_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _git(repo, "worktree", "add", "--detach", str(linked), "main")
+
+            report = cleanup_branches(_config(repo), apply=True)
+            linked_exists = linked.exists()
+
+        worktree = _worktree(report, linked)
+        self.assertEqual("ambiguous_detached_worktree_preserved", worktree.cleanup_classification)
+        self.assertTrue(worktree.detached_commit)
+        self.assertTrue(linked_exists)
+
+    def test_live_worktree_is_not_mistaken_for_stale_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_branch(repo, "active", "active.txt", "active\n")
+            _git(repo, "worktree", "add", str(linked), "active")
+
+            report = cleanup_branches(_config(repo), apply=True)
+            linked_exists = linked.exists()
+
+        worktree = _worktree(report, linked)
+        self.assertFalse(worktree.prunable)
+        self.assertFalse(worktree.stale_metadata_pruned)
+        self.assertEqual("active_worktree_preserved", worktree.cleanup_classification)
+        self.assertTrue(linked_exists)
+
+    def test_git_operation_in_progress_blocks_worktree_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+            merge_head = Path(_git(linked, "rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD").stdout.strip())
+            merge_head.write_text(_git(repo, "rev-parse", "main").stdout.strip() + "\n", encoding="utf-8")
+
+            report = cleanup_branches(_config(repo), apply=True)
+            linked_exists = linked.exists()
+
+        worktree = _worktree(report, linked)
+        self.assertEqual("active_operation_worktree_preserved", worktree.cleanup_classification)
+        self.assertIn("merge", worktree.operation_state)
+        self.assertTrue(linked_exists)
+
+    def test_stale_audit_does_not_promote_worktree_with_active_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_branch(repo, "stale", "stale.txt", "stale\n")
+            _git(repo, "worktree", "add", str(linked), "stale")
+            merge_head = Path(_git(linked, "rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD").stdout.strip())
+            merge_head.write_text(_git(repo, "rev-parse", "main").stdout.strip() + "\n", encoding="utf-8")
+
+            report = cleanup_branches(_config(repo), audit_stale=True, audit_github_prs=True)
+
+        action = _action(report, "stale", "local", "needs_human_review")
+        self.assertEqual("report_only", action.action)
+        self.assertIn("operation in progress", action.reason)
+
+    def test_worktree_removal_failure_is_reported_without_branch_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+            real_git = branch_cleanup._git
+
+            def fail_remove(cwd: Path, *argv: str) -> branch_cleanup.GitCommand:
+                if argv[:2] == ("worktree", "remove"):
+                    return branch_cleanup.GitCommand(("git", *argv), 1, "", "simulated removal failure")
+                return real_git(cwd, *argv)
+
+            with mock.patch.object(branch_cleanup, "_git", side_effect=fail_remove):
+                report = cleanup_branches(_config(repo), apply=True)
+
+            ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/done")
+            linked_exists = linked.exists()
+
+        worktree = _worktree(report, linked)
+        self.assertEqual("worktree_removal_failed", worktree.cleanup_classification)
+        self.assertEqual("failed", worktree.action_result)
+        self.assertEqual(0, ref_check.returncode)
+        self.assertTrue(linked_exists)
+
+    def test_post_removal_verification_failure_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+
+            with mock.patch.object(
+                branch_cleanup,
+                "_verify_worktree_removed",
+                return_value=f"worktree removal verification failed: metadata remains for {linked}",
+            ):
+                report = cleanup_branches(_config(repo), apply=True)
+
+        worktree = _worktree(report, linked)
+        self.assertEqual("worktree_removal_verification_failed", worktree.cleanup_classification)
+        self.assertEqual("verification_failed", worktree.final_verification_state)
+
+    def test_report_only_mode_does_not_remove_worktree_or_prune_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            stale = root / "stale"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+            _git(repo, "worktree", "add", "--detach", str(stale), "main")
+            shutil.rmtree(stale)
+
+            report = cleanup_branches(_config(repo))
+            listed = _git(repo, "worktree", "list", "--porcelain", "--expire", "now").stdout
+            linked_exists = linked.exists()
+
+        self.assertEqual("clean_linked_worktree_would_remove", _worktree(report, linked).cleanup_classification)
+        self.assertEqual("stale_worktree_metadata_prunable", _worktree(report, stale).cleanup_classification)
+        self.assertTrue(linked_exists)
+        self.assertIn(str(stale), listed)
+
+    def test_json_report_contains_stable_worktree_disposition_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            report = cleanup_branches(_config(repo))
+
+        data = report_to_dict(report)
+        worktree = data["repositories"][0]["worktrees"][0]
+        self.assertEqual(2, data["schema_version"])
+        for field in (
+            "repo",
+            "path",
+            "primary",
+            "branch",
+            "detached_commit",
+            "cleanliness",
+            "operation_state",
+            "locked",
+            "related_branch_classification",
+            "related_branch_outcome",
+            "cleanup_classification",
+            "action_attempted",
+            "action_result",
+            "preservation_or_blocker_reason",
+            "stale_metadata_pruned",
+            "final_verification_state",
+            "residual_manual_action",
+        ):
+            self.assertIn(field, worktree)
+
+    def test_repeated_apply_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            linked = root / "linked"
+            _commit_and_merge_branch(repo, "done")
+            _git(repo, "worktree", "add", str(linked), "done")
+
+            first = cleanup_branches(_config(repo), apply=True)
+            second = cleanup_branches(_config(repo), apply=True)
+
+        self.assertEqual("removed_clean_linked_worktree", _worktree(first, linked).cleanup_classification)
+        self.assertFalse(any(item.cleanup_classification == "removed_clean_linked_worktree" for item in second.repos[0].worktrees))
+        self.assertFalse(second.repos[0].worktree_inspection_error)
+        self.assertFalse(second.repos[0].worktree_prune_error)
 
     def test_worktree_remove_revalidates_branch_is_still_merged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -950,6 +1243,15 @@ def _action(report, branch: str, scope: str, phase: str):
             if action.branch == branch and action.scope == scope and action.phase == phase:
                 return action
     raise AssertionError(f"missing action for {phase} {scope} {branch}")
+
+
+def _worktree(report, path: Path):
+    expected = path.resolve(strict=False)
+    for repo in report.repos:
+        for worktree in repo.worktrees:
+            if Path(worktree.path).resolve(strict=False) == expected:
+                return worktree
+    raise AssertionError(f"missing worktree disposition for {path}")
 
 
 def _make_repo(root: Path, name: str = "repo") -> Path:

@@ -70,6 +70,27 @@ class RefInfo:
 
 
 @dataclass(frozen=True)
+class WorktreeState:
+    path: str
+    head_oid: str = ""
+    branch: str = ""
+    detached: bool = False
+    primary: bool = False
+    bare: bool = False
+    locked: bool = False
+    lock_reason: str = ""
+    prunable: bool = False
+    prunable_reason: str = ""
+    path_exists: bool = False
+    git_dir: str = ""
+    admin_consistent: bool = False
+    cleanliness: str = "uninspectable"
+    porcelain_status: tuple[str, ...] = ()
+    operation_state: tuple[str, ...] = ()
+    inspection_error: str = ""
+
+
+@dataclass(frozen=True)
 class BranchAction:
     repo: str
     phase: str
@@ -78,6 +99,36 @@ class BranchAction:
     action: str
     reason: str
     evidence: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WorktreeDisposition:
+    repo: str
+    path: str
+    primary: bool
+    branch: str
+    detached_commit: str
+    head_oid: str
+    path_exists: bool
+    git_dir: str
+    admin_consistent: bool
+    cleanliness: str
+    porcelain_status: tuple[str, ...]
+    operation_state: tuple[str, ...]
+    locked: bool
+    lock_reason: str
+    prunable: bool
+    prunable_reason: str
+    related_branch_classification: str
+    related_branch_outcome: str
+    related_branch_reason: str
+    cleanup_classification: str
+    action_attempted: str
+    action_result: str
+    preservation_or_blocker_reason: str
+    stale_metadata_pruned: bool
+    final_verification_state: str
+    residual_manual_action: str
 
 
 @dataclass
@@ -89,6 +140,9 @@ class RepoReport:
     default_branch_evidence: str = ""
     starting_branch: str = ""
     actions: list[BranchAction] = field(default_factory=list)
+    worktree_inspection_error: str = ""
+    worktree_prune_error: str = ""
+    worktrees: list[WorktreeDisposition] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -151,7 +205,7 @@ def cleanup_branches(
     )
     finished = _utc_now()
     return BranchCleanupReport(
-        schema_version=1,
+        schema_version=2,
         dry_run=not apply,
         started_at=started,
         finished_at=finished,
@@ -198,7 +252,7 @@ def cleanup_branches_with_retries(
                 stopped_reason = f"max apply passes reached ({max_apply_passes})"
     finished = _utc_now()
     return BranchCleanupSequenceReport(
-        schema_version=1,
+        schema_version=2,
         report_type="branch_cleanup_sequence",
         dry_run=not apply,
         started_at=started,
@@ -290,35 +344,81 @@ def render_sequence_text_report(report: BranchCleanupSequenceReport) -> str:
 
 def render_text_report(report: BranchCleanupReport) -> str:
     mode = "dry-run" if report.dry_run else "apply"
+    worktree_summary = _worktree_summary(report.repos)
     lines = [
         "Branch cleanup report",
         f"Mode: {mode}",
         f"Started: {report.started_at}",
         f"Finished: {report.finished_at}",
+        (
+            "Worktrees: "
+            f"discovered={worktree_summary['discovered']} "
+            f"removed={worktree_summary['removed']} "
+            f"stale_metadata_pruned={worktree_summary['stale_metadata_pruned']} "
+            f"dirty_or_locked={worktree_summary['dirty_or_locked']} "
+            f"failures={worktree_summary['failures']} "
+            f"remaining_related_cleanup={worktree_summary['remaining_related_cleanup']}"
+        ),
         "",
     ]
     for repo in report.repos:
         lines.append(f"{repo.repo}:")
         lines.append(f"  path: {repo.path}")
+        if repo.worktree_inspection_error:
+            lines.append(f"  worktree inspection error: {repo.worktree_inspection_error}")
+        if repo.worktree_prune_error:
+            lines.append(f"  worktree prune error: {repo.worktree_prune_error}")
         if repo.skipped:
             lines.append(f"  skipped: {repo.skipped}")
-            lines.append("")
-            continue
-        lines.append(f"  starting branch: {repo.starting_branch or 'unknown'}")
-        lines.append(f"  default branch: {repo.default_branch}")
-        if repo.default_branch_evidence:
-            lines.append(f"  default branch evidence: {repo.default_branch_evidence}")
-        if not repo.actions:
-            lines.append("  actions: none")
-        for action in repo.actions:
-            lines.append(
-                f"  - [{action.phase}] {action.scope} {action.branch}: "
-                f"{action.action} ({action.reason})"
-            )
-            for evidence in action.evidence:
-                lines.append(f"      evidence: {evidence}")
+        else:
+            lines.append(f"  starting branch: {repo.starting_branch or 'unknown'}")
+            lines.append(f"  default branch: {repo.default_branch}")
+            if repo.default_branch_evidence:
+                lines.append(f"  default branch evidence: {repo.default_branch_evidence}")
+            if not repo.actions:
+                lines.append("  actions: none")
+            for action in repo.actions:
+                lines.append(
+                    f"  - [{action.phase}] {action.scope} {action.branch}: "
+                    f"{action.action} ({action.reason})"
+                )
+                for evidence in action.evidence:
+                    lines.append(f"      evidence: {evidence}")
+        _append_worktree_text(lines, repo)
         lines.append("")
     return "\n".join(lines).rstrip()
+
+
+def _append_worktree_text(lines: list[str], repo: RepoReport) -> None:
+    counts: dict[str, int] = {}
+    for worktree in repo.worktrees:
+        counts[worktree.cleanup_classification] = counts.get(worktree.cleanup_classification, 0) + 1
+    summary = ", ".join(f"{key}={counts[key]}" for key in sorted(counts)) or "none"
+    lines.append(f"  worktree summary: discovered={len(repo.worktrees)}; {summary}")
+    for worktree in repo.worktrees:
+        checked_out = worktree.branch or (f"detached {worktree.detached_commit}" if worktree.detached_commit else "unknown")
+        operations = ",".join(worktree.operation_state) or "none"
+        lock = f"locked ({worktree.lock_reason or 'no reason'})" if worktree.locked else "unlocked"
+        lines.append(f"  - [worktree] {worktree.path}: {worktree.cleanup_classification}")
+        lines.append(
+            "      state: "
+            f"primary={str(worktree.primary).lower()} checked_out={checked_out} "
+            f"cleanliness={worktree.cleanliness} operations={operations} {lock}"
+        )
+        lines.append(
+            "      branch cleanup: "
+            f"{worktree.related_branch_classification or 'none'} / "
+            f"{worktree.related_branch_outcome or 'none'}"
+        )
+        lines.append(
+            f"      action: {worktree.action_attempted or 'none'} / "
+            f"{worktree.action_result or 'not_attempted'}; "
+            f"final={worktree.final_verification_state}"
+        )
+        if worktree.preservation_or_blocker_reason:
+            lines.append(f"      reason: {worktree.preservation_or_blocker_reason}")
+        if worktree.residual_manual_action:
+            lines.append(f"      manual action: {worktree.residual_manual_action}")
 
 
 def render_json_report(report: BranchCleanupReport | BranchCleanupSequenceReport) -> str:
@@ -339,6 +439,7 @@ def _cleanup_report_to_json(report: BranchCleanupReport) -> dict[str, object]:
         "dry_run": report.dry_run,
         "started_at": report.started_at,
         "finished_at": report.finished_at,
+        "worktree_summary": _worktree_summary(report.repos),
         "repositories": [
             {
                 "repo": repo.repo,
@@ -347,6 +448,8 @@ def _cleanup_report_to_json(report: BranchCleanupReport) -> dict[str, object]:
                 "starting_branch": repo.starting_branch,
                 "default_branch": repo.default_branch,
                 "default_branch_evidence": repo.default_branch_evidence,
+                "worktree_inspection_error": repo.worktree_inspection_error,
+                "worktree_prune_error": repo.worktree_prune_error,
                 "actions": [
                     {
                         "phase": action.phase,
@@ -358,11 +461,77 @@ def _cleanup_report_to_json(report: BranchCleanupReport) -> dict[str, object]:
                     }
                     for action in repo.actions
                 ],
+                "worktrees": [
+                    {
+                        "repo": worktree.repo,
+                        "path": worktree.path,
+                        "primary": worktree.primary,
+                        "branch": worktree.branch,
+                        "detached_commit": worktree.detached_commit,
+                        "head_oid": worktree.head_oid,
+                        "path_exists": worktree.path_exists,
+                        "git_dir": worktree.git_dir,
+                        "admin_consistent": worktree.admin_consistent,
+                        "cleanliness": worktree.cleanliness,
+                        "porcelain_status": list(worktree.porcelain_status),
+                        "operation_state": list(worktree.operation_state),
+                        "locked": worktree.locked,
+                        "lock_reason": worktree.lock_reason,
+                        "prunable": worktree.prunable,
+                        "prunable_reason": worktree.prunable_reason,
+                        "related_branch_classification": worktree.related_branch_classification,
+                        "related_branch_outcome": worktree.related_branch_outcome,
+                        "related_branch_reason": worktree.related_branch_reason,
+                        "cleanup_classification": worktree.cleanup_classification,
+                        "action_attempted": worktree.action_attempted,
+                        "action_result": worktree.action_result,
+                        "preservation_or_blocker_reason": worktree.preservation_or_blocker_reason,
+                        "stale_metadata_pruned": worktree.stale_metadata_pruned,
+                        "final_verification_state": worktree.final_verification_state,
+                        "residual_manual_action": worktree.residual_manual_action,
+                    }
+                    for worktree in repo.worktrees
+                ],
             }
             for repo in report.repos
         ],
     }
     return data
+
+
+def _worktree_summary(repos: Iterable[RepoReport]) -> dict[str, object]:
+    worktrees = [worktree for repo in repos for worktree in repo.worktrees]
+    preserved_by_reason: dict[str, int] = {}
+    removed_classes = {"removed_clean_linked_worktree", "pruned_stale_worktree_metadata"}
+    for worktree in worktrees:
+        if worktree.cleanup_classification not in removed_classes:
+            preserved_by_reason[worktree.cleanup_classification] = (
+                preserved_by_reason.get(worktree.cleanup_classification, 0) + 1
+            )
+    failure_classes = {
+        "worktree_validation_failure",
+        "worktree_metadata_prune_failed",
+        "worktree_removal_failed",
+        "worktree_removal_verification_failed",
+        "branch_deletion_failed_after_worktree_removal",
+    }
+    return {
+        "discovered": len(worktrees),
+        "removed": sum(item.cleanup_classification == "removed_clean_linked_worktree" for item in worktrees),
+        "stale_metadata_pruned": sum(item.stale_metadata_pruned for item in worktrees),
+        "preserved_by_reason": {key: preserved_by_reason[key] for key in sorted(preserved_by_reason)},
+        "dirty_or_locked": sum(
+            item.cleanup_classification in {"dirty_worktree_blocked", "locked_worktree_preserved"}
+            for item in worktrees
+        ),
+        "failures": sum(item.cleanup_classification in failure_classes for item in worktrees),
+        "remaining_related_cleanup": sum(
+            item.path_exists
+            and item.related_branch_outcome in {"failed", "deleted", "would_delete"}
+            and item.cleanup_classification not in removed_classes
+            for item in worktrees
+        ),
+    }
 
 
 def _sequence_report_to_json(report: BranchCleanupSequenceReport) -> dict[str, object]:
@@ -405,18 +574,47 @@ def _cleanup_repo(
     if _git(path, "rev-parse", "--git-dir").returncode != 0:
         report.skipped = "path is not a Git repository"
         return report
+    initial_worktrees, worktree_error = _discover_worktrees(path)
+    if worktree_error:
+        report.worktree_inspection_error = worktree_error
+        report.skipped = "could not inspect registered worktrees"
+        return report
     dirty = _git(path, "status", "--porcelain=v1", "-z")
     if dirty.returncode != 0:
         report.skipped = "could not inspect working tree state"
+        report.worktrees = _classify_worktrees(
+            target,
+            config.protected_branches,
+            initial_worktrees,
+            initial_worktrees,
+            (),
+            repo_blocker=report.skipped,
+        )
         return report
     if dirty.stdout:
         report.skipped = "dirty working tree"
+        report.worktrees = _classify_worktrees(
+            target,
+            config.protected_branches,
+            initial_worktrees,
+            initial_worktrees,
+            (),
+            repo_blocker=report.skipped,
+        )
         return report
 
     if apply:
         fetch = _git(path, "fetch", target.remote, "--prune")
         if fetch.returncode != 0:
             report.skipped = f"fetch/prune failed: {_command_failure_detail(fetch)}"
+            report.worktrees = _classify_worktrees(
+                target,
+                config.protected_branches,
+                initial_worktrees,
+                initial_worktrees,
+                (),
+                repo_blocker=report.skipped,
+            )
             return report
 
     report.starting_branch = _current_branch(path)
@@ -426,6 +624,14 @@ def _cleanup_repo(
     default_ref = f"refs/remotes/{target.remote}/{default_branch}"
     if _verify_ref(path, default_ref).returncode != 0:
         report.skipped = f"default remote ref missing: {default_ref}; {default_evidence}"
+        report.worktrees = _classify_worktrees(
+            target,
+            config.protected_branches,
+            initial_worktrees,
+            initial_worktrees,
+            (),
+            repo_blocker=report.skipped,
+        )
         return report
 
     local_refs = _refs(path, "refs/heads")
@@ -473,6 +679,26 @@ def _cleanup_repo(
             _apply_action(path, target.remote, default_ref, action, normal_only=apply_normal_only)
             for action in report.actions
         ]
+    prune_attempted = False
+    if apply and any(worktree.prunable and not worktree.locked and not worktree.primary for worktree in initial_worktrees):
+        prune_attempted = True
+        prune = _git(path, "worktree", "prune", "--expire", "now")
+        if prune.returncode != 0:
+            report.worktree_prune_error = _command_failure_detail(prune)
+    final_worktrees, final_error = _discover_worktrees(path)
+    if final_error:
+        report.worktree_inspection_error = final_error
+        final_worktrees = initial_worktrees
+    report.worktrees = _classify_worktrees(
+        target,
+        config.protected_branches,
+        initial_worktrees,
+        final_worktrees,
+        tuple(report.actions),
+        prune_attempted=prune_attempted,
+        prune_error=report.worktree_prune_error,
+        final_inspection_error=final_error,
+    )
     return report
 
 
@@ -702,13 +928,17 @@ def _stale_validation_action(
     evidence = [f"tip={oid}", f"not auto-deleted: ref is not an ancestor of {default_ref}"]
     worktree_path = worktree_branches.get(branch)
     if worktree_path:
-        clean, reason = _worktree_is_clean(Path(worktree_path))
         evidence.append(f"worktree={worktree_path}")
-        if clean:
-            evidence.append("worktree clean")
-        else:
+        reason = _worktree_delete_skip_reason(target.path, branch, worktree_branches)
+        if reason:
             evidence.append(reason)
-            return BranchAction(target.name, "blocked_dirty_worktree", scope, branch, "report_only", reason, tuple(evidence))
+            classification = (
+                "blocked_dirty_worktree"
+                if any(token in reason for token in ("untracked", "uncommitted", "conflicted"))
+                else "needs_human_review"
+            )
+            return BranchAction(target.name, classification, scope, branch, "report_only", reason, tuple(evidence))
+        evidence.append("worktree clean and safety checks passed")
 
     pr_evidence = _audit_pr_evidence(target.path, branch, oid) if audit_github_prs else _no_pr_audit_evidence()
     evidence.extend(pr_evidence.evidence)
@@ -860,12 +1090,15 @@ def _apply_action(
             "preserved",
             "not applied during retry-normal-cleanup; stale cleanup requires single-pass --apply",
         )
+    removed_worktree_path = ""
     if action.scope == "local" and action.phase == "normal_cleanup":
+        removed_worktree_path = _worktree_branches(path).get(action.branch, "")
         worktree_error = _remove_worktree_for_branch(path, action.branch, default_ref)
         if worktree_error:
             return _replace_action(action, "failed", worktree_error)
         result = _git(path, "branch", "-d", "--", action.branch)
     elif action.scope == "local" and action.phase == "stale_cleanup":
+        removed_worktree_path = _worktree_branches(path).get(action.branch, "")
         worktree_error = _remove_stale_worktree_for_branch(path, action.branch, _action_tip_oid(action))
         if worktree_error:
             return _replace_action(action, "failed", worktree_error)
@@ -878,6 +1111,12 @@ def _apply_action(
     if result.returncode == 0:
         return _replace_action(action, "deleted", action.reason)
     detail = (result.stderr or result.stdout or "no output").splitlines()[0]
+    if removed_worktree_path:
+        restore_error = _restore_worktree_after_branch_delete_failure(path, action.branch, removed_worktree_path)
+        if restore_error:
+            detail = f"branch deletion failed: {detail}; worktree restoration failed: {restore_error}"
+        else:
+            detail = f"branch deletion failed: {detail}; clean linked worktree restored at {removed_worktree_path}"
     return _replace_action(action, "failed", detail)
 
 
@@ -955,27 +1194,31 @@ def _worktree_delete_skip_reason(path: Path, branch: str, worktree_branches: dic
     worktree_path = Path(raw_worktree_path)
     if worktree_path.resolve() == path.resolve():
         return f"branch is checked out in target worktree {raw_worktree_path}"
-    clean, reason = _worktree_is_clean(worktree_path)
-    if clean:
+    worktrees, error = _discover_worktrees(path)
+    if error:
+        return f"could not inspect registered worktrees: {error}"
+    state = _worktree_state_for_path(worktrees, raw_worktree_path)
+    if state is None:
+        return f"worktree metadata is inconsistent or disappeared: {raw_worktree_path}"
+    if state.primary:
+        return f"branch is checked out in primary worktree {raw_worktree_path}"
+    if state.locked:
+        return f"worktree is locked: {raw_worktree_path}"
+    if state.prunable or not state.path_exists:
+        return f"worktree path is missing and metadata requires pruning: {raw_worktree_path}"
+    if not state.admin_consistent:
+        return f"worktree administrative metadata is inconsistent: {raw_worktree_path}"
+    if state.operation_state:
+        return f"worktree has operation in progress ({', '.join(state.operation_state)}): {raw_worktree_path}"
+    if state.cleanliness == "clean":
         return ""
-    return f"{reason}: {raw_worktree_path}"
-
-
-def _worktree_is_clean(worktree_path: Path) -> tuple[bool, str]:
-    if not worktree_path.exists():
-        return False, "could not inspect worktree state"
-    try:
-        status = _git(worktree_path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-    except OSError:
-        return False, "could not inspect worktree state"
-    if status.returncode != 0:
-        return False, "could not inspect worktree state"
-    entries = [entry for entry in status.stdout.split("\0") if entry]
-    if not entries:
-        return True, ""
-    if any(entry.startswith("??") for entry in entries):
-        return False, "worktree has untracked files"
-    return False, "worktree has uncommitted changes"
+    if state.cleanliness in {"untracked", "dirty_with_untracked"}:
+        return f"worktree has untracked files: {raw_worktree_path}"
+    if state.cleanliness == "conflicted":
+        return f"worktree has conflicted files: {raw_worktree_path}"
+    if state.cleanliness == "dirty":
+        return f"worktree has uncommitted changes: {raw_worktree_path}"
+    return f"could not inspect worktree state: {raw_worktree_path}"
 
 
 def _remove_worktree_for_branch(path: Path, branch: str, default_ref: str) -> str:
@@ -992,9 +1235,13 @@ def _remove_worktree_for_branch(path: Path, branch: str, default_ref: str) -> st
     if not _is_ancestor(path, branch_ref, default_ref):
         return f"branch is no longer proven merged into {default_ref}"
     result = _git(path, "worktree", "remove", raw_worktree_path)
-    if result.returncode == 0:
-        return ""
-    return (result.stderr or result.stdout or "git worktree remove failed").splitlines()[0]
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "git worktree remove failed").splitlines()[0]
+        return f"worktree removal failed: {detail}"
+    verification_error = _verify_worktree_removed(path, raw_worktree_path)
+    if verification_error:
+        return verification_error
+    return ""
 
 
 def _remove_stale_worktree_for_branch(path: Path, branch: str, expected_oid: str) -> str:
@@ -1015,9 +1262,44 @@ def _remove_stale_worktree_for_branch(path: Path, branch: str, expected_oid: str
     if current_oid != expected_oid:
         return f"branch tip changed since stale approval planning: expected {expected_oid}, found {current_oid}"
     result = _git(path, "worktree", "remove", raw_worktree_path)
-    if result.returncode == 0:
-        return ""
-    return (result.stderr or result.stdout or "git worktree remove failed").splitlines()[0]
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "git worktree remove failed").splitlines()[0]
+        return f"worktree removal failed: {detail}"
+    verification_error = _verify_worktree_removed(path, raw_worktree_path)
+    if verification_error:
+        return verification_error
+    return ""
+
+
+def _verify_worktree_removed(path: Path, raw_worktree_path: str) -> str:
+    worktrees, error = _discover_worktrees(path)
+    if error:
+        return f"worktree removal verification failed: {error}"
+    if _worktree_state_for_path(worktrees, raw_worktree_path) is not None:
+        return f"worktree removal verification failed: metadata remains for {raw_worktree_path}"
+    if Path(raw_worktree_path).exists():
+        return f"worktree removal verification failed: filesystem path remains at {raw_worktree_path}"
+    return ""
+
+
+def _restore_worktree_after_branch_delete_failure(path: Path, branch: str, raw_worktree_path: str) -> str:
+    branch_ref = f"refs/heads/{branch}"
+    if _verify_ref(path, branch_ref).returncode != 0:
+        return f"branch is unavailable: {branch_ref}"
+    result = _git(path, "worktree", "add", raw_worktree_path, branch)
+    if result.returncode != 0:
+        return _command_failure_detail(result)
+    worktrees, error = _discover_worktrees(path)
+    if error:
+        return f"restoration verification failed: {error}"
+    restored = _worktree_state_for_path(worktrees, raw_worktree_path)
+    if restored is None:
+        return "restoration verification failed: worktree is not registered"
+    if restored.branch != branch or not restored.path_exists or not restored.admin_consistent:
+        return "restoration verification failed: worktree state does not match the preserved branch"
+    if restored.locked or restored.operation_state or restored.cleanliness != "clean":
+        return "restoration verification failed: restored worktree is not clean and inactive"
+    return ""
 
 
 def _action_tip_oid(action: BranchAction) -> str:
@@ -1079,6 +1361,357 @@ def _refs(path: Path, namespace: str) -> tuple[RefInfo, ...]:
     return tuple(refs)
 
 
+def _discover_worktrees(path: Path) -> tuple[tuple[WorktreeState, ...], str]:
+    result = _git(path, "worktree", "list", "--porcelain", "-z", "--expire", "now")
+    if result.returncode != 0:
+        return (), _command_failure_detail(result)
+    common = _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common.returncode != 0 or not common.stdout.strip():
+        return (), f"could not resolve Git common directory: {_command_failure_detail(common)}"
+    common_dir = Path(common.stdout.strip()).resolve()
+    raw_records = _parse_worktree_porcelain(result.stdout)
+    states = tuple(
+        _inspect_worktree_record(record, index == 0, common_dir)
+        for index, record in enumerate(raw_records)
+    )
+    return states, ""
+
+
+def _parse_worktree_porcelain(output: str) -> tuple[dict[str, str], ...]:
+    records: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for field in output.split("\0"):
+        if not field:
+            if current:
+                records.append(current)
+                current = {}
+            continue
+        key, separator, value = field.partition(" ")
+        if key == "worktree" and current:
+            records.append(current)
+            current = {}
+        current[key] = value if separator else ""
+    if current:
+        records.append(current)
+    return tuple(record for record in records if record.get("worktree"))
+
+
+def _inspect_worktree_record(record: dict[str, str], primary: bool, common_dir: Path) -> WorktreeState:
+    raw_path = record.get("worktree", "")
+    worktree_path = Path(raw_path)
+    branch_ref = record.get("branch", "")
+    branch = branch_ref.removeprefix("refs/heads/") if branch_ref.startswith("refs/heads/") else ""
+    detached = "detached" in record
+    locked = "locked" in record
+    prunable = "prunable" in record
+    path_exists = worktree_path.exists()
+    base = {
+        "path": raw_path,
+        "head_oid": record.get("HEAD", ""),
+        "branch": branch,
+        "detached": detached,
+        "primary": primary,
+        "bare": "bare" in record,
+        "locked": locked,
+        "lock_reason": record.get("locked", ""),
+        "prunable": prunable,
+        "prunable_reason": record.get("prunable", ""),
+        "path_exists": path_exists,
+    }
+    if not path_exists:
+        return WorktreeState(
+            **base,
+            admin_consistent=prunable and not primary,
+            cleanliness="missing",
+            inspection_error="worktree filesystem path does not exist",
+        )
+    if "bare" in record:
+        return WorktreeState(**base, git_dir=str(common_dir), admin_consistent=primary, cleanliness="bare")
+
+    git_dir_result = _git(worktree_path, "rev-parse", "--path-format=absolute", "--git-dir")
+    common_result = _git(worktree_path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if git_dir_result.returncode != 0 or common_result.returncode != 0:
+        detail = _command_failure_detail(git_dir_result if git_dir_result.returncode != 0 else common_result)
+        return WorktreeState(**base, cleanliness="uninspectable", inspection_error=detail)
+    git_dir = Path(git_dir_result.stdout.strip()).resolve()
+    worktree_common = Path(common_result.stdout.strip()).resolve()
+    expected_admin = git_dir == common_dir if primary else git_dir.parent == common_dir / "worktrees"
+    admin_consistent = worktree_common == common_dir and expected_admin
+
+    status = _git(worktree_path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    if status.returncode != 0:
+        return WorktreeState(
+            **base,
+            git_dir=str(git_dir),
+            admin_consistent=admin_consistent,
+            cleanliness="uninspectable",
+            inspection_error=_command_failure_detail(status),
+        )
+    entries = tuple(entry for entry in status.stdout.split("\0") if entry)
+    operations = _worktree_operation_state(worktree_path)
+    return WorktreeState(
+        **base,
+        git_dir=str(git_dir),
+        admin_consistent=admin_consistent,
+        cleanliness=_porcelain_cleanliness(entries),
+        porcelain_status=entries,
+        operation_state=operations,
+        inspection_error="" if admin_consistent else "Git administrative metadata does not match the configured repository",
+    )
+
+
+def _porcelain_cleanliness(entries: tuple[str, ...]) -> str:
+    if not entries:
+        return "clean"
+    codes = tuple(entry[:2] for entry in entries)
+    if any(code in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"} for code in codes):
+        return "conflicted"
+    has_untracked = any(code == "??" for code in codes)
+    has_tracked = any(code != "??" for code in codes)
+    if has_untracked and has_tracked:
+        return "dirty_with_untracked"
+    if has_untracked:
+        return "untracked"
+    return "dirty"
+
+
+def _worktree_operation_state(path: Path) -> tuple[str, ...]:
+    markers = (
+        ("MERGE_HEAD", "merge"),
+        ("CHERRY_PICK_HEAD", "cherry-pick"),
+        ("REVERT_HEAD", "revert"),
+        ("rebase-merge", "rebase"),
+        ("rebase-apply", "rebase"),
+        ("BISECT_LOG", "bisect"),
+        ("sequencer", "sequencer"),
+    )
+    operations: list[str] = []
+    for marker, operation in markers:
+        result = _git(path, "rev-parse", "--path-format=absolute", "--git-path", marker)
+        if result.returncode == 0 and result.stdout.strip() and Path(result.stdout.strip()).exists() and operation not in operations:
+            operations.append(operation)
+    return tuple(operations)
+
+
+def _worktree_state_for_path(worktrees: Iterable[WorktreeState], raw_path: str) -> WorktreeState | None:
+    key = _worktree_path_key(raw_path)
+    for worktree in worktrees:
+        if _worktree_path_key(worktree.path) == key:
+            return worktree
+    return None
+
+
+def _worktree_path_key(raw_path: str) -> str:
+    return str(Path(raw_path).resolve(strict=False))
+
+
+def _related_branch_action(actions: tuple[BranchAction, ...], branch: str) -> BranchAction | None:
+    if not branch:
+        return None
+    candidates = [action for action in actions if action.scope == "local" and action.branch == branch]
+    priorities = {
+        "failed": 0,
+        "deleted": 1,
+        "would_delete": 2,
+        "report_only": 3,
+        "preserved": 4,
+    }
+    return min(candidates, key=lambda item: (priorities.get(item.action, 9), item.phase)) if candidates else None
+
+
+def _classify_worktrees(
+    target: RepoTarget,
+    protected_branches: Iterable[str],
+    initial: tuple[WorktreeState, ...],
+    final: tuple[WorktreeState, ...],
+    actions: tuple[BranchAction, ...],
+    *,
+    repo_blocker: str = "",
+    prune_attempted: bool = False,
+    prune_error: str = "",
+    final_inspection_error: str = "",
+) -> list[WorktreeDisposition]:
+    final_by_path = {_worktree_path_key(item.path): item for item in final}
+    ordered = list(initial)
+    initial_keys = {_worktree_path_key(item.path) for item in initial}
+    ordered.extend(item for item in final if _worktree_path_key(item.path) not in initial_keys)
+    return [
+        _classify_worktree(
+            target,
+            set(protected_branches),
+            before,
+            final_by_path.get(_worktree_path_key(before.path)),
+            _related_branch_action(actions, before.branch),
+            repo_blocker=repo_blocker,
+            prune_attempted=prune_attempted,
+            prune_error=prune_error,
+            final_inspection_error=final_inspection_error,
+        )
+        for before in ordered
+    ]
+
+
+def _classify_worktree(
+    target: RepoTarget,
+    protected_branches: set[str],
+    before: WorktreeState,
+    after: WorktreeState | None,
+    related: BranchAction | None,
+    *,
+    repo_blocker: str,
+    prune_attempted: bool,
+    prune_error: str,
+    final_inspection_error: str,
+) -> WorktreeDisposition:
+    state = after or before
+    classification = "active_worktree_preserved"
+    attempted = ""
+    result = "not_attempted"
+    reason = "worktree is not associated with an authorized successful branch cleanup action"
+    final_state = "present_verified" if after is not None else "absent_verified"
+    manual = ""
+    metadata_pruned = False
+
+    if final_inspection_error:
+        classification = "worktree_validation_failure"
+        reason = f"final worktree inspection failed: {final_inspection_error}"
+        final_state = "verification_failed"
+        manual = "Re-run report-only worktree inspection after resolving the Git inspection failure."
+    elif before.primary:
+        classification = "primary_worktree_preserved"
+        reason = "the repository primary worktree is never removable"
+    elif _worktree_path_key(before.path) == _worktree_path_key(str(target.path)):
+        classification = "configured_target_worktree_preserved"
+        reason = "the configured target worktree is never removable"
+    elif before.locked:
+        classification = "locked_worktree_preserved"
+        reason = f"worktree is locked{': ' + before.lock_reason if before.lock_reason else ''}"
+        manual = "Inspect the lock reason and worktree state manually; automated cleanup will not unlock it."
+    elif before.prunable:
+        attempted = "git worktree prune --expire now" if prune_attempted else ""
+        if after is None and prune_attempted and not prune_error:
+            classification = "pruned_stale_worktree_metadata"
+            result = "succeeded"
+            reason = before.prunable_reason or "Git classified missing-path metadata as prunable"
+            metadata_pruned = True
+            final_state = "metadata_absent_verified"
+        elif prune_error:
+            classification = "worktree_metadata_prune_failed"
+            result = "failed"
+            reason = prune_error
+            final_state = "metadata_present_verified" if after is not None else "verification_failed"
+            manual = "Inspect the stale worktree metadata with git worktree list --porcelain --expire now."
+        else:
+            classification = "stale_worktree_metadata_prunable"
+            result = "report_only"
+            reason = before.prunable_reason or "Git classified missing-path metadata as prunable"
+            final_state = "metadata_present_verified"
+    elif repo_blocker:
+        classification = "blocked_repository_worktree_preserved"
+        reason = repo_blocker
+    elif after is None:
+        attempted = "git worktree remove"
+        if related and related.action == "deleted":
+            classification = "removed_clean_linked_worktree"
+            result = "succeeded"
+            reason = related.reason
+            final_state = "removed_verified"
+        elif related and related.action == "failed":
+            classification = (
+                "worktree_removal_verification_failed"
+                if related.reason.startswith("worktree removal verification failed")
+                else "branch_deletion_failed_after_worktree_removal"
+            )
+            result = "failed"
+            reason = related.reason
+            final_state = "verification_failed"
+            manual = "Inspect the preserved branch ref and Git worktree metadata before further action."
+        else:
+            classification = "worktree_validation_failure"
+            result = "unknown"
+            reason = "worktree disappeared without a successful related branch cleanup action"
+            final_state = "verification_failed"
+            manual = "Inspect repository worktree metadata and the former worktree path manually."
+    elif not after.admin_consistent:
+        classification = "worktree_validation_failure"
+        reason = after.inspection_error or "Git administrative metadata is inconsistent"
+        final_state = "present_unverified"
+        manual = "Inspect the worktree Git administrative linkage before any cleanup."
+    elif after.operation_state:
+        classification = "active_operation_worktree_preserved"
+        reason = f"Git operation in progress: {', '.join(after.operation_state)}"
+        manual = "Complete or safely abort the in-progress Git operation before reconsidering cleanup."
+    elif after.cleanliness != "clean":
+        classification = "dirty_worktree_blocked" if after.cleanliness != "uninspectable" else "worktree_validation_failure"
+        reason = after.inspection_error or f"worktree cleanliness is {after.cleanliness}"
+        manual = f"Inspect recoverable work with git -C {after.path} status --porcelain=v1 --untracked-files=all."
+    elif after.detached or not after.branch:
+        classification = "ambiguous_detached_worktree_preserved"
+        reason = "detached worktree has no conclusive branch-cleanup authorization"
+        manual = "Inspect the detached commit and determine ownership before any manual cleanup."
+    elif after.branch in protected_branches:
+        classification = "protected_branch_worktree_preserved"
+        reason = "worktree checks out a protected branch"
+    elif related and related.action == "failed":
+        if "clean linked worktree restored" in related.reason:
+            attempted = "git worktree remove; git branch delete; git worktree add (restore)"
+            result = "branch_delete_failed_worktree_restored"
+        else:
+            attempted = "git worktree remove" if related.reason.startswith("worktree removal") else ""
+            result = "failed" if attempted else "not_attempted"
+        if related.reason.startswith("worktree removal verification failed"):
+            classification = "worktree_removal_verification_failed"
+        elif related.reason.startswith("worktree removal failed"):
+            classification = "worktree_removal_failed"
+        else:
+            classification = "branch_deletion_failed_worktree_preserved"
+        reason = related.reason
+        manual = "Inspect the related branch action and worktree state; do not force-remove the worktree."
+    elif related and related.action == "deleted":
+        classification = "worktree_removal_verification_failed"
+        attempted = "git worktree remove"
+        result = "failed"
+        reason = "related branch was deleted but the worktree remains registered"
+        final_state = "verification_failed"
+        manual = "Inspect the remaining registered worktree and branch-cleanup audit before further action."
+    elif related and related.action == "would_delete":
+        classification = "clean_linked_worktree_would_remove"
+        result = "report_only"
+        reason = related.reason
+    elif related and related.reason == "protected branch":
+        classification = "protected_branch_worktree_preserved"
+        reason = related.reason
+
+    return WorktreeDisposition(
+        repo=target.name,
+        path=before.path,
+        primary=before.primary,
+        branch=before.branch,
+        detached_commit=before.head_oid if before.detached else "",
+        head_oid=before.head_oid,
+        path_exists=after.path_exists if after is not None else False,
+        git_dir=state.git_dir,
+        admin_consistent=state.admin_consistent,
+        cleanliness=state.cleanliness,
+        porcelain_status=state.porcelain_status,
+        operation_state=state.operation_state,
+        locked=state.locked,
+        lock_reason=state.lock_reason,
+        prunable=before.prunable,
+        prunable_reason=before.prunable_reason,
+        related_branch_classification=related.phase if related else "",
+        related_branch_outcome=related.action if related else "",
+        related_branch_reason=related.reason if related else "",
+        cleanup_classification=classification,
+        action_attempted=attempted,
+        action_result=result,
+        preservation_or_blocker_reason=reason,
+        stale_metadata_pruned=metadata_pruned,
+        final_verification_state=final_state,
+        residual_manual_action=manual,
+    )
+
+
 def _worktree_branches(path: Path) -> dict[str, str]:
     result = _git(path, "worktree", "list", "--porcelain")
     branches: dict[str, str] = {}
@@ -1136,8 +1769,8 @@ def _git(cwd: Path, *argv: str) -> GitCommand:
     return GitCommand(
         argv=("git",) + tuple(argv),
         returncode=process.returncode,
-        stdout=process.stdout.strip(),
-        stderr=process.stderr.strip(),
+        stdout=process.stdout.rstrip("\n"),
+        stderr=process.stderr.rstrip("\n"),
     )
 
 
@@ -1153,8 +1786,8 @@ def _gh(cwd: Path, *argv: str) -> GitCommand:
     return GitCommand(
         argv=("gh",) + tuple(argv),
         returncode=process.returncode,
-        stdout=process.stdout.strip(),
-        stderr=process.stderr.strip(),
+        stdout=process.stdout.rstrip("\n"),
+        stderr=process.stderr.rstrip("\n"),
     )
 
 
