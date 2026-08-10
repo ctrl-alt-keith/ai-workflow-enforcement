@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 NOTICE = "This report is advisory, stale after capture, and not a source of truth."
+COMMAND_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -259,7 +260,18 @@ def _overall_status(sources: list[EvidenceSource]) -> str:
 
 
 def _run(cwd: Path, argv: tuple[str, ...]) -> CommandResult:
-    result = subprocess.run(argv, cwd=cwd, check=False, capture_output=True, text=True, shell=False)
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return CommandResult(124, "", f"command timed out after {COMMAND_TIMEOUT_SECONDS} seconds")
     return CommandResult(result.returncode, result.stdout, result.stderr)
 
 
