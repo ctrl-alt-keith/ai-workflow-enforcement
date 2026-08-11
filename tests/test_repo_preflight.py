@@ -176,6 +176,24 @@ class RepoPreflightTests(unittest.TestCase):
         self.assertEqual("unavailable", _source(report, "hosted_repository").status)
         self.assertIn("API unavailable", _source(report, "hosted_repository").errors)
 
+    def test_malformed_hosted_metadata_preserves_local_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = _repo(Path(raw), agents="# Agent\n", makefile="check:\n\ttrue\n")
+            _git(repo, "remote", "add", "origin", "git@github.com:example/code.git")
+
+            def runner(cwd: Path, argv: tuple[str, ...]) -> CommandResult:
+                if argv[:2] == ("gh", "api"):
+                    return CommandResult(0, "not-json", "")
+                return _run(cwd, argv)
+
+            report = inspect_repository(repo, include_hosted=True, clock=lambda: STAMP, runner=runner)
+
+        self.assertEqual("partial", report.overall_source_status)
+        self.assertEqual("available", _source(report, "repo_local_agents").status)
+        hosted = _source(report, "hosted_repository")
+        self.assertEqual("unavailable", hosted.status)
+        self.assertIn("unsupported response", hosted.errors[0])
+
     def test_markdown_and_json_are_deterministic_and_advisory(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repo = _repo(Path(raw), agents="# Agent\n", makefile="check:\n\ttrue\n")
