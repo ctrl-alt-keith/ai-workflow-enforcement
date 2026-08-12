@@ -305,22 +305,22 @@ behavior.
 
 The branch cleanup tool is a dry-run-first operational reinforcement helper for
 configured Git repositories. It reports normal Git-proven merged branch cleanup
-separately from human-approved stale non-ancestor cleanup, and it only mutates
-refs with explicit `--apply`.
+separately from stale non-ancestor cleanup that current evidence proves
+eligible, and it only mutates refs with explicit `--apply`.
 
 ```sh
 python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json
 ```
 
-Stale cleanup requires config-supplied approval and evidence, such as live
-GitHub merged-PR exact-head evidence with `--audit-github-prs` or recorded
-merged PR metadata with a matching branch-tip OID. The tool does not write
-automation memory, schedule follow-up work, or broaden this repository into a
-remediation platform. Dry-run mode does not fetch or prune; apply mode
-fetches/prunes first, so action lists may differ if remote refs changed. Clean
-linked worktrees for normally merged local branches are removed before branch
-deletion; linked worktrees with uncommitted or untracked changes are preserved.
-See `docs/branch-cleanup.md`.
+Stale cleanup requires fresh evidence: `git cherry` must prove
+patch-equivalence to the default branch, or `--apply --audit-github-prs` must
+find a live merged GitHub pull request whose head SHA exactly matches the
+branch tip. The tool does not write automation memory, schedule follow-up work,
+or broaden this repository into a remediation platform. Dry-run mode does not
+fetch or prune; apply mode fetches/prunes first, so action lists may differ if
+remote refs changed. Clean linked worktrees for normally merged local branches
+are removed before branch deletion; linked worktrees with uncommitted or
+untracked changes are preserved. See `docs/branch-cleanup.md`.
 
 ## Org PR And Issue Scan
 
