@@ -5,12 +5,15 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr
 import io
 
 from enforcement.repo_preflight import (
+    COMMAND_TIMEOUT_SECONDS,
     CommandResult,
     NOTICE,
+    _run as run_command,
     inspect_repository,
     main,
     _parse_remotes,
@@ -23,6 +26,20 @@ STAMP = "2026-07-15T20:00:00Z"
 
 
 class RepoPreflightTests(unittest.TestCase):
+    def test_default_runner_bounds_commands_and_reports_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            cwd = Path(raw)
+            with mock.patch(
+                "enforcement.repo_preflight.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(("git", "status"), COMMAND_TIMEOUT_SECONDS),
+            ) as run:
+                result = run_command(cwd, ("git", "status"))
+
+        self.assertEqual(124, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("timed out after 30 seconds", result.stderr)
+        self.assertEqual(COMMAND_TIMEOUT_SECONDS, run.call_args.kwargs["timeout"])
+
     def test_documentation_repository_reports_direct_sources(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repo = _repo(Path(raw), agents="# Instructions\n\n## Validation\n", makefile="check: ## Validate docs\n\ttrue\n")
