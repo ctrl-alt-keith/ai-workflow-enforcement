@@ -873,7 +873,7 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("stale approval evidence is incomplete or mismatched", action.reason)
         self.assertIn("does not match", action.evidence[0])
 
-    def test_non_ancestor_stale_refs_are_preserved_without_approval(self) -> None:
+    def test_non_ancestor_stale_refs_without_live_evidence_are_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
             _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
@@ -882,7 +882,7 @@ class BranchCleanupTests(unittest.TestCase):
 
         action = _action(report, "stale", "local", "stale_cleanup")
         self.assertEqual("preserved", action.action)
-        self.assertEqual("non-ancestor ref requires explicit stale approval and evidence", action.reason)
+        self.assertEqual("non-ancestor ref lacks live GitHub exact-head or patch-equivalence evidence", action.reason)
 
     def test_valid_approval_gates_stale_deletion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -945,7 +945,7 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("deleted", action.action)
         self.assertEqual("", remote_check.stdout.strip())
 
-    def test_patch_equivalent_evidence_gates_stale_deletion(self) -> None:
+    def test_patch_equivalent_deletes_without_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
             _commit_branch(repo, "stale-patch", "patch.txt", "same change\n")
@@ -954,17 +954,8 @@ class BranchCleanupTests(unittest.TestCase):
             _git(repo, "add", "patch.txt")
             _git(repo, "commit", "-m", "Add equivalent patch")
             _git(repo, "push", "origin", "main")
-            approval = StaleApproval(
-                repo="sample",
-                scope="local",
-                branch="stale-patch",
-                approved_by="keith",
-                reason="patch-equivalent stale branch",
-                evidence={"kind": "patch_equivalent"},
-            )
-
             report = cleanup_branches(
-                BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
+                _config(repo),
                 apply=True,
             )
             ref_check = _git(repo, "show-ref", "--verify", "--quiet", "refs/heads/stale-patch")
@@ -1028,7 +1019,7 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual("report_only", action.action)
         self.assertIn("head SHA matches", action.reason)
 
-    def test_merged_pr_exact_head_without_approval_remains_report_only(self) -> None:
+    def test_merged_pr_exact_head_is_would_delete_without_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
             _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
@@ -1039,8 +1030,8 @@ class BranchCleanupTests(unittest.TestCase):
 
         cleanup = _action(report, "stale", "local", "stale_cleanup")
         audit = _action(report, "stale", "local", "stale_candidate_merged_pr_exact_head")
-        self.assertEqual("preserved", cleanup.action)
-        self.assertEqual("non-ancestor ref requires explicit stale approval and evidence", cleanup.reason)
+        self.assertEqual("would_delete", cleanup.action)
+        self.assertIn("eligible because GitHub merged PR", cleanup.reason)
         self.assertEqual("report_only", audit.action)
         self.assertIn("head SHA matches", audit.reason)
 
@@ -1072,23 +1063,14 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertIn("GitHub PR #1 state=MERGED", "\n".join(action.evidence))
         self.assertEqual(0, ref_check.returncode)
 
-    def test_merged_pr_exact_head_live_approval_deletes_in_apply_mode(self) -> None:
+    def test_merged_pr_exact_head_deletes_without_approval_in_apply_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
             _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
             oid = _git(repo, "rev-parse", "refs/heads/stale").stdout.strip()
-            approval = StaleApproval(
-                repo="sample",
-                scope="local",
-                branch="stale",
-                approved_by="keith",
-                reason="merged PR exact-head evidence reviewed",
-                evidence={"kind": "github_merged_pr_exact_head"},
-            )
-
             with mock.patch.object(branch_cleanup, "_gh", return_value=_merged_pr_command(oid)):
                 report = cleanup_branches(
-                    BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
+                    _config(repo),
                     apply=True,
                     audit_stale=True,
                     audit_github_prs=True,
@@ -1221,29 +1203,19 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertTrue(linked_exists)
         self.assertEqual(0, ref_check.returncode)
 
-    def test_live_exact_head_approval_requires_github_pr_audit(self) -> None:
+    def test_live_exact_head_cleanup_requires_github_pr_audit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
             _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
-            approval = StaleApproval(
-                repo="sample",
-                scope="local",
-                branch="stale",
-                approved_by="keith",
-                reason="merged PR exact-head evidence reviewed",
-                evidence={"kind": "github_merged_pr_exact_head"},
-            )
-
             report = cleanup_branches(
-                BranchCleanupConfig(repositories=(RepoTarget("sample", repo),), stale_approvals=(approval,)),
+                _config(repo),
                 audit_stale=True,
                 audit_github_prs=False,
             )
 
         action = _action(report, "stale", "local", "stale_cleanup")
         self.assertEqual("preserved", action.action)
-        self.assertIn("stale approval evidence", action.reason)
-        self.assertIn("requires --audit-github-prs", "\n".join(action.evidence))
+        self.assertEqual("non-ancestor ref lacks live GitHub exact-head or patch-equivalence evidence", action.reason)
 
     def test_stale_audit_preserves_closed_unmerged_pr(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

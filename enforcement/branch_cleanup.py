@@ -1086,6 +1086,36 @@ def _stale_action(
     *,
     audit_github_prs: bool,
 ) -> BranchAction:
+    if audit_github_prs:
+        pr_evidence = _audit_pr_evidence(target.path, branch, oid)
+        if pr_evidence.classification == "stale_candidate_merged_pr_exact_head":
+            action_evidence = [f"tip={oid}", *pr_evidence.evidence]
+            worktree_path = worktree_branches.get(branch)
+            if scope == "local" and worktree_path:
+                action_evidence.append(f"worktree={worktree_path} clean; apply will remove linked worktree before deleting branch")
+            return BranchAction(
+                target.name,
+                "stale_cleanup",
+                scope,
+                branch,
+                "would_delete",
+                f"eligible because {pr_evidence.reason}",
+                tuple(action_evidence),
+            )
+
+    cherry = _git(target.path, "cherry", default_ref, refname)
+    cherry_lines = [line for line in cherry.stdout.splitlines() if line]
+    if cherry.returncode == 0 and cherry_lines and all(line.startswith("-") for line in cherry_lines):
+        return BranchAction(
+            target.name,
+            "stale_cleanup",
+            scope,
+            branch,
+            "would_delete",
+            f"eligible because git cherry proves patch-equivalence to {default_ref}",
+            (f"tip={oid}", f"git cherry lines={len(cherry_lines)}", *(f"git cherry {line}" for line in cherry_lines)),
+        )
+
     approval = _approval_for(config.stale_approvals, target.name, scope, branch)
     if approval is None:
         return _preserved(
@@ -1093,7 +1123,7 @@ def _stale_action(
             "stale_cleanup",
             scope,
             branch,
-            "non-ancestor ref requires explicit stale approval and evidence",
+            "non-ancestor ref lacks live GitHub exact-head or patch-equivalence evidence",
         )
 
     valid, evidence = _validate_stale_approval(target.path, approval, refname, oid, default_ref, audit_github_prs=audit_github_prs)

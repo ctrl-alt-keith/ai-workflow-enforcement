@@ -36,8 +36,8 @@ The single-pass tool uses six phases:
 2. audit local and remote branch refs
 3. plan or apply normal Git-proven cleanup for refs already ancestors of the
    remote default branch
-4. plan or apply approved stale cleanup for non-ancestor refs only when config
-   contains explicit approval and matching evidence
+4. plan or apply stale cleanup for non-ancestor refs only when live GitHub
+   exact-head evidence or `git cherry` patch-equivalence proves eligibility
 5. audit every registered worktree, prune only Git-classified stale metadata in
    apply mode, and verify final worktree state
 6. emit a text or JSON report
@@ -69,9 +69,9 @@ the clean linked worktree with `git worktree remove` before deleting the branch,
 then verifies that both its filesystem path and registered metadata are gone.
 It never passes `--force`.
 
-Approved stale cleanup mirrors that linked-worktree guard for local branches.
-If a non-ancestor local branch has explicit stale approval, matching evidence,
-and is checked out only in a clean linked worktree, dry-run reports it as
+Stale cleanup mirrors that linked-worktree guard for local branches. If a
+non-ancestor local branch has live exact-head or patch-equivalence evidence and
+is checked out only in a clean linked worktree, dry-run reports it as
 `would_delete` and records that apply mode will remove the clean linked
 worktree before deleting the branch. Apply mode re-checks the worktree state
 and branch tip before removing the worktree. Dirty, uninspectable, target, and
@@ -168,9 +168,9 @@ with a dry-run, applies normal cleanup only when `--apply` is also present,
 then re-scans after each apply. It repeats while the latest re-scan reports
 `normal_cleanup` actions with `would_delete`, stopping when no such refs remain
 or when `--max-apply-passes` is reached. The default pass cap is 3. Retry mode
-applies only `normal_cleanup` actions; approved `stale_cleanup` actions are
-reported but preserved during the sequence. Use a single-pass `--apply` run
-without `--retry-normal-cleanup` for explicitly approved stale cleanup.
+applies only `normal_cleanup` actions; `stale_cleanup` actions are reported but
+preserved during the sequence. Use a single-pass `--apply` run without
+`--retry-normal-cleanup` for stale cleanup.
 
 Codex command enforcement for this workflow should allow the direct Git argv
 forms needed for safe cleanup: `git worktree list --porcelain -z --expire now`,
@@ -180,17 +180,15 @@ forms needed for safe cleanup: `git worktree list --porcelain -z --expire now`,
 verified restoration after an unexpected branch-deletion failure.
 
 Normal cleanup stays separate from stale cleanup. Normal cleanup uses Git
-ancestor proof. Stale cleanup requires config approval plus evidence such as a
-merged GitHub PR record whose `head_oid` matches the branch tip, or an explicit
-patch-equivalence approval validated with `git cherry`.
+ancestor proof. Stale cleanup deletes a ref when live GitHub evidence proves a
+merged PR's `head_oid` exactly matches the branch tip, or when `git cherry`
+proves patch-equivalence to the default branch.
 
 For squash-merged pull requests, branch tips commonly remain non-ancestors of
 the default branch even though GitHub can prove that the pull request was
-merged. Use a branch-specific stale approval with
-`"kind": "github_merged_pr_exact_head"` together with `--audit-github-prs` to
-require live GitHub evidence that the associated PR is `MERGED` and that the
-PR `headRefOid` still matches the stale ref tip. This approval does not infer
-safety from merge status alone; the head SHA must match.
+merged. `--apply --audit-github-prs` authorizes their cleanup only when live
+evidence shows the associated PR is `MERGED` and its `headRefOid` exactly
+matches the stale ref tip. Merge status alone is insufficient.
 
 `--audit-stale` adds report-only classifications for non-ancestor refs that
 cannot be deleted by normal cleanup. It reports why each candidate was not
@@ -207,16 +205,17 @@ Patch-equivalence uses `git cherry` against the remote default branch. When
 PR state, merged timestamps, and head SHA evidence. If GitHub evidence cannot
 be retrieved or parsed, the candidate remains `needs_human_review`.
 
-Stale audit classifications are not deletion approvals. Stale cleanup still
-requires explicit `stale_approvals` entries in config, and apply mode deletes
-only stale refs whose configured approval evidence validates exactly.
-Closed-unmerged PR refs, dirty worktree refs, protected branches, ambiguous
-refs, and refs without matching evidence remain preserve-only.
+The `stale_candidate_merged_pr_exact_head` classification becomes a deletion
+action only in `--apply --audit-github-prs` mode, after the live query is
+re-run. `stale_candidate_patch_equivalent` likewise becomes a deletion action
+when `git cherry` re-proves it. Closed-unmerged PR refs, dirty worktree refs,
+protected branches, ambiguous refs, and refs without matching evidence remain
+preserve-only.
 
 Remote stale refs stay conservative when a same-named local branch is checked
 out in any worktree, even if that linked worktree is clean. In that case the
 remote stale cleanup action is preserved so the local worktree can be handled
-first with a local approval or left intact intentionally.
+first or left intact intentionally.
 
 The library does not write automation memory or schedule work. GitHub PR audit
 evidence is retrieved only when `--audit-github-prs` is explicitly requested.
@@ -233,43 +232,7 @@ evidence is retrieved only when `--audit-github-prs` is explicitly requested.
       "default_branch": "main"
     }
   ],
-  "protected_branches": ["main", "master", "trunk", "develop"],
-  "stale_approvals": [
-    {
-      "repo": "ai-workflow-enforcement",
-      "scope": "remote",
-      "branch": "example/stale-merged-pr",
-      "approved_by": "human reviewer",
-      "reason": "Merged PR evidence reviewed; remote ref is stale.",
-      "evidence": {
-        "kind": "github_merged_pr_exact_head"
-      }
-    },
-    {
-      "repo": "ai-workflow-enforcement",
-      "scope": "remote",
-      "branch": "example/stale-merged-pr-with-recorded-evidence",
-      "approved_by": "human reviewer",
-      "reason": "Recorded merged PR evidence reviewed; remote ref is stale.",
-      "evidence": {
-        "kind": "github_merged_pr",
-        "pr_number": 123,
-        "state": "MERGED",
-        "merged_at": "2026-05-08T00:00:00Z",
-        "head_oid": "replace-with-branch-tip-oid"
-      }
-    },
-    {
-      "repo": "ai-workflow-enforcement",
-      "scope": "local",
-      "branch": "example/patch-equivalent-stale-branch",
-      "approved_by": "human reviewer",
-      "reason": "Patch-equivalence evidence reviewed separately.",
-      "evidence": {
-        "kind": "patch_equivalent"
-      }
-    }
-  ]
+  "protected_branches": ["main", "master", "trunk", "develop"]
 }
 ```
 
