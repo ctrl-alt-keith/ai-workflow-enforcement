@@ -282,14 +282,23 @@ def _sha256(content: bytes) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage the reviewed codex-safe-rm installation.")
-    parser.add_argument("action", choices=("install", "verify", "uninstall"))
-    parser.add_argument("--destination", type=Path, default=DEFAULT_DESTINATION)
-    parser.add_argument("--force", action="store_true", help="Replace or remove an existing destination.")
-    parser.add_argument(
+    actions = parser.add_subparsers(dest="action", required=True)
+
+    install_parser = actions.add_parser("install")
+    install_parser.add_argument("--destination", type=Path, default=DEFAULT_DESTINATION)
+    install_parser.add_argument("--force", action="store_true", help="Replace an existing destination.")
+    install_parser.add_argument(
         "--allow-dirty",
         action="store_true",
         help="Install from a dirty source checkout and record source_dirty=true.",
     )
+
+    verify_parser = actions.add_parser("verify")
+    verify_parser.add_argument("--destination", type=Path, default=DEFAULT_DESTINATION)
+
+    uninstall_parser = actions.add_parser("uninstall")
+    uninstall_parser.add_argument("--destination", type=Path, default=DEFAULT_DESTINATION)
+    uninstall_parser.add_argument("--force", action="store_true", help="Remove an existing destination.")
     return parser
 
 

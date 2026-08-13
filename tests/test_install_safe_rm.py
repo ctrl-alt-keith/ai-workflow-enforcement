@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import redirect_stderr
+from io import StringIO
 import json
 from pathlib import Path
 import stat
@@ -9,10 +11,20 @@ import unittest
 from unittest import mock
 
 from enforcement import install_safe_rm
-from enforcement.install_safe_rm import InstallError, install, metadata_path, uninstall, verify
+from enforcement.install_safe_rm import InstallError, build_parser, install, metadata_path, uninstall, verify
 
 
 class InstallSafeRmTests(unittest.TestCase):
+    def test_cli_rejects_options_that_do_not_apply_to_the_action(self) -> None:
+        parser = build_parser()
+        for args in (
+            ("verify", "--force"),
+            ("verify", "--allow-dirty"),
+            ("uninstall", "--allow-dirty"),
+        ):
+            with self.subTest(args=args), redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(args)
+
     def test_clean_install_is_executable_recorded_and_verifiable(self) -> None:
         with _installation_fixture() as fixture:
             metadata = install(fixture.destination, source=fixture.source, repo_root=fixture.repo)
