@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ctrl-alt-keith/ai-workflow-enforcement/policy/github-apps/workflow-drift/receipt.schema.json",
+  "title": "Workflow drift GitHub App non-secret receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "app", "installation", "approval", "key", "validation_evidence"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "app": {"type": "object", "additionalProperties": false, "required": ["app_id", "client_id", "owner", "slug"], "properties": {"app_id": {"type": "integer", "minimum": 1}, "client_id": {"type": "string", "minLength": 1}, "owner": {"type": "string", "minLength": 1}, "slug": {"type": "string", "minLength": 1}}},
+    "installation": {"type": "object", "additionalProperties": false, "required": ["installation_id", "repository_selection", "scope_sha256", "effective_permissions", "effective_events"], "properties": {"installation_id": {"type": "integer", "minimum": 1}, "repository_selection": {"enum": ["all", "selected"]}, "scope_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "effective_permissions": {"type": "object", "additionalProperties": {"enum": ["read", "write"]}}, "effective_events": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}}},
+    "key": {"type": "object", "additionalProperties": false, "required": ["fingerprint", "secret_manager_reference", "secret_manager_version"], "properties": {"fingerprint": {"type": "string", "minLength": 1}, "secret_manager_reference": {"type": "string", "minLength": 1}, "secret_manager_version": {"type": "string", "minLength": 1}}},
+    "approval": {"type": "object", "additionalProperties": false, "required": ["approved_by", "approved_at"], "properties": {"approved_by": {"type": "string", "minLength": 1}, "approved_at": {"type": "string", "format": "date-time"}}},
+    "validation_evidence": {"type": "object", "additionalProperties": false, "required": ["representative_run_url", "captured_at"], "properties": {"representative_run_url": {"type": "string", "format": "uri"}, "captured_at": {"type": "string", "format": "date-time"}}}
+  },
+  "not": {"anyOf": [{"required": ["private_key"]}, {"required": ["webhook_secret"]}, {"required": ["installation_token"]}, {"required": ["token"]}, {"required": ["pem"]}]}
+}

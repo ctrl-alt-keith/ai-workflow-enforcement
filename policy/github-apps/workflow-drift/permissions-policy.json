@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "app": {
+    "logical_name": "workflow-drift-audit",
+    "owner": "ctrl-alt-keith"
+  },
+  "permissions": {
+    "contents": "read",
+    "metadata": "read"
+  },
+  "events": [],
+  "installation": {
+    "expected_repository_selection": "all"
+  },
+  "actions_configuration": {
+    "client_id_variable": "WORKFLOW_DRIFT_APP_CLIENT_ID",
+    "private_key_secret": "WORKFLOW_DRIFT_APP_PRIVATE_KEY"
+  }
+}
