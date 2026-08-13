@@ -1583,8 +1583,52 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("not_checked", data["local_source_mode"])
         self.assertEqual({"match": 0, "drift": 0, "unknown": 0}, data["local_source_summary"])
         self.assertEqual(0, data["hosted_governance_summary"]["drift"])
+        self.assertEqual("drift", data["policy_override_membership"]["status"])
         self.assertIn("Local source mode: not_checked", text)
         self.assertIn("local repo root: not checked", text)
+
+    def test_org_audit_reports_orphaned_policy_overrides_after_complete_enumeration(self) -> None:
+        responses = {"__repo_list__": [{"nameWithOwner": "ctrl-alt-keith/sample"}]}
+        responses.update(_clean_responses())
+        with patch.object(repo_settings_audit, "_policy_override_keys", return_value=("ctrl-alt-keith/sample", "ctrl-alt-keith/old")):
+            report = audit_org_repo_settings("ctrl-alt-keith", runner=FakeGh(responses))
+
+        item = report.policy_override_membership
+
+        self.assertEqual("drift", item.status)
+        self.assertIn("ctrl-alt-keith/old", item.actual)
+        self.assertIn("does not delete or rewrite", item.follow_up)
+
+    def test_org_audit_accepts_a_current_baseline_only_member(self) -> None:
+        responses = {"__repo_list__": [{"nameWithOwner": "ctrl-alt-keith/sample"}]}
+        responses.update(_clean_responses())
+        with patch.object(repo_settings_audit, "_policy_override_keys", return_value=()):
+            report = audit_org_repo_settings("ctrl-alt-keith", runner=FakeGh(responses))
+
+        item = report.policy_override_membership
+
+        self.assertEqual("match", item.status)
+        self.assertIn("all repository-specific override keys", item.actual)
+
+    def test_org_audit_does_not_classify_orphans_when_membership_is_unproven(self) -> None:
+        responses = {
+            "__repo_list__": [{"nameWithOwner": "ctrl-alt-keith/sample"}],
+            "/user/memberships/orgs/ctrl-alt-keith": GhCommand(
+                argv=("gh", "api", "/user/memberships/orgs/ctrl-alt-keith"),
+                returncode=1,
+                stdout="",
+                stderr="forbidden",
+            ),
+        }
+        responses.update(_clean_responses())
+        with patch.object(repo_settings_audit, "_policy_override_keys", return_value=("ctrl-alt-keith/old",)):
+            report = audit_org_repo_settings("ctrl-alt-keith", runner=FakeGh(responses))
+
+        item = report.policy_override_membership
+
+        self.assertEqual("unknown", item.status)
+        self.assertNotIn("ctrl-alt-keith/old", item.actual)
+        self.assertIn("unproven", item.actual)
 
     def test_org_audit_workspace_root_scopes_local_source_to_target_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1735,8 +1779,22 @@ class FakeGh:
 
     def __call__(self, argv: tuple[str, ...]) -> GhCommand:
         self.commands.append(argv)
-        key = "__repo_list__" if argv[:3] == ("gh", "repo", "list") else argv[-1]
-        response = self.responses[key]
+        key = argv[-1]
+        if key.startswith("/orgs/") and key.endswith("/repos?type=all&per_page=100"):
+            legacy_repositories = self.responses.get("__repo_list__", [])
+            response = [
+                [
+                    {
+                        "full_name": entry["nameWithOwner"],
+                        "owner": {"login": entry["nameWithOwner"].split("/", 1)[0]},
+                    }
+                    for entry in legacy_repositories
+                ]
+            ]
+        elif key.startswith("/user/memberships/orgs/"):
+            response = self.responses.get(key, {"state": "active", "role": "admin"})
+        else:
+            response = self.responses[key]
         if isinstance(response, tuple):
             response = response[0]
             self.responses[key] = self.responses[key][1:]

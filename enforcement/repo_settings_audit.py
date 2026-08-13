@@ -147,6 +147,7 @@ class OrgRepoSettingsReport:
     finished_at: str
     repositories: tuple[str, ...]
     reports: tuple[RepoSettingsReport, ...]
+    policy_override_membership: AuditItem
     errors: tuple[str, ...] = ()
 
 
@@ -206,7 +207,9 @@ def audit_org_repo_settings(
     """Build a read-only settings report for all visible repositories in an organization."""
     started = _utc_now()
     gh = runner or _gh
-    repositories, errors = _fetch_org_repositories(org, gh)
+    enumeration = _fetch_org_repositories(org, gh)
+    repositories = enumeration.repositories
+    errors = list(enumeration.errors)
     reports: list[RepoSettingsReport] = []
     include_local_source = workspace_root is not None
     for repo in repositories:
@@ -235,6 +238,7 @@ def audit_org_repo_settings(
         finished_at=finished,
         repositories=tuple(repositories),
         reports=tuple(reports),
+        policy_override_membership=_policy_override_membership_item(enumeration),
         errors=tuple(errors),
     )
 
@@ -404,12 +408,27 @@ def render_org_text_report(report: OrgRepoSettingsReport) -> str:
             "Local source summary: "
             f"match={local_summary['match']} drift={local_summary['drift']} unknown={local_summary['unknown']}"
         ),
+        (
+            "Policy override membership: "
+            f"{report.policy_override_membership.status}"
+        ),
         "",
     ]
     for error in report.errors:
         lines.append(f"ERROR: {error}")
     if report.errors:
         lines.append("")
+
+    lines.extend(
+        [
+            "- repository-specific policy override membership",
+            f"  status: {report.policy_override_membership.status}",
+            f"  expected: {report.policy_override_membership.expected}",
+            f"  actual: {report.policy_override_membership.actual}",
+            f"  follow-up: {report.policy_override_membership.follow_up}",
+            "",
+        ]
+    )
 
     for repo_report in report.reports:
         hosted = _summary(_hosted_governance_items(repo_report.items))
@@ -453,6 +472,7 @@ def render_org_json_report(report: OrgRepoSettingsReport) -> str:
             "repository_count": len(report.repositories),
             "audited_repository_count": len(report.reports),
         },
+        "policy_override_membership": asdict(report.policy_override_membership),
         "hosted_governance_summary": _org_summary(report.reports, hosted=True),
         "local_source_summary": _org_summary(report.reports, hosted=False),
         "errors": list(report.errors),
@@ -1168,25 +1188,99 @@ def _fetch_object(runner: Runner, endpoint: str) -> dict[str, object]:
     return data
 
 
-def _fetch_org_repositories(org: str, runner: Runner) -> tuple[tuple[str, ...], list[str]]:
-    command = runner(("gh", "repo", "list", org, "--json", "nameWithOwner", "--limit", "1000"))
+@dataclass(frozen=True)
+class OrgRepositoryEnumeration:
+    repositories: tuple[str, ...]
+    complete: bool
+    detail: str
+    errors: tuple[str, ...] = ()
+
+
+def _fetch_org_repositories(org: str, runner: Runner) -> OrgRepositoryEnumeration:
+    endpoint = f"/orgs/{quote(org, safe='')}/repos?type=all&per_page=100"
+    command = runner(("gh", "api", "--paginate", "--slurp", endpoint))
     if command.returncode != 0:
         detail = (command.stderr or command.stdout or f"exit {command.returncode}").splitlines()[0]
-        raise RuntimeError(f"gh repo list {org} failed: {detail}")
+        raise RuntimeError(f"gh api {endpoint} failed: {detail}")
     try:
-        data = json.loads(command.stdout or "[]")
+        pages = json.loads(command.stdout or "[]")
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"gh repo list {org} returned invalid JSON: {exc}") from exc
-    if not isinstance(data, list):
-        raise RuntimeError(f"gh repo list {org} did not return a repository list")
+        raise RuntimeError(f"gh api {endpoint} returned invalid JSON: {exc}") from exc
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise RuntimeError(f"gh api {endpoint} did not return paginated repository lists")
     repositories: list[str] = []
     errors: list[str] = []
-    for entry in data:
-        if not isinstance(entry, dict) or not isinstance(entry.get("nameWithOwner"), str):
-            errors.append("gh repo list entry did not include nameWithOwner")
-            continue
-        repositories.append(entry["nameWithOwner"])
-    return tuple(sorted(set(repositories), key=str.lower)), errors
+    for page in pages:
+        for entry in page:
+            name = entry.get("full_name") if isinstance(entry, dict) else None
+            owner = entry.get("owner") if isinstance(entry, dict) else None
+            owner_login = owner.get("login") if isinstance(owner, dict) else None
+            if not isinstance(name, str) or not isinstance(owner_login, str) or owner_login.lower() != org.lower():
+                errors.append("organization repository entry did not include an organization-owned full_name")
+                continue
+            repositories.append(name)
+
+    membership = _fetch_optional_object_once(runner, f"/user/memberships/orgs/{quote(org, safe='')}")
+    if membership.error or membership.value is None:
+        detail = membership.error or "membership response was unavailable"
+        errors.append(f"membership enumeration is unproven: {detail}")
+        return OrgRepositoryEnumeration(
+            repositories=tuple(sorted(set(repositories), key=str.lower)),
+            complete=False,
+            detail="authenticated organization-owner membership could not be verified",
+            errors=tuple(errors),
+        )
+    state = membership.value.get("state")
+    role = membership.value.get("role")
+    complete = state == "active" and role == "admin" and not errors
+    detail = (
+        "all GitHub REST result pages were followed and the authenticated user is an active organization owner"
+        if complete
+        else "pagination completed, but authenticated organization-owner membership or repository entries were not proven"
+    )
+    return OrgRepositoryEnumeration(
+        repositories=tuple(sorted(set(repositories), key=str.lower)),
+        complete=complete,
+        detail=detail,
+        errors=tuple(errors),
+    )
+
+
+def _policy_override_membership_item(enumeration: OrgRepositoryEnumeration) -> AuditItem:
+    override_keys = _policy_override_keys()
+    if not enumeration.complete:
+        return AuditItem(
+            setting="repository-specific policy override membership",
+            status="unknown",
+            expected="a complete current GitHub organization-member set before classifying override keys",
+            actual=f"membership enumeration is unproven: {enumeration.detail}",
+            source="GitHub organization membership enumeration + central repo-settings policy",
+            follow_up="Restore complete paginated organization-owner enumeration; no override is classified as orphaned from incomplete evidence.",
+        )
+    members = {repository.lower() for repository in enumeration.repositories}
+    orphans = tuple(key for key in override_keys if key.lower() not in members)
+    return AuditItem(
+        setting="repository-specific policy override membership",
+        status="drift" if orphans else "match",
+        expected="every repository-specific policy override key matches a current GitHub organization member",
+        actual=(
+            f"orphaned override keys: {', '.join(orphans)}"
+            if orphans
+            else "all repository-specific override keys match current organization members"
+        ),
+        source="GitHub organization membership enumeration + central repo-settings policy",
+        follow_up=(
+            "Review each orphaned override; this audit reports entries and does not delete or rewrite policy."
+            if orphans
+            else "No orphaned repository-specific policy overrides were found."
+        ),
+    )
+
+
+def _policy_override_keys() -> tuple[str, ...]:
+    data = _read_central_policy()
+    repositories = _policy_object(data.get("repositories", {}), "repositories")
+    return tuple(sorted(repositories, key=str.lower))
 
 
 def _org_local_repo_root(repo: str, workspace_root: Path | None) -> Path | None:
@@ -2485,7 +2579,10 @@ def _org_summary(reports: Iterable[RepoSettingsReport], *, hosted: bool) -> dict
 def _has_hosted_drift(report: RepoSettingsReport | OrgRepoSettingsReport) -> bool:
     if isinstance(report, RepoSettingsReport):
         return any(item.status == "drift" for item in _hosted_governance_items(report.items))
-    return any(_has_hosted_drift(repo_report) for repo_report in report.reports)
+    return (
+        report.policy_override_membership.status == "drift"
+        or any(_has_hosted_drift(repo_report) for repo_report in report.reports)
+    )
 
 
 def _has_runtime_errors(report: RepoSettingsReport | OrgRepoSettingsReport) -> bool:

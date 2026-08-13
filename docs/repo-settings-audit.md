@@ -274,6 +274,19 @@ as private repositories, exact hosted required-check names, or Dependabot
 exceptions. Fields not present in an override continue to inherit the central
 baseline.
 
+Organization audits also reconcile these override keys against current GitHub
+organization membership. They report an orphan only after every REST result
+page has been read and the authenticated user is verified as an active
+organization owner, whose GitHub role has access to every organization
+repository. If that evidence is unavailable, visibility-limited, malformed, or
+otherwise incomplete, the reconciliation is `unknown` and reports no orphan.
+The policy file remains an overlay: a current repository with no override is
+valid baseline-only behavior, and the audit never deletes or rewrites an
+orphaned key. Override keys are current `owner/name` locators; because this
+policy schema does not retain stable repository IDs, a rename cannot be
+distinguished automatically from a transfer or deletion and requires human
+review when reported.
+
 Example:
 
 ```json
