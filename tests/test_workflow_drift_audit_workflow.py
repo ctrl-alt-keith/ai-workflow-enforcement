@@ -8,6 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "workflow-drift-audit.yml"
 CONFIG_PATH = ROOT / "config" / "workflow-drift-audit.json"
+POLICY_PATH = ROOT / "policy" / "github-apps" / "workflow-drift" / "permissions-policy.json"
 README_PATH = ROOT / "README.md"
 
 
@@ -16,6 +17,7 @@ class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         cls.config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        cls.policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
         cls.readme = README_PATH.read_text(encoding="utf-8")
 
     def test_schedule_dispatch_permissions_and_runtime_contract(self) -> None:
@@ -58,6 +60,21 @@ class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
         self.assertNotIn("WORKFLOW_DRIFT_READ_TOKEN", self.workflow)
         self.assertNotIn("WORKFLOW_DRIFT_READ_TOKEN", self.readme)
         self.assertNotIn("personal access token secret", self.readme.casefold())
+
+    def test_private_key_uses_the_reviewed_managed_secret_delivery_contract(self) -> None:
+        actions_configuration = self.policy["actions_configuration"]
+        secret_name = actions_configuration["private_key_secret"]
+        self.assertEqual(
+            "github_actions_repository_secret_direct_action_input",
+            actions_configuration["private_key_delivery"],
+        )
+        self.assertEqual("forbidden", actions_configuration["plaintext_fallback"])
+        self.assertEqual("not_required_by_this_runtime", actions_configuration["webhook_secret"])
+        self.assertIn(f"private-key: ${{{{ secrets.{secret_name} }}}}", self.workflow)
+        self.assertNotIn(f"{secret_name}: ${{{{ secrets.{secret_name} }}}}", self.workflow)
+        self.assertNotIn("base64 -d", self.workflow)
+        self.assertNotIn("openssl", self.workflow)
+        self.assertNotIn("private-key=", self.workflow)
 
     def test_scanner_canonical_validation_and_evidence_contract(self) -> None:
         self.assertIn('gh api --paginate --slurp "/installation/repositories?per_page=100"', self.workflow)

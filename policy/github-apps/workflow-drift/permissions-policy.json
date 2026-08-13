@@ -14,6 +14,9 @@
   },
   "actions_configuration": {
     "client_id_variable": "WORKFLOW_DRIFT_APP_CLIENT_ID",
-    "private_key_secret": "WORKFLOW_DRIFT_APP_PRIVATE_KEY"
+    "private_key_secret": "WORKFLOW_DRIFT_APP_PRIVATE_KEY",
+    "private_key_delivery": "github_actions_repository_secret_direct_action_input",
+    "plaintext_fallback": "forbidden",
+    "webhook_secret": "not_required_by_this_runtime"
   }
 }
