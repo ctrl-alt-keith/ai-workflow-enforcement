@@ -1,0 +1,11 @@
+{
+  "name": "workflow-drift-audit",
+  "description": "Read-only advisory workflow drift audit for ctrl-alt-keith repositories.",
+  "url": "https://github.com/ctrl-alt-keith/ai-workflow-enforcement",
+  "public": false,
+  "default_permissions": {
+    "contents": "read",
+    "metadata": "read"
+  },
+  "default_events": []
+}
