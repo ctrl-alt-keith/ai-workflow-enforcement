@@ -1,21 +1,23 @@
 # Safe Refresh Repositories
 
-`enforcement.safe_refresh_repos` safely refreshes configured local Git
-checkouts before another deterministic tool depends on local repository state.
+`enforcement.safe_refresh_repos` safely refreshes resolved local Git checkouts
+before another deterministic tool depends on local repository state.
 It is intentionally narrow: it verifies that each checkout is clean, on the
 expected branch, tracking the expected upstream, then runs `git fetch` and
 `git pull --ff-only`.
 
-Use an existing branch-cleanup JSON config as the repository inventory:
+Use an existing branch-cleanup JSON config as the scope contract:
 
 ```sh
 python3 -m enforcement.safe_refresh_repos --config examples/branch-cleanup.json
 ```
 
-The helper intentionally reads only the top-level `repositories` list from
-that branch-cleanup-compatible config. Branch cleanup policy fields such as
-`protected_branches` and `stale_approvals` are ignored by safe refresh and
-remain owned by `enforcement.branch_cleanup`.
+The helper reuses branch cleanup's canonical provider discovery, exclusions,
+workspace resolution, and local overrides. It fails before fetch or pull when
+provider-backed candidate scope is `unknown`. Legacy top-level `repositories`
+configs remain supported through branch cleanup's explicit compatibility mode.
+Branch policy fields such as `protected_branches` and `stale_approvals` remain
+owned by `enforcement.branch_cleanup` and do not change refresh mechanics.
 
 Refresh one or more named repositories from that inventory:
 
@@ -39,14 +41,14 @@ python3 -m enforcement.safe_refresh_repos \
   upstream tracking ref.
 - `already-current`: the checkout was safe to inspect and already matched the
   expected upstream tracking ref after fetch/pull.
-- `skipped`: the repository was in the config but not selected by `--repo`.
+- `skipped`: the resolved repository was not selected by `--repo`.
 - `blocked`: the helper refused to refresh because the state was ambiguous or
   unsafe, such as a missing checkout, dirty worktree, unexpected branch,
   unexpected upstream, fetch failure, non-fast-forward pull failure, or a final
   `HEAD` mismatch.
 
-The command exits `1` when any selected repository is blocked, `2` for config
-or CLI errors, and `0` otherwise.
+The command exits `1` when any selected repository is blocked, `2` for config,
+provider-scope, or CLI errors, and `0` otherwise.
 
 ## Boundaries
 

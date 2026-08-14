@@ -1,8 +1,9 @@
 # Branch Cleanup
 
 `enforcement.branch_cleanup` is a dry-run-first operational reinforcement tool
-for reviewing stale Git branches across explicitly configured repositories.
-It reports evidence and only mutates refs when run with `--apply`.
+for reviewing stale Git branches across active GitHub organization members. It
+reports provider scope, local resolution, and branch/worktree evidence, and it
+only mutates refs when run with `--apply`.
 
 Run a dry-run:
 
@@ -32,7 +33,8 @@ python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json --au
 
 The single-pass tool uses six phases:
 
-1. discover configured repo targets and current Git state
+1. enumerate and reconcile provider-owned active repository scope, exclusions,
+   local targets, and current Git state
 2. audit local and remote branch refs
 3. plan or apply normal Git-proven cleanup for refs already ancestors of the
    remote default branch
@@ -59,8 +61,45 @@ does not weaken any classification or removal invariant. A safe worktree is
 removed only with Git's non-force `git worktree remove` mechanism and only as
 part of its authorized branch-cleanup action.
 
-The tool skips dirty repos, missing default remote refs, protected branches,
-symbolic remote refs, and ambiguous branch names.
+The tool skips missing or uninspectable local checkouts, dirty repos, missing
+default remote refs, protected branches, symbolic remote refs, and ambiguous
+branch names. A missing checkout remains a provider candidate and is reported
+as skipped; filesystem absence never changes organization membership.
+
+## Provider Scope And Completeness
+
+Provider-backed scope uses GitHub's current organization repository state as
+membership authority. Every current member with `archived = false` is an
+inspection candidate. Archived, deleted, and transferred-out repositories are
+not kept in scope by local configuration, while newly created or transferred-in
+active members enter scope automatically.
+
+The shared organization enumerator follows every REST result page and requires
+the authenticated caller to be an active organization owner before it marks
+the result `complete`. That proof is required before the candidate set can be
+treated as complete, including private repositories. Failed, malformed,
+visibility-limited, or otherwise unproven enumeration is `unknown`.
+
+This provider contract was verified on 2026-08-14 against GitHub's official
+[organization repository endpoint](https://docs.github.com/en/rest/repos/repos#list-organization-repositories),
+[authenticated membership endpoint](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user),
+and [REST pagination guidance](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api).
+
+Read-only runs preserve valid partial provider evidence, resolved targets, and
+errors without describing the result as complete. An `--apply` run with
+`unknown` provider scope exits nonzero before entering repository cleanup, so
+no branch, ref, or worktree mutation can occur.
+
+Explicit exclusions are applied after active-member discovery. Each exclusion
+uses an exact `organization/repository` locator plus a durable `reason` and
+`authority`. Unmatched exclusions and overrides are reported but never
+silently removed or used to infer membership.
+
+The `workspace_root` maps each included repository to
+`<workspace_root>/<repository-name>`. `repository_overrides` may change only a
+specific member's local `path`, `remote`, or `default_branch`; an override
+never adds a repository to provider scope. Relative override paths resolve
+beneath `workspace_root`.
 
 For local branches checked out in linked worktrees, normal cleanup is allowed
 only when Git proves the branch is an ancestor of the remote default branch and
@@ -85,7 +124,8 @@ not sufficient. A live linked worktree is removable only when its related local
 branch action is currently authorized as `would_delete`, the action is being
 applied, and all of these checks pass immediately before removal:
 
-- the repository is an explicit config target and is not blocked
+- the repository is a resolved provider candidate or legacy compatibility
+  target and is not blocked
 - the worktree is neither the primary worktree nor the configured target path
 - `git worktree list --porcelain -z --expire now` identifies the registration
   and its branch or detached state
@@ -142,7 +182,7 @@ the same stable fields under each repository's `worktrees` list and provide a
 top-level `worktree_summary`. The CLI cannot observe prompting by an external
 runner, so it does not emit an `unexpected_confirmation_requests` counter. A
 runner that observes a prompt must treat it as a tool defect instead of
-supplying input. The JSON schema version is `3`; the schema-2 `removed` and
+supplying input. The JSON schema version is `4`; the schema-2 `removed` and
 `preserved_by_reason` summary aliases remain available.
 
 `cleanup_authority` comes from the policy decision that authorized a safe
@@ -224,16 +264,29 @@ evidence is retrieved only when `--audit-github-prs` is explicitly requested.
 
 ```json
 {
-  "repositories": [
-    {
-      "name": "ai-workflow-enforcement",
-      "path": ".",
-      "remote": "origin",
-      "default_branch": "main"
+  "scope": {
+    "provider": "github_organization",
+    "organization": "ctrl-alt-keith",
+    "workspace_root": "[workspace-root]",
+    "exclusions": [],
+    "repository_overrides": {
+      "ctrl-alt-keith/example-nonstandard-checkout": {
+        "path": "nested/example-nonstandard-checkout"
+      }
     }
-  ],
+  },
   "protected_branches": ["main", "master", "trunk", "develop"]
 }
 ```
 
-Paths in config are resolved relative to the config file.
+Replace `[workspace-root]` with the local checkout root. Relative
+`workspace_root` values resolve from the config directory. The expected
+initial exclusion set is empty unless a current authority establishes an
+exception.
+
+Existing configs with a top-level `repositories` array remain accepted in
+`legacy_explicit_compatibility` mode so operators can stage migration without
+an outage. That mode preserves the previous target and mutation behavior but
+explicitly reports that it does not establish complete organization
+membership. New fleet configuration should use provider-backed scope; do not
+add new repositories to the legacy positive allowlist.

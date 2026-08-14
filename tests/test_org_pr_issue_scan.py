@@ -88,6 +88,8 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertEqual([1, 2], [pr.number for pr in first.pull_requests])
         self.assertEqual([3, 4], [issue.number for issue in first.issues])
         for command in gh.commands:
+            if command[-1].startswith("/user/memberships/orgs/"):
+                continue
             self.assertIn("--paginate", command)
             self.assertIn("--slurp", command)
 
@@ -123,6 +125,27 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertIn("Repository filter: beta, alpha", text)
         self.assertEqual(["beta", "alpha"], data["selected_repositories"])
         self.assertEqual(2, data["summary"]["repository_count"])
+
+    def test_incomplete_enumeration_never_broadens_a_selected_report(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [
+                    [_repo("alpha"), _repo("beta")],
+                ],
+                "/user/memberships/orgs/ctrl-alt-keith": {"state": "active", "role": "member"},
+                "/repos/ctrl-alt-keith/alpha/pulls?state=open&per_page=100": [[]],
+                "/repos/ctrl-alt-keith/alpha/issues?state=open&per_page=100": [[]],
+            }
+        )
+
+        report = scan_org_work(selected_repos=("alpha",), runner=gh)
+
+        self.assertEqual(("alpha",), tuple(repo.name for repo in report.repositories))
+        self.assertTrue(report.errors)
+        self.assertNotIn(
+            "/repos/ctrl-alt-keith/beta/pulls?state=open&per_page=100",
+            [command[-1] for command in gh.commands],
+        )
 
     def test_unknown_selected_repository_is_an_operator_error(self) -> None:
         gh = FakeGh(
@@ -273,7 +296,11 @@ class FakeGh:
     def __call__(self, argv: tuple[str, ...]) -> GhCommand:
         self.commands.append(argv)
         endpoint = argv[-1]
-        response = self.responses[endpoint]
+        response = self.responses.get(endpoint)
+        if response is None and endpoint.startswith("/user/memberships/orgs/"):
+            response = {"state": "active", "role": "admin"}
+        if response is None:
+            raise KeyError(endpoint)
         if isinstance(response, GhCommand):
             return response
         return GhCommand(argv=argv, returncode=0, stdout=json.dumps(response), stderr="")
@@ -289,8 +316,13 @@ def _run_main_with_report(report: object, *args: str) -> tuple[int, str]:
 
 def _repo(name: str) -> dict[str, object]:
     return {
+        "id": sum((index + 1) * ord(char) for index, char in enumerate(name)),
         "name": name,
         "full_name": f"ctrl-alt-keith/{name}",
+        "owner": {"login": "ctrl-alt-keith"},
+        "archived": False,
+        "private": False,
+        "default_branch": "main",
         "html_url": f"https://github.com/ctrl-alt-keith/{name}",
     }
 

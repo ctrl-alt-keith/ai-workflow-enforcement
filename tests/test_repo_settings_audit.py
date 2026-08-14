@@ -1785,10 +1785,15 @@ class FakeGh:
             response = [
                 [
                     {
+                        "id": index,
+                        "name": entry["nameWithOwner"].split("/", 1)[1],
                         "full_name": entry["nameWithOwner"],
                         "owner": {"login": entry["nameWithOwner"].split("/", 1)[0]},
+                        "archived": False,
+                        "private": False,
+                        "default_branch": "main",
                     }
-                    for entry in legacy_repositories
+                    for index, entry in enumerate(legacy_repositories, start=1)
                 ]
             ]
         elif key.startswith("/user/memberships/orgs/"):

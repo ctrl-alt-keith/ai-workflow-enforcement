@@ -19,6 +19,11 @@ import subprocess
 from typing import Callable, Iterable
 from urllib.parse import quote
 
+from .github_org_repositories import (
+    OrganizationRepositoryEnumeration,
+    enumerate_organization_repositories,
+)
+
 
 DEFAULT_SOURCE_REF = "main"
 REPORT_TYPE = "repo_settings_audit"
@@ -207,8 +212,8 @@ def audit_org_repo_settings(
     """Build a read-only settings report for all visible repositories in an organization."""
     started = _utc_now()
     gh = runner or _gh
-    enumeration = _fetch_org_repositories(org, gh)
-    repositories = enumeration.repositories
+    enumeration = enumerate_organization_repositories(org, gh)
+    repositories = tuple(repo.full_name for repo in enumeration.repositories)
     errors = list(enumeration.errors)
     reports: list[RepoSettingsReport] = []
     include_local_source = workspace_root is not None
@@ -1188,65 +1193,7 @@ def _fetch_object(runner: Runner, endpoint: str) -> dict[str, object]:
     return data
 
 
-@dataclass(frozen=True)
-class OrgRepositoryEnumeration:
-    repositories: tuple[str, ...]
-    complete: bool
-    detail: str
-    errors: tuple[str, ...] = ()
-
-
-def _fetch_org_repositories(org: str, runner: Runner) -> OrgRepositoryEnumeration:
-    endpoint = f"/orgs/{quote(org, safe='')}/repos?type=all&per_page=100"
-    command = runner(("gh", "api", "--paginate", "--slurp", endpoint))
-    if command.returncode != 0:
-        detail = (command.stderr or command.stdout or f"exit {command.returncode}").splitlines()[0]
-        raise RuntimeError(f"gh api {endpoint} failed: {detail}")
-    try:
-        pages = json.loads(command.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"gh api {endpoint} returned invalid JSON: {exc}") from exc
-    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
-        raise RuntimeError(f"gh api {endpoint} did not return paginated repository lists")
-    repositories: list[str] = []
-    errors: list[str] = []
-    for page in pages:
-        for entry in page:
-            name = entry.get("full_name") if isinstance(entry, dict) else None
-            owner = entry.get("owner") if isinstance(entry, dict) else None
-            owner_login = owner.get("login") if isinstance(owner, dict) else None
-            if not isinstance(name, str) or not isinstance(owner_login, str) or owner_login.lower() != org.lower():
-                errors.append("organization repository entry did not include an organization-owned full_name")
-                continue
-            repositories.append(name)
-
-    membership = _fetch_optional_object_once(runner, f"/user/memberships/orgs/{quote(org, safe='')}")
-    if membership.error or membership.value is None:
-        detail = membership.error or "membership response was unavailable"
-        errors.append(f"membership enumeration is unproven: {detail}")
-        return OrgRepositoryEnumeration(
-            repositories=tuple(sorted(set(repositories), key=str.lower)),
-            complete=False,
-            detail="authenticated organization-owner membership could not be verified",
-            errors=tuple(errors),
-        )
-    state = membership.value.get("state")
-    role = membership.value.get("role")
-    complete = state == "active" and role == "admin" and not errors
-    detail = (
-        "all GitHub REST result pages were followed and the authenticated user is an active organization owner"
-        if complete
-        else "pagination completed, but authenticated organization-owner membership or repository entries were not proven"
-    )
-    return OrgRepositoryEnumeration(
-        repositories=tuple(sorted(set(repositories), key=str.lower)),
-        complete=complete,
-        detail=detail,
-        errors=tuple(errors),
-    )
-
-
-def _policy_override_membership_item(enumeration: OrgRepositoryEnumeration) -> AuditItem:
+def _policy_override_membership_item(enumeration: OrganizationRepositoryEnumeration) -> AuditItem:
     override_keys = _policy_override_keys()
     if not enumeration.complete:
         return AuditItem(
@@ -1257,7 +1204,7 @@ def _policy_override_membership_item(enumeration: OrgRepositoryEnumeration) -> A
             source="GitHub organization membership enumeration + central repo-settings policy",
             follow_up="Restore complete paginated organization-owner enumeration; no override is classified as orphaned from incomplete evidence.",
         )
-    members = {repository.lower() for repository in enumeration.repositories}
+    members = {repository.full_name.lower() for repository in enumeration.repositories}
     orphans = tuple(key for key in override_keys if key.lower() not in members)
     return AuditItem(
         setting="repository-specific policy override membership",

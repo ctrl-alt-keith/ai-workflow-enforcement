@@ -98,7 +98,9 @@ def compose_work_state_index(
         sources.append(_unavailable_section("branch_cleanup_dry_run", branch_command, "branch cleanup config not provided"))
     else:
         try:
-            config = branch_cleanup.load_config(branch_config_path)
+            config = branch_cleanup.resolve_branch_cleanup_scope(
+                branch_cleanup.load_config(branch_config_path)
+            )
             config = _select_branch_targets(config, selected)
             report = branch_scanner(
                 config,
