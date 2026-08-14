@@ -17,6 +17,10 @@ import sys
 from typing import Iterable
 
 from . import branch_cleanup
+from .github_repository_identity import (
+    RepositoryIdentityVerification,
+    verify_local_repository_identity,
+)
 
 
 STATUS_REFRESHED = "refreshed"
@@ -31,6 +35,8 @@ class RepoTarget:
     path: Path
     remote: str = "origin"
     default_branch: str = "main"
+    expected_repository: str = ""
+    expected_repository_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,7 @@ class RepoRefreshResult:
     details: list[str] = field(default_factory=list)
     before: str = ""
     after: str = ""
+    identity: RepositoryIdentityVerification | None = None
 
 
 @dataclass(frozen=True)
@@ -75,15 +82,17 @@ def load_config(path: Path) -> SafeRefreshConfig:
     """Resolve the canonical branch-cleanup inventory for safe refresh."""
     cleanup_config = branch_cleanup.resolve_branch_cleanup_scope(branch_cleanup.load_config(path))
     scope = cleanup_config.scope_reconciliation
-    if scope is not None and scope.completeness == "unknown":
-        details = "; ".join(scope.errors) or scope.detail
-        raise ValueError(f"safe refresh requires complete provider-backed candidate scope: {details}")
+    if scope is not None and not scope.mutation_ready:
+        details = "; ".join(scope.mutation_blockers) or scope.detail
+        raise ValueError(f"safe refresh requires mutation-ready provider-backed candidate scope: {details}")
     repositories = tuple(
         RepoTarget(
             target.name,
             target.path,
             target.remote,
             target.default_branch or "main",
+            target.expected_repository,
+            target.expected_repository_id,
         )
         for target in cleanup_config.repositories
     )
@@ -151,6 +160,17 @@ def safe_refresh_repo(target: RepoTarget) -> RepoRefreshResult:
     if git_dir.returncode != 0:
         result.details.append(f"path is not a Git repository: {_command_failure_detail(git_dir)}")
         return result
+    if target.expected_repository and target.expected_repository_id is not None:
+        identity = verify_local_repository_identity(
+            target.path,
+            target.remote,
+            target.expected_repository,
+            target.expected_repository_id,
+        )
+        result.identity = identity
+        if not identity.verified:
+            result.details.append(f"repository identity {identity.status}: {identity.detail}")
+            return result
 
     clean = _require_clean_worktree(target.path)
     if clean is not None:
@@ -275,6 +295,8 @@ def render_text_report(report: SafeRefreshReport) -> str:
         lines.append(f"  path: {repo.path}")
         lines.append(f"  expected branch: {repo.default_branch}")
         lines.append(f"  remote: {repo.remote}")
+        if repo.identity is not None:
+            lines.append(f"  identity: {repo.identity.status} ({repo.identity.detail})")
         if repo.before:
             lines.append(f"  before: {repo.before}")
         if repo.after:
@@ -305,10 +327,27 @@ def _report_to_json(report: SafeRefreshReport) -> dict[str, object]:
                 "status": repo.status,
                 "before": repo.before,
                 "after": repo.after,
+                "identity": _identity_to_json(repo.identity),
                 "details": list(repo.details),
             }
             for repo in report.repositories
         ],
+    }
+
+
+def _identity_to_json(identity: RepositoryIdentityVerification | None) -> dict[str, object] | None:
+    if identity is None:
+        return None
+    return {
+        "status": identity.status,
+        "detail": identity.detail,
+        "expected_repository": identity.expected_repository,
+        "expected_repository_id": identity.expected_repository_id,
+        "remote": identity.remote,
+        "fetch_urls": list(identity.fetch_urls),
+        "push_urls": list(identity.push_urls),
+        "observed_repository": identity.observed_repository,
+        "observed_repository_id": identity.observed_repository_id,
     }
 
 

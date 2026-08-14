@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from enforcement import branch_cleanup
+from enforcement import branch_cleanup, safe_refresh_repos as safe_refresh_module
 from enforcement.github_org_repositories import OrganizationRepository, OrganizationRepositoryEnumeration
 
 from enforcement.safe_refresh_repos import (
@@ -94,6 +94,42 @@ class SafeRefreshReposTests(unittest.TestCase):
         result = report.repositories[0]
         self.assertEqual("blocked", result.status)
         self.assertIn("current branch is 'topic', expected 'main'", result.details)
+
+    def test_provider_identity_mismatch_blocks_before_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            target = RepoTarget(
+                "sample",
+                repo,
+                expected_repository="ctrl-alt-keith/sample",
+                expected_repository_id=7,
+            )
+            identity = branch_cleanup.RepositoryIdentityVerification(
+                status="mismatch",
+                detail="configured remote identifies 'someone-else/sample'",
+                expected_repository="ctrl-alt-keith/sample",
+                expected_repository_id=7,
+                remote="origin",
+                observed_repository="someone-else/sample",
+            )
+            with (
+                mock.patch.object(
+                    safe_refresh_module,
+                    "verify_local_repository_identity",
+                    return_value=identity,
+                ),
+                mock.patch.object(
+                    safe_refresh_module,
+                    "_git",
+                    wraps=safe_refresh_module._git,
+                ) as git,
+            ):
+                report = safe_refresh_repos(SafeRefreshConfig((target,)))
+
+        result = report.repositories[0]
+        self.assertEqual("blocked", result.status)
+        self.assertEqual("mismatch", result.identity.status)
+        self.assertFalse(any(call.args[1][0] == "fetch" for call in git.call_args_list))
 
     def test_selected_repos_skip_unselected_inventory_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

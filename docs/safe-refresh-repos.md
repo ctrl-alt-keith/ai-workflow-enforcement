@@ -13,9 +13,13 @@ python3 -m enforcement.safe_refresh_repos --config examples/branch-cleanup.json
 ```
 
 The helper reuses branch cleanup's canonical provider discovery, exclusions,
-workspace resolution, and local overrides. It fails before fetch or pull when
-provider-backed candidate scope is `unknown`. Legacy top-level `repositories`
-configs remain supported through branch cleanup's explicit compatibility mode.
+workspace resolution, local overrides, and checkout/provider identity verifier.
+It fails before fetch or pull when provider-backed scope is not mutation-ready
+because credential completeness or stable-ID exclusion reconciliation is
+unproven. For provider targets, exactly matching fetch/push locators and the
+enumerated provider repository ID are also required before refresh. Legacy
+top-level `repositories` configs remain supported through branch cleanup's
+explicit compatibility mode.
 Branch policy fields such as `protected_branches` and `stale_approvals` remain
 owned by `enforcement.branch_cleanup` and do not change refresh mechanics.
 
@@ -44,8 +48,8 @@ python3 -m enforcement.safe_refresh_repos \
 - `skipped`: the resolved repository was not selected by `--repo`.
 - `blocked`: the helper refused to refresh because the state was ambiguous or
   unsafe, such as a missing checkout, dirty worktree, unexpected branch,
-  unexpected upstream, fetch failure, non-fast-forward pull failure, or a final
-  `HEAD` mismatch.
+  unexpected upstream, wrong or unverified repository identity, fetch failure,
+  non-fast-forward pull failure, or a final `HEAD` mismatch.
 
 The command exits `1` when any selected repository is blocked, `2` for config,
 provider-scope, or CLI errors, and `0` otherwise.

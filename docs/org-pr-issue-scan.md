@@ -52,6 +52,12 @@ Repository, pull request, and issue collection uses `gh api --paginate --slurp`
 with `per_page=100` endpoints so paginated responses are included in a single
 report.
 
+Organization enumeration uses the shared credential-aware completeness
+contract documented in `docs/branch-cleanup.md`. Valid visible repository
+evidence remains reportable when the acting credential's all-repository breadth
+or matching active-owner identity is unproven, but coverage is then incomplete
+and `--fail-on-error` returns nonzero.
+
 `--repo` may be repeated and accepts either a repository name or `org/name`
 within the selected organization. Unknown selected repositories are treated as
 operator input errors after organization enumeration, so the tool stops instead

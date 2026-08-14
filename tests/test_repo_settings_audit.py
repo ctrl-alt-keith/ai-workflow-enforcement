@@ -1780,6 +1780,10 @@ class FakeGh:
     def __call__(self, argv: tuple[str, ...]) -> GhCommand:
         self.commands.append(argv)
         key = argv[-1]
+        if key == "/user":
+            return _included_settings_gh(argv, {"login": "operator"})
+        if key.startswith("/orgs/") and key.endswith("/repos?type=all&per_page=1"):
+            return _included_settings_gh(argv, [])
         if key.startswith("/orgs/") and key.endswith("/repos?type=all&per_page=100"):
             legacy_repositories = self.responses.get("__repo_list__", [])
             response = [
@@ -1797,7 +1801,10 @@ class FakeGh:
                 ]
             ]
         elif key.startswith("/user/memberships/orgs/"):
-            response = self.responses.get(key, {"state": "active", "role": "admin"})
+            response = self.responses.get(
+                key,
+                {"state": "active", "role": "admin", "user": {"login": "operator"}},
+            )
         else:
             response = self.responses[key]
         if isinstance(response, tuple):
@@ -1806,6 +1813,11 @@ class FakeGh:
         if isinstance(response, GhCommand):
             return response
         return GhCommand(argv=argv, returncode=0, stdout=json.dumps(response), stderr="")
+
+
+def _included_settings_gh(argv: tuple[str, ...], body: object) -> GhCommand:
+    headers = "HTTP/2 200 OK\nX-OAuth-Scopes: repo, read:org\n\n"
+    return GhCommand(argv=argv, returncode=0, stdout=headers + json.dumps(body), stderr="")
 
 
 def _responses(

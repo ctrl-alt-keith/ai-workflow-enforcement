@@ -88,7 +88,7 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertEqual([1, 2], [pr.number for pr in first.pull_requests])
         self.assertEqual([3, 4], [issue.number for issue in first.issues])
         for command in gh.commands:
-            if command[-1].startswith("/user/memberships/orgs/"):
+            if "--include" in command or command[-1].startswith("/user/memberships/orgs/"):
                 continue
             self.assertIn("--paginate", command)
             self.assertIn("--slurp", command)
@@ -132,7 +132,11 @@ class OrgPrIssueScanTests(unittest.TestCase):
                 "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [
                     [_repo("alpha"), _repo("beta")],
                 ],
-                "/user/memberships/orgs/ctrl-alt-keith": {"state": "active", "role": "member"},
+                "/user/memberships/orgs/ctrl-alt-keith": {
+                    "state": "active",
+                    "role": "member",
+                    "user": {"login": "operator"},
+                },
                 "/repos/ctrl-alt-keith/alpha/pulls?state=open&per_page=100": [[]],
                 "/repos/ctrl-alt-keith/alpha/issues?state=open&per_page=100": [[]],
             }
@@ -297,13 +301,22 @@ class FakeGh:
         self.commands.append(argv)
         endpoint = argv[-1]
         response = self.responses.get(endpoint)
+        if response is None and endpoint == "/user":
+            return _included_gh(argv, {"login": "operator"})
+        if response is None and endpoint.startswith("/orgs/") and endpoint.endswith("/repos?type=all&per_page=1"):
+            return _included_gh(argv, [])
         if response is None and endpoint.startswith("/user/memberships/orgs/"):
-            response = {"state": "active", "role": "admin"}
+            response = {"state": "active", "role": "admin", "user": {"login": "operator"}}
         if response is None:
             raise KeyError(endpoint)
         if isinstance(response, GhCommand):
             return response
         return GhCommand(argv=argv, returncode=0, stdout=json.dumps(response), stderr="")
+
+
+def _included_gh(argv: tuple[str, ...], body: object) -> GhCommand:
+    headers = "HTTP/2 200 OK\nX-OAuth-Scopes: repo, read:org\n\n"
+    return GhCommand(argv=argv, returncode=0, stdout=headers + json.dumps(body), stderr="")
 
 
 def _run_main_with_report(report: object, *args: str) -> tuple[int, str]:

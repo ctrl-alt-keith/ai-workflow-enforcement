@@ -34,6 +34,10 @@ class OrganizationRepositoryEnumeration:
     complete: bool
     detail: str
     errors: tuple[str, ...] = ()
+    credential_kind: str = "unknown"
+    credential_access: str = "unknown"
+    credential_actor: str = ""
+    credential_scopes: tuple[str, ...] = ()
 
 
 def enumerate_organization_repositories(
@@ -42,10 +46,11 @@ def enumerate_organization_repositories(
 ) -> OrganizationRepositoryEnumeration:
     """Enumerate every visible repository and prove completeness conservatively.
 
-    Pagination plus an active organization-owner membership is the repository's
-    canonical completeness contract. Any failed, malformed, visibility-limited,
-    or otherwise ambiguous evidence leaves the result unknown while preserving
-    valid partial repository evidence for read-only callers.
+    The supported completeness contract requires a scope-bearing OAuth
+    credential with ``repo`` and ``read:org``, the same credential's active
+    organization-owner membership, an organization-access probe without an SSO
+    restriction, and complete pagination. Other credential profiles remain
+    unknown while valid partial repository evidence is preserved.
     """
     org = organization.strip()
     if not org:
@@ -102,6 +107,9 @@ def enumerate_organization_repositories(
             locators.add(locator_key)
             repositories.append(repository)
 
+    credential = _credential_access(org, runner)
+    errors.extend(credential.errors)
+
     membership_endpoint = f"/user/memberships/orgs/{quote(org, safe='')}"
     membership_command = runner(("gh", "api", membership_endpoint))
     membership: object = None
@@ -121,17 +129,30 @@ def enumerate_organization_repositories(
 
     state = membership.get("state") if isinstance(membership, dict) else None
     role = membership.get("role") if isinstance(membership, dict) else None
+    membership_user = membership.get("user") if isinstance(membership, dict) else None
+    membership_login = membership_user.get("login") if isinstance(membership_user, dict) else None
     if membership is not None and (state != "active" or role != "admin"):
         errors.append(
             "authenticated caller is not a proven active organization owner "
             f"(state={state!r}, role={role!r})"
         )
+    if membership is not None and membership_login != credential.actor:
+        errors.append(
+            "organization membership identity does not match the acting credential "
+            f"(credential={credential.actor!r}, membership={membership_login!r})"
+        )
 
-    complete = not errors and state == "active" and role == "admin"
+    complete = (
+        not errors
+        and credential.access == "all_repositories"
+        and state == "active"
+        and role == "admin"
+    )
     detail = (
-        "all GitHub REST result pages were followed and the authenticated caller is an active organization owner"
+        "all GitHub REST result pages were followed by a scope-bearing OAuth credential with "
+        "repo/read:org, unrestricted organization access, and active organization-owner identity"
         if complete
-        else "pagination, repository entries, and complete organization-owner visibility were not all proven"
+        else "pagination, credential repository breadth, repository entries, and active-owner identity were not all proven"
     )
     return OrganizationRepositoryEnumeration(
         organization=org,
@@ -139,7 +160,112 @@ def enumerate_organization_repositories(
         complete=complete,
         detail=detail,
         errors=tuple(errors),
+        credential_kind=credential.kind,
+        credential_access=credential.access,
+        credential_actor=credential.actor,
+        credential_scopes=credential.scopes,
     )
+
+
+@dataclass(frozen=True)
+class _CredentialAccess:
+    kind: str = "unknown"
+    access: str = "unknown"
+    actor: str = ""
+    scopes: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+def _credential_access(organization: str, runner: Runner) -> _CredentialAccess:
+    user_command = runner(("gh", "api", "--include", "/user"))
+    if user_command.returncode != 0:
+        return _CredentialAccess(errors=(f"acting credential inspection failed: {_failure_detail(user_command)}",))
+    user_headers, user_body, error = _included_response(user_command.stdout)
+    if error:
+        return _CredentialAccess(errors=(f"acting credential inspection was malformed: {error}",))
+    try:
+        user = json.loads(user_body)
+    except json.JSONDecodeError as exc:
+        return _CredentialAccess(errors=(f"acting credential user response returned invalid JSON: {exc}",))
+    actor = user.get("login") if isinstance(user, dict) else None
+    if not isinstance(actor, str) or not actor:
+        return _CredentialAccess(errors=("acting credential user response did not identify a login",))
+
+    raw_scopes = user_headers.get("x-oauth-scopes")
+    if raw_scopes is None:
+        return _CredentialAccess(
+            actor=actor,
+            errors=(
+                "acting credential is not a supported scope-bearing OAuth credential; "
+                "fine-grained PAT and GitHub App repository breadth is unproven",
+            ),
+        )
+    scopes = tuple(sorted({item.strip() for item in raw_scopes.split(",") if item.strip()}, key=str.casefold))
+    missing = tuple(scope for scope in ("repo", "read:org") if scope not in scopes)
+    if missing:
+        return _CredentialAccess(
+            kind="oauth_scope_bearing",
+            actor=actor,
+            scopes=scopes,
+            errors=(f"acting OAuth credential lacks required all-repository scopes: {', '.join(missing)}",),
+        )
+
+    endpoint = f"/orgs/{quote(organization, safe='')}/repos?type=all&per_page=1"
+    org_command = runner(("gh", "api", "--include", endpoint))
+    if org_command.returncode != 0:
+        return _CredentialAccess(
+            kind="oauth_scope_bearing",
+            actor=actor,
+            scopes=scopes,
+            errors=(f"organization credential-access probe failed: {_failure_detail(org_command)}",),
+        )
+    org_headers, _org_body, error = _included_response(org_command.stdout)
+    if error:
+        return _CredentialAccess(
+            kind="oauth_scope_bearing",
+            actor=actor,
+            scopes=scopes,
+            errors=(f"organization credential-access probe was malformed: {error}",),
+        )
+    org_scopes = org_headers.get("x-oauth-scopes")
+    if org_scopes is None or {
+        item.strip() for item in org_scopes.split(",") if item.strip()
+    } != set(scopes):
+        return _CredentialAccess(
+            kind="oauth_scope_bearing",
+            actor=actor,
+            scopes=scopes,
+            errors=("organization probe did not prove the same OAuth scope set",),
+        )
+    if org_headers.get("x-github-sso"):
+        return _CredentialAccess(
+            kind="oauth_scope_bearing",
+            actor=actor,
+            scopes=scopes,
+            errors=("organization probe reported an SSO authorization restriction",),
+        )
+    return _CredentialAccess(
+        kind="oauth_scope_bearing",
+        access="all_repositories",
+        actor=actor,
+        scopes=scopes,
+    )
+
+
+def _included_response(value: str) -> tuple[dict[str, str], str, str]:
+    normalized = value.replace("\r\n", "\n")
+    header_text, separator, body = normalized.partition("\n\n")
+    if not separator or not header_text.startswith("HTTP/"):
+        return {}, "", "response did not contain an HTTP header block and body"
+    headers: dict[str, str] = {}
+    for line in header_text.splitlines()[1:]:
+        name, colon, content = line.partition(":")
+        if not colon or not name.strip():
+            return {}, "", f"invalid HTTP header line: {line!r}"
+        headers[name.strip().casefold()] = content.strip()
+    if not body.strip():
+        return {}, "", "response body was empty"
+    return headers, body.strip(), ""
 
 
 def _repository(entry: object, organization: str) -> tuple[OrganizationRepository | None, str]:
