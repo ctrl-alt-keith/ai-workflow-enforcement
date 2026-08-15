@@ -25,6 +25,17 @@ form. Existing branch stale-audit evidence can be included with `--audit-stale`
 and `--audit-github-prs`; these flags are passed to the existing dry-run API and
 do not add a second classifier.
 
+Repository selection projects the already-reconciled branch-cleanup scope. It
+retains the original provider mode, organization, completeness, credential
+evidence, independent repository-count attestation, detail and errors, archived
+members, exclusions, unmatched entries, mutation blockers, and selected target
+provenance. Attested public/private and enumerated public/private/total values
+are not recomputed or discarded by selection. A selection from partial or
+unknown provider evidence therefore remains provider-backed and `unknown`; it
+is never relabeled as legacy explicit compatibility. A selected name absent
+from complete evidence is an operator error. One absent from partial evidence
+is retained as an explicit partial-evidence error and mutation blocker.
+
 ## Advisory And Freshness Semantics
 
 The index is advisory, stale after capture, not a source of truth, and not

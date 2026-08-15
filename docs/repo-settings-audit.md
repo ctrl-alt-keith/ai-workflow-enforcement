@@ -275,11 +275,16 @@ exceptions. Fields not present in an override continue to inherit the central
 baseline.
 
 Organization audits also reconcile these override keys against current GitHub
-organization membership. They report an orphan only after every REST result
-page has been read and the authenticated user is verified as an active
-organization owner, whose GitHub role has access to every organization
-repository. If that evidence is unavailable, visibility-limited, malformed, or
-otherwise incomplete, the reconciliation is `unknown` and reports no orphan.
+organization membership. They report an orphan only after the shared
+enumerator proves every REST result page, the supported acting credential's
+`repo`/`admin:org` scope profile, the same actor's active organization-owner
+membership, and exact agreement between full-organization
+`public_repos`/`total_private_repos` counts and the paginated
+public/private/total population. User role or enumerated visibility alone is
+not sufficient. The organization report carries that count evidence. If any
+credential, count, internal-visibility, or other completeness evidence is
+unavailable, malformed, or mismatched, reconciliation is `unknown` and reports
+no orphan.
 The policy file remains an overlay: a current repository with no override is
 valid baseline-only behavior, and the audit never deletes or rewrites an
 orphaned key. Override keys are current `owner/name` locators; because this

@@ -1,8 +1,9 @@
 # Branch Cleanup
 
 `enforcement.branch_cleanup` is a dry-run-first operational reinforcement tool
-for reviewing stale Git branches across explicitly configured repositories.
-It reports evidence and only mutates refs when run with `--apply`.
+for reviewing stale Git branches across active GitHub organization members. It
+reports provider scope, local resolution, and branch/worktree evidence, and it
+only mutates refs when run with `--apply`.
 
 Run a dry-run:
 
@@ -30,17 +31,20 @@ python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json --au
 
 ## Safety Model
 
-The single-pass tool uses six phases:
+The single-pass tool uses seven phases:
 
-1. discover configured repo targets and current Git state
-2. audit local and remote branch refs
-3. plan or apply normal Git-proven cleanup for refs already ancestors of the
+1. enumerate and reconcile provider-owned active repository scope, stable-ID
+   exclusions, credential breadth, and local targets
+2. verify each existing local Git target's fetch URL, effective push URL,
+   current provider locator, and stable provider repository ID
+3. audit local and remote branch refs
+4. plan or apply normal Git-proven cleanup for refs already ancestors of the
    remote default branch
-4. plan or apply stale cleanup for non-ancestor refs only when live GitHub
+5. plan or apply stale cleanup for non-ancestor refs only when live GitHub
    exact-head evidence or `git cherry` patch-equivalence proves eligibility
-5. audit every registered worktree, prune only Git-classified stale metadata in
+6. audit every registered worktree, prune only Git-classified stale metadata in
    apply mode, and verify final worktree state
-6. emit a text or JSON report
+7. emit a text or JSON report
 
 Dry-run is the default. Mutation is limited to `--apply`.
 
@@ -59,8 +63,111 @@ does not weaken any classification or removal invariant. A safe worktree is
 removed only with Git's non-force `git worktree remove` mechanism and only as
 part of its authorized branch-cleanup action.
 
-The tool skips dirty repos, missing default remote refs, protected branches,
-symbolic remote refs, and ambiguous branch names.
+The tool skips missing or uninspectable local checkouts, dirty repos, missing
+default remote refs, protected branches, symbolic remote refs, and ambiguous
+branch names. A missing checkout remains a provider candidate and is reported
+as skipped; filesystem absence never changes organization membership.
+
+## Provider Scope And Completeness
+
+Provider-backed scope uses GitHub's current organization repository state as
+membership authority. Every current member with `archived = false` is an
+inspection candidate. Archived, deleted, and transferred-out repositories are
+not kept in scope by local configuration, while newly created or transferred-in
+active members enter scope automatically.
+
+The shared organization enumerator marks a result `complete` only for the
+implementation's supported scope-bearing credential profile. The same acting
+credential must provide all of this evidence:
+
+- `/user` identifies the actor and returns an `X-OAuth-Scopes` header containing
+  both `repo` and `admin:org`; GitHub's documented scope hierarchy places
+  `read:org` beneath `admin:org`
+- `GET /orgs/{org}` returns full organization details with the same scope set,
+  no `X-GitHub-SSO` restriction, and valid non-negative integer
+  `public_repos` and `total_private_repos` fields
+- the actor's organization membership response identifies the same login with
+  `state=active` and `role=admin`
+- every paginated repository response succeeds and every entry parses,
+  including positive numeric repository ID, current `full_name`, visibility,
+  private and archived flags, and default branch
+- counts from the complete paginated result, before archived repositories are
+  removed from branch-cleanup candidates, exactly match `public_repos`,
+  `total_private_repos`, and their sum
+
+GitHub documents `repo` as the classic OAuth/PAT scope for public and private
+repository access and requires `admin:org` plus organization-owner authority to
+see full organization details. The independently returned repository totals are
+the positive population attestation; the enumerated list does not attest to its
+own completeness. A missing scope header, `repo` plus `read:org` without
+`admin:org`, a fine-grained personal access token, a selected-repository GitHub
+App installation, a missing or malformed count, a count mismatch, an SSO
+restriction, actor disagreement, or non-owner membership remains `unknown`.
+The implementation preserves valid visible repositories in those cases but
+does not authorize mutation.
+
+GitHub documents internal visibility for Enterprise Cloud repositories, but
+the full-organization-details reference does not define whether internal
+repositories contribute to `public_repos` or `total_private_repos`. The current
+model therefore preserves any visible internal repository as partial evidence
+and fails count attestation closed instead of assigning it to either total.
+
+This provider contract was verified on 2026-08-14 against GitHub's official
+[organization repository endpoint](https://docs.github.com/en/rest/repos/repos#list-organization-repositories),
+[full organization details endpoint](https://docs.github.com/en/rest/orgs/orgs#get-an-organization),
+[authenticated membership endpoint](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user),
+[OAuth scope reference](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps),
+[repository visibility reference](https://docs.github.com/en/repositories/creating-and-managing-repositories/about-repositories#about-repository-visibility),
+[organization repository-role reference](https://docs.github.com/en/organizations/managing-user-access-to-your-organizations-repositories/managing-repository-roles/repository-roles-for-an-organization),
+[fine-grained personal access token reference](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens),
+[GitHub App installation repository reference](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation),
+and [REST pagination guidance](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api).
+
+Reports expose `repository_count_attestation` with its status and detail plus
+attested public/private and enumerated public/private/total counts. For example,
+a complete one-public/two-private population (including one archived private
+member) reports attested `1`/`2` and enumerated `1`/`2`/`3`; only the two active
+members become cleanup candidates.
+
+Read-only runs preserve valid partial provider evidence, resolved targets, and
+errors without describing the result as complete. An `--apply` run with
+`unknown` provider scope exits nonzero before entering repository cleanup, so
+no branch, ref, or worktree mutation can occur.
+
+Explicit exclusions reconcile after provider discovery by positive numeric
+GitHub repository ID. Each retains its recorded `organization/repository`
+locator, durable `reason`, and `authority`. A rename with the same ID remains
+excluded and the report shows the current locator plus `locator_drift=true`.
+An archived member with the same ID is reported as reconciled and excluded. If
+the ID is absent (including deletion or transfer out), or the recorded locator
+now belongs to a different ID, the exclusion is unresolved/conflicting. It is
+preserved in read-only output and blocks provider-backed mutation pending human
+disposition. Duplicate exclusion IDs or locators are rejected at load time.
+The tool never rewrites or deletes an exclusion.
+
+The `workspace_root` maps each included repository to
+`<workspace_root>/<repository-name>`. `repository_overrides` may change only a
+specific member's local `path`, `remote`, or `default_branch`; an override
+never adds a repository to provider scope. Relative override paths resolve
+beneath `workspace_root`.
+
+Path resolution is not repository identity. For every existing provider-backed
+Git checkout, the selected remote must have exactly one fetch URL and one
+effective push URL; both must parse as the exact current `github.com` locator
+from provider enumeration. The tool then reads `/repos/{owner}/{name}` and
+requires both its current `full_name` and stable numeric `id` to match the
+enumerated target. Wrong owners, wrong names, stale rename/transfer locators,
+ambiguous or missing remotes, and provider-ID disagreement are reported as
+`mismatch` or `unverified`. Read-only inspection skips that target after
+reporting the evidence. Apply mode performs this identity preflight for every
+existing Git target before entering repository cleanup, so no target is
+mutation-capable when any checked target fails. GitHub may redirect old remote
+locators after a rename or transfer, but that redirect is not accepted as
+current local configuration; operators must update the remote explicitly.
+The identity seam was verified on 2026-08-14 against GitHub's official
+[get-a-repository response](https://docs.github.com/en/rest/repos/repos#get-a-repository),
+[remote URL guidance](https://docs.github.com/en/get-started/git-basics/managing-remote-repositories),
+and [repository rename guidance](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository).
 
 For local branches checked out in linked worktrees, normal cleanup is allowed
 only when Git proves the branch is an ancestor of the remote default branch and
@@ -85,7 +192,8 @@ not sufficient. A live linked worktree is removable only when its related local
 branch action is currently authorized as `would_delete`, the action is being
 applied, and all of these checks pass immediately before removal:
 
-- the repository is an explicit config target and is not blocked
+- the repository is a resolved provider candidate or legacy compatibility
+  target and is not blocked
 - the worktree is neither the primary worktree nor the configured target path
 - `git worktree list --porcelain -z --expire now` identifies the registration
   and its branch or detached state
@@ -142,7 +250,7 @@ the same stable fields under each repository's `worktrees` list and provide a
 top-level `worktree_summary`. The CLI cannot observe prompting by an external
 runner, so it does not emit an `unexpected_confirmation_requests` counter. A
 runner that observes a prompt must treat it as a tool defect instead of
-supplying input. The JSON schema version is `3`; the schema-2 `removed` and
+supplying input. The JSON schema version is `5`; the schema-2 `removed` and
 `preserved_by_reason` summary aliases remain available.
 
 `cleanup_authority` comes from the policy decision that authorized a safe
@@ -224,16 +332,38 @@ evidence is retrieved only when `--audit-github-prs` is explicitly requested.
 
 ```json
 {
-  "repositories": [
-    {
-      "name": "ai-workflow-enforcement",
-      "path": ".",
-      "remote": "origin",
-      "default_branch": "main"
+  "scope": {
+    "provider": "github_organization",
+    "organization": "ctrl-alt-keith",
+    "workspace_root": "[workspace-root]",
+    "exclusions": [
+      {
+        "repository_id": 123456789,
+        "repository": "ctrl-alt-keith/example-excluded-repository",
+        "reason": "Durable policy exception",
+        "authority": "CAK-000"
+      }
+    ],
+    "repository_overrides": {
+      "ctrl-alt-keith/example-nonstandard-checkout": {
+        "path": "nested/example-nonstandard-checkout"
+      }
     }
-  ],
+  },
   "protected_branches": ["main", "master", "trunk", "develop"]
 }
 ```
 
-Paths in config are resolved relative to the config file.
+Replace `[workspace-root]` with the local checkout root. Relative
+`workspace_root` values resolve from the config directory. The expected
+initial exclusion set is empty unless a current authority establishes an
+exception. Look up and record the provider's positive numeric repository ID;
+do not guess it. Provider exclusions without `repository_id` are rejected, and
+the tool does not migrate or rewrite old entries automatically.
+
+Existing configs with a top-level `repositories` array remain accepted in
+`legacy_explicit_compatibility` mode so operators can stage migration without
+an outage. That mode preserves the previous target and mutation behavior but
+explicitly reports that it does not establish complete organization
+membership. New fleet configuration should use provider-backed scope; do not
+add new repositories to the legacy positive allowlist.

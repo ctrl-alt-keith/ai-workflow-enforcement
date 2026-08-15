@@ -98,15 +98,26 @@ def compose_work_state_index(
         sources.append(_unavailable_section("branch_cleanup_dry_run", branch_command, "branch cleanup config not provided"))
     else:
         try:
-            config = branch_cleanup.load_config(branch_config_path)
-            config = _select_branch_targets(config, selected)
+            config = branch_cleanup.resolve_branch_cleanup_scope(
+                branch_cleanup.load_config(branch_config_path)
+            )
+            config = branch_cleanup.project_branch_cleanup_scope(config, selected)
             report = branch_scanner(
                 config,
                 apply=False,
                 audit_stale=audit_stale,
                 audit_github_prs=audit_github_prs,
             )
-            errors = tuple(f"{repo.repo}: {repo.skipped}" for repo in report.repos if repo.skipped)
+            scope_errors = (
+                report.scope.mutation_blockers
+                if report.scope is not None and not report.scope.mutation_ready
+                else ()
+            )
+            errors = tuple(
+                dict.fromkeys(
+                    (*scope_errors, *(f"{repo.repo}: {repo.skipped}" for repo in report.repos if repo.skipped))
+                )
+            )
             sources.append(
                 _section(
                     "branch_cleanup_dry_run",
@@ -232,16 +243,6 @@ def _capture_worktrees(targets: tuple[branch_cleanup.RepoTarget, ...], clock: Cl
         tuple(errors),
         {"repositories": repositories} if repositories else None,
     )
-
-
-def _select_branch_targets(config: branch_cleanup.BranchCleanupConfig, selected: tuple[str, ...]) -> branch_cleanup.BranchCleanupConfig:
-    if not selected:
-        return config
-    names = {item.split("/", 1)[-1] for item in selected}
-    targets = tuple(target for target in config.repositories if target.name in names)
-    if not targets:
-        raise ValueError("selected repositories are absent from branch cleanup config")
-    return branch_cleanup.BranchCleanupConfig(targets, config.protected_branches, config.stale_approvals)
 
 
 def _section(name: str, command: str, captured_at: str | None, status: str, errors: tuple[str, ...], payload: object | None) -> SourceSection:

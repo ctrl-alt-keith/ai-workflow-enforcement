@@ -20,10 +20,387 @@ from enforcement.branch_cleanup import (
     load_config,
     report_to_dict,
     remote_branch_name,
+    resolve_branch_cleanup_scope,
+)
+from enforcement.github_org_repositories import (
+    OrganizationRepository,
+    OrganizationRepositoryEnumeration,
 )
 
 
 class BranchCleanupTests(unittest.TestCase):
+    def test_provider_scope_discovers_active_public_and_private_repositories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = _write_provider_config(root)
+            enumeration = _organization_enumeration(
+                _organization_repository("existing"),
+                _organization_repository("new-private", repository_id=2, private=True),
+            )
+            with mock.patch.object(
+                branch_cleanup,
+                "enumerate_organization_repositories",
+                return_value=enumeration,
+            ):
+                config = resolve_branch_cleanup_scope(load_config(config_path))
+
+        self.assertEqual(("existing", "new-private"), tuple(item.name for item in config.repositories))
+        self.assertEqual("complete", config.scope_reconciliation.completeness)
+        self.assertTrue(config.scope_reconciliation.resolved_targets[1].private)
+        self.assertEqual("matched", config.scope_reconciliation.count_attestation_status)
+        self.assertEqual(1, config.scope_reconciliation.attested_public_repositories)
+        self.assertEqual(1, config.scope_reconciliation.attested_private_repositories)
+        self.assertEqual(2, config.scope_reconciliation.enumerated_total_repositories)
+
+    def test_provider_scope_excludes_archived_members_and_drops_former_members(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = _write_provider_config(
+                root,
+                overrides={"ctrl-alt-keith/transferred-out": {"path": "old-location"}},
+            )
+            enumeration = _organization_enumeration(
+                _organization_repository("active"),
+                _organization_repository("archived", repository_id=2, archived=True),
+            )
+            with mock.patch.object(
+                branch_cleanup,
+                "enumerate_organization_repositories",
+                return_value=enumeration,
+            ):
+                config = resolve_branch_cleanup_scope(load_config(config_path))
+
+        scope = config.scope_reconciliation
+        self.assertEqual(("active",), tuple(item.name for item in config.repositories))
+        self.assertEqual(("ctrl-alt-keith/archived",), scope.archived_members)
+        self.assertEqual(("ctrl-alt-keith/transferred-out",), scope.unmatched_overrides)
+
+    def test_provider_scope_applies_explicit_exclusion_with_reason_and_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = _write_provider_config(
+                root,
+                exclusions=[
+                    {
+                        "repository_id": 2,
+                        "repository": "ctrl-alt-keith/excluded",
+                        "reason": "Authoritative exception",
+                        "authority": "CAK-999",
+                    }
+                ],
+            )
+            enumeration = _organization_enumeration(
+                _organization_repository("included"),
+                _organization_repository("excluded", repository_id=2),
+            )
+            with mock.patch.object(
+                branch_cleanup,
+                "enumerate_organization_repositories",
+                return_value=enumeration,
+            ):
+                config = resolve_branch_cleanup_scope(load_config(config_path))
+
+        self.assertEqual(("included",), tuple(item.name for item in config.repositories))
+        exclusion = config.scope_reconciliation.exclusions[0]
+        self.assertEqual("Authoritative exception", exclusion.reason)
+        self.assertEqual("CAK-999", exclusion.authority)
+
+    def test_provider_scope_rejects_malformed_exclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = _write_provider_config(
+                Path(tmp),
+                exclusions=[
+                    {
+                        "repository_id": 2,
+                        "repository": "ctrl-alt-keith/excluded",
+                        "reason": "missing authority",
+                    }
+                ],
+            )
+
+            with self.assertRaisesRegex(ValueError, "requires an authority"):
+                load_config(config_path)
+
+    def test_stable_id_exclusion_survives_repository_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = load_config(
+                _write_provider_config(
+                    Path(tmp),
+                    exclusions=[_exclusion(2, "ctrl-alt-keith/old-name")],
+                )
+            )
+            enumeration = _organization_enumeration(
+                _organization_repository("new-name", repository_id=2)
+            )
+            with mock.patch.object(
+                branch_cleanup,
+                "enumerate_organization_repositories",
+                return_value=enumeration,
+            ):
+                resolved = resolve_branch_cleanup_scope(config)
+
+        self.assertEqual((), resolved.repositories)
+        exclusion = resolved.scope_reconciliation.exclusions[0]
+        self.assertEqual("active_excluded", exclusion.status)
+        self.assertEqual("ctrl-alt-keith/new-name", exclusion.current_repository)
+        self.assertTrue(exclusion.locator_drift)
+        self.assertTrue(resolved.scope_reconciliation.mutation_ready)
+
+    def test_archived_stable_id_exclusion_is_reconciled_without_widening_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = load_config(
+                _write_provider_config(
+                    Path(tmp),
+                    exclusions=[_exclusion(2, "ctrl-alt-keith/archived")],
+                )
+            )
+            enumeration = _organization_enumeration(
+                _organization_repository("archived", repository_id=2, archived=True)
+            )
+            with mock.patch.object(
+                branch_cleanup,
+                "enumerate_organization_repositories",
+                return_value=enumeration,
+            ):
+                resolved = resolve_branch_cleanup_scope(config)
+
+        scope = resolved.scope_reconciliation
+        self.assertEqual("archived_member", scope.exclusions[0].status)
+        self.assertEqual(("ctrl-alt-keith/archived",), scope.archived_members)
+        self.assertTrue(scope.mutation_ready)
+
+    def test_absent_deleted_or_transferred_exclusion_is_unresolved(self) -> None:
+        for recorded in ("deleted", "transferred-out"):
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
+                config = load_config(
+                    _write_provider_config(
+                        Path(tmp),
+                        exclusions=[_exclusion(2, f"ctrl-alt-keith/{recorded}")],
+                    )
+                )
+                with mock.patch.object(
+                    branch_cleanup,
+                    "enumerate_organization_repositories",
+                    return_value=_organization_enumeration(),
+                ):
+                    resolved = resolve_branch_cleanup_scope(config)
+
+                scope = resolved.scope_reconciliation
+                self.assertEqual("unresolved", scope.exclusions[0].status)
+                self.assertEqual((f"ctrl-alt-keith/{recorded}",), scope.unmatched_exclusions)
+                self.assertFalse(scope.mutation_ready)
+
+    def test_duplicate_exclusion_ids_and_locators_are_rejected(self) -> None:
+        cases = (
+            (
+                [_exclusion(1, "ctrl-alt-keith/one"), _exclusion(1, "ctrl-alt-keith/two")],
+                "repository IDs must be unique",
+            ),
+            (
+                [_exclusion(1, "ctrl-alt-keith/one"), _exclusion(2, "ctrl-alt-keith/one")],
+                "repository locators must be unique",
+            ),
+        )
+        for exclusions, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                path = _write_provider_config(Path(tmp), exclusions=exclusions)
+                with self.assertRaisesRegex(ValueError, message):
+                    load_config(path)
+
+    def test_exclusion_locator_id_disagreement_is_a_mutation_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = load_config(
+                _write_provider_config(
+                    Path(tmp),
+                    exclusions=[_exclusion(2, "ctrl-alt-keith/reused-locator")],
+                )
+            )
+            enumeration = _organization_enumeration(
+                _organization_repository("renamed", repository_id=2),
+                _organization_repository("reused-locator", repository_id=3),
+            )
+            with mock.patch.object(
+                branch_cleanup,
+                "enumerate_organization_repositories",
+                return_value=enumeration,
+            ):
+                resolved = resolve_branch_cleanup_scope(config)
+
+        scope = resolved.scope_reconciliation
+        self.assertEqual("conflict", scope.exclusions[0].status)
+        self.assertFalse(scope.mutation_ready)
+        self.assertEqual(("reused-locator",), tuple(target.name for target in resolved.repositories))
+
+    def test_unmatched_exclusion_is_reported_read_only_and_blocks_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = load_config(
+                _write_provider_config(
+                    Path(tmp),
+                    exclusions=[_exclusion(9, "ctrl-alt-keith/missing")],
+                )
+            )
+            enumeration = _organization_enumeration(_organization_repository("included"))
+            with (
+                mock.patch.object(
+                    branch_cleanup,
+                    "enumerate_organization_repositories",
+                    return_value=enumeration,
+                ),
+                mock.patch.object(branch_cleanup, "_cleanup_repo") as cleanup_repo,
+            ):
+                read_only = cleanup_branches(config, apply=False)
+                applied = cleanup_branches(config, apply=True)
+
+        self.assertEqual("unresolved", read_only.scope.exclusions[0].status)
+        self.assertFalse(read_only.scope.mutation_ready)
+        self.assertTrue(applied.requested_apply)
+        self.assertTrue(applied.dry_run)
+        self.assertIn("unresolved or conflicting stable-identity exclusions", applied.mutation_blocked)
+        cleanup_repo.assert_called_once()
+
+    def test_path_override_wrong_repository_identity_blocks_before_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wrong_checkout = _make_repo(root, "wrong-checkout")
+            config = load_config(
+                _write_provider_config(
+                    root,
+                    overrides={"ctrl-alt-keith/expected": {"path": str(wrong_checkout)}},
+                )
+            )
+            identity = branch_cleanup.RepositoryIdentityVerification(
+                status="mismatch",
+                detail="configured remote identifies 'ctrl-alt-keith/wrong'",
+                expected_repository="ctrl-alt-keith/expected",
+                expected_repository_id=1,
+                remote="origin",
+                observed_repository="ctrl-alt-keith/wrong",
+            )
+            with (
+                mock.patch.object(
+                    branch_cleanup,
+                    "enumerate_organization_repositories",
+                    return_value=_organization_enumeration(_organization_repository("expected")),
+                ),
+                mock.patch.object(
+                    branch_cleanup,
+                    "verify_local_repository_identity",
+                    return_value=identity,
+                ),
+            ):
+                read_only = cleanup_branches(config, apply=False)
+                with mock.patch.object(branch_cleanup, "_cleanup_repo") as cleanup_repo:
+                    report = cleanup_branches(config, apply=True)
+
+        cleanup_repo.assert_not_called()
+        self.assertIn("repository identity mismatch", read_only.repos[0].skipped)
+        self.assertIn("local checkout identity preflight failed", report.mutation_blocked)
+        self.assertEqual("mismatch", report.repos[0].identity.status)
+
+    def test_each_incomplete_count_attestation_blocks_apply_before_repository_cleanup(self) -> None:
+        cases = (
+            "full organization details omitted required public_repos count",
+            "enumerated public repository count does not match organization public_repos",
+            "enumerated private repository count does not match organization total_private_repos",
+            "enumerated total repository count does not match attested public/private total",
+        )
+        for error in cases:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as tmp:
+                config = load_config(_write_provider_config(Path(tmp)))
+                enumeration = _organization_enumeration(
+                    _organization_repository("partial"),
+                    complete=False,
+                    errors=(error,),
+                )
+                with (
+                    mock.patch.object(
+                        branch_cleanup,
+                        "enumerate_organization_repositories",
+                        return_value=enumeration,
+                    ),
+                    mock.patch.object(branch_cleanup, "_cleanup_repo") as cleanup_repo,
+                ):
+                    report = cleanup_branches(config, apply=True)
+
+                cleanup_repo.assert_not_called()
+                self.assertTrue(report.dry_run)
+                self.assertTrue(report.requested_apply)
+                self.assertEqual("unknown", report.scope.completeness)
+                self.assertEqual("unknown", report.scope.count_attestation_status)
+                self.assertIn(error, report.scope.errors)
+                self.assertIn("complete provider-backed candidate scope", report.mutation_blocked)
+
+    def test_incomplete_provider_scope_cli_returns_nonzero_with_json_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = _write_provider_config(Path(tmp))
+            enumeration = _organization_enumeration(
+                _organization_repository("partial"),
+                complete=False,
+                errors=("visibility is unproven",),
+            )
+            stdout = io.StringIO()
+            with (
+                mock.patch.object(
+                    branch_cleanup,
+                    "enumerate_organization_repositories",
+                    return_value=enumeration,
+                ),
+                mock.patch("sys.stdout", stdout),
+            ):
+                code = branch_cleanup.main(
+                    ["--config", str(config_path), "--apply", "--output-format", "json"]
+                )
+
+        data = json.loads(stdout.getvalue())
+        self.assertEqual(1, code)
+        self.assertEqual("unknown", data["scope"]["completeness"])
+        self.assertIn("complete provider-backed candidate scope", data["mutation_blocked"])
+        self.assertEqual([], data["repositories"])
+
+    def test_provider_scope_reports_missing_checkout_without_changing_membership(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            enumeration = _organization_enumeration(_organization_repository("missing"))
+            with mock.patch.object(
+                branch_cleanup,
+                "enumerate_organization_repositories",
+                return_value=enumeration,
+            ):
+                report = cleanup_branches(load_config(_write_provider_config(root)))
+
+        self.assertEqual(("ctrl-alt-keith/missing",), report.scope.candidates)
+        self.assertEqual("repository path does not exist", report.repos[0].skipped)
+
+    def test_provider_scope_uses_nonstandard_path_override_as_narrow_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            enumeration = _organization_enumeration(_organization_repository("sample"))
+            config_path = _write_provider_config(
+                root,
+                overrides={"ctrl-alt-keith/sample": {"path": "nested/nonstandard"}},
+            )
+            with mock.patch.object(
+                branch_cleanup,
+                "enumerate_organization_repositories",
+                return_value=enumeration,
+            ):
+                config = resolve_branch_cleanup_scope(load_config(config_path))
+
+        self.assertEqual((root / "nested/nonstandard").resolve(), config.repositories[0].path)
+
+    def test_legacy_repository_inventory_is_explicit_compatibility_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "branch-cleanup.json"
+            config_path.write_text(
+                json.dumps({"repositories": [{"name": "sample", "path": "repo"}]}),
+                encoding="utf-8",
+            )
+            config = resolve_branch_cleanup_scope(load_config(config_path))
+
+        self.assertEqual("legacy_explicit_compatibility", config.scope_reconciliation.mode)
+        self.assertEqual("explicit_compatibility", config.scope_reconciliation.completeness)
+
     def test_protected_refs_are_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
@@ -502,7 +879,7 @@ class BranchCleanupTests(unittest.TestCase):
 
         data = report_to_dict(report)
         worktree = data["repositories"][0]["worktrees"][0]
-        self.assertEqual(3, data["schema_version"])
+        self.assertEqual(5, data["schema_version"])
         for field in (
             "repo",
             "path",
@@ -1453,6 +1830,80 @@ class _FailOnReadStdin:
 
 def _config(repo: Path) -> BranchCleanupConfig:
     return BranchCleanupConfig(repositories=(RepoTarget("sample", repo),))
+
+
+def _write_provider_config(
+    root: Path,
+    *,
+    exclusions: list[dict[str, object]] | None = None,
+    overrides: dict[str, dict[str, str]] | None = None,
+) -> Path:
+    path = root / "branch-cleanup.json"
+    path.write_text(
+        json.dumps(
+            {
+                "scope": {
+                    "provider": "github_organization",
+                    "organization": "ctrl-alt-keith",
+                    "workspace_root": str(root),
+                    "exclusions": exclusions or [],
+                    "repository_overrides": overrides or {},
+                },
+                "protected_branches": ["main", "master", "trunk", "develop"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _organization_repository(
+    name: str,
+    *,
+    repository_id: int = 1,
+    archived: bool = False,
+    private: bool = False,
+) -> OrganizationRepository:
+    return OrganizationRepository(
+        repository_id=repository_id,
+        name=name,
+        full_name=f"ctrl-alt-keith/{name}",
+        archived=archived,
+        private=private,
+        default_branch="main",
+    )
+
+
+def _exclusion(repository_id: int, repository: str) -> dict[str, object]:
+    return {
+        "repository_id": repository_id,
+        "repository": repository,
+        "reason": "Authoritative exception",
+        "authority": "CAK-999",
+    }
+
+
+def _organization_enumeration(
+    *repositories: OrganizationRepository,
+    complete: bool = True,
+    errors: tuple[str, ...] = (),
+) -> OrganizationRepositoryEnumeration:
+    public_count = sum(not repository.private for repository in repositories)
+    private_count = sum(repository.private for repository in repositories)
+    return OrganizationRepositoryEnumeration(
+        organization="ctrl-alt-keith",
+        repositories=tuple(repositories),
+        complete=complete,
+        detail="complete" if complete else "unknown",
+        errors=errors,
+        attested_public_repositories=public_count if complete else None,
+        attested_private_repositories=private_count if complete else None,
+        enumerated_public_repositories=public_count,
+        enumerated_private_repositories=private_count,
+        enumerated_total_repositories=len(repositories),
+        count_attestation_status="matched" if complete else "unknown",
+        count_attestation_detail="counts matched" if complete else "counts unproven",
+    )
 
 
 def _action(report, branch: str, scope: str, phase: str):

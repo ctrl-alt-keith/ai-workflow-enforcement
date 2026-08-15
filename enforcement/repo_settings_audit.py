@@ -19,6 +19,11 @@ import subprocess
 from typing import Callable, Iterable
 from urllib.parse import quote
 
+from .github_org_repositories import (
+    OrganizationRepositoryEnumeration,
+    enumerate_organization_repositories,
+)
+
 
 DEFAULT_SOURCE_REF = "main"
 REPORT_TYPE = "repo_settings_audit"
@@ -149,6 +154,7 @@ class OrgRepoSettingsReport:
     reports: tuple[RepoSettingsReport, ...]
     policy_override_membership: AuditItem
     errors: tuple[str, ...] = ()
+    repository_enumeration: OrganizationRepositoryEnumeration | None = None
 
 
 Runner = Callable[[tuple[str, ...]], GhCommand]
@@ -207,8 +213,8 @@ def audit_org_repo_settings(
     """Build a read-only settings report for all visible repositories in an organization."""
     started = _utc_now()
     gh = runner or _gh
-    enumeration = _fetch_org_repositories(org, gh)
-    repositories = enumeration.repositories
+    enumeration = enumerate_organization_repositories(org, gh)
+    repositories = tuple(repo.full_name for repo in enumeration.repositories)
     errors = list(enumeration.errors)
     reports: list[RepoSettingsReport] = []
     include_local_source = workspace_root is not None
@@ -240,6 +246,7 @@ def audit_org_repo_settings(
         reports=tuple(reports),
         policy_override_membership=_policy_override_membership_item(enumeration),
         errors=tuple(errors),
+        repository_enumeration=enumeration,
     )
 
 
@@ -400,6 +407,7 @@ def render_org_text_report(report: OrgRepoSettingsReport) -> str:
         f"Finished: {report.finished_at}",
         f"Repositories discovered: {len(report.repositories)}",
         f"Repositories audited: {len(report.reports)}",
+        *_org_count_attestation_text(report.repository_enumeration),
         (
             "Hosted governance summary: "
             f"match={hosted_summary['match']} drift={hosted_summary['drift']} unknown={hosted_summary['unknown']}"
@@ -468,6 +476,7 @@ def render_org_json_report(report: OrgRepoSettingsReport) -> str:
         "started_at": report.started_at,
         "finished_at": report.finished_at,
         "repositories": list(report.repositories),
+        "repository_count_attestation": _org_count_attestation_json(report.repository_enumeration),
         "summary": {
             "repository_count": len(report.repositories),
             "audited_repository_count": len(report.reports),
@@ -479,6 +488,36 @@ def render_org_json_report(report: OrgRepoSettingsReport) -> str:
         "reports": [json.loads(render_json_report(repo_report)) for repo_report in report.reports],
     }
     return json.dumps(data, indent=2, sort_keys=True)
+
+
+def _org_count_attestation_text(enumeration: OrganizationRepositoryEnumeration | None) -> list[str]:
+    if enumeration is None:
+        return ["Repository count attestation: unavailable"]
+    return [
+        "Repository count attestation: "
+        f"status={enumeration.count_attestation_status} "
+        f"attested_public={enumeration.attested_public_repositories!r} "
+        f"attested_private={enumeration.attested_private_repositories!r} "
+        f"enumerated_public={enumeration.enumerated_public_repositories} "
+        f"enumerated_private={enumeration.enumerated_private_repositories} "
+        f"enumerated_total={enumeration.enumerated_total_repositories}"
+    ]
+
+
+def _org_count_attestation_json(
+    enumeration: OrganizationRepositoryEnumeration | None,
+) -> dict[str, object] | None:
+    if enumeration is None:
+        return None
+    return {
+        "status": enumeration.count_attestation_status,
+        "detail": enumeration.count_attestation_detail,
+        "attested_public": enumeration.attested_public_repositories,
+        "attested_private": enumeration.attested_private_repositories,
+        "enumerated_public": enumeration.enumerated_public_repositories,
+        "enumerated_private": enumeration.enumerated_private_repositories,
+        "enumerated_total": enumeration.enumerated_total_repositories,
+    }
 
 
 def _hosted_items(remote: RemoteSnapshot, state: HostedState) -> list[AuditItem]:
@@ -1188,65 +1227,7 @@ def _fetch_object(runner: Runner, endpoint: str) -> dict[str, object]:
     return data
 
 
-@dataclass(frozen=True)
-class OrgRepositoryEnumeration:
-    repositories: tuple[str, ...]
-    complete: bool
-    detail: str
-    errors: tuple[str, ...] = ()
-
-
-def _fetch_org_repositories(org: str, runner: Runner) -> OrgRepositoryEnumeration:
-    endpoint = f"/orgs/{quote(org, safe='')}/repos?type=all&per_page=100"
-    command = runner(("gh", "api", "--paginate", "--slurp", endpoint))
-    if command.returncode != 0:
-        detail = (command.stderr or command.stdout or f"exit {command.returncode}").splitlines()[0]
-        raise RuntimeError(f"gh api {endpoint} failed: {detail}")
-    try:
-        pages = json.loads(command.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"gh api {endpoint} returned invalid JSON: {exc}") from exc
-    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
-        raise RuntimeError(f"gh api {endpoint} did not return paginated repository lists")
-    repositories: list[str] = []
-    errors: list[str] = []
-    for page in pages:
-        for entry in page:
-            name = entry.get("full_name") if isinstance(entry, dict) else None
-            owner = entry.get("owner") if isinstance(entry, dict) else None
-            owner_login = owner.get("login") if isinstance(owner, dict) else None
-            if not isinstance(name, str) or not isinstance(owner_login, str) or owner_login.lower() != org.lower():
-                errors.append("organization repository entry did not include an organization-owned full_name")
-                continue
-            repositories.append(name)
-
-    membership = _fetch_optional_object_once(runner, f"/user/memberships/orgs/{quote(org, safe='')}")
-    if membership.error or membership.value is None:
-        detail = membership.error or "membership response was unavailable"
-        errors.append(f"membership enumeration is unproven: {detail}")
-        return OrgRepositoryEnumeration(
-            repositories=tuple(sorted(set(repositories), key=str.lower)),
-            complete=False,
-            detail="authenticated organization-owner membership could not be verified",
-            errors=tuple(errors),
-        )
-    state = membership.value.get("state")
-    role = membership.value.get("role")
-    complete = state == "active" and role == "admin" and not errors
-    detail = (
-        "all GitHub REST result pages were followed and the authenticated user is an active organization owner"
-        if complete
-        else "pagination completed, but authenticated organization-owner membership or repository entries were not proven"
-    )
-    return OrgRepositoryEnumeration(
-        repositories=tuple(sorted(set(repositories), key=str.lower)),
-        complete=complete,
-        detail=detail,
-        errors=tuple(errors),
-    )
-
-
-def _policy_override_membership_item(enumeration: OrgRepositoryEnumeration) -> AuditItem:
+def _policy_override_membership_item(enumeration: OrganizationRepositoryEnumeration) -> AuditItem:
     override_keys = _policy_override_keys()
     if not enumeration.complete:
         return AuditItem(
@@ -1257,7 +1238,7 @@ def _policy_override_membership_item(enumeration: OrgRepositoryEnumeration) -> A
             source="GitHub organization membership enumeration + central repo-settings policy",
             follow_up="Restore complete paginated organization-owner enumeration; no override is classified as orphaned from incomplete evidence.",
         )
-    members = {repository.lower() for repository in enumeration.repositories}
+    members = {repository.full_name.lower() for repository in enumeration.repositories}
     orphans = tuple(key for key in override_keys if key.lower() not in members)
     return AuditItem(
         setting="repository-specific policy override membership",

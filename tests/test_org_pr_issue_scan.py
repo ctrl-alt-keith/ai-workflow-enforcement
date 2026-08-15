@@ -40,6 +40,8 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertEqual(("workflow",), report.repositories[0].pull_requests[0].labels)
         self.assertEqual(("keith",), report.repositories[0].pull_requests[0].assignees)
         self.assertEqual("octocat", report.repositories[0].issues[0].author)
+        self.assertEqual("matched", report.repository_enumeration.count_attestation_status)
+        self.assertEqual(2, report.repository_enumeration.enumerated_total_repositories)
 
     def test_issue_results_exclude_pull_requests(self) -> None:
         gh = FakeGh(
@@ -88,6 +90,8 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertEqual([1, 2], [pr.number for pr in first.pull_requests])
         self.assertEqual([3, 4], [issue.number for issue in first.issues])
         for command in gh.commands:
+            if "--include" in command or command[-1].startswith("/user/memberships/orgs/"):
+                continue
             self.assertIn("--paginate", command)
             self.assertIn("--slurp", command)
 
@@ -123,6 +127,31 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertIn("Repository filter: beta, alpha", text)
         self.assertEqual(["beta", "alpha"], data["selected_repositories"])
         self.assertEqual(2, data["summary"]["repository_count"])
+
+    def test_incomplete_enumeration_never_broadens_a_selected_report(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [
+                    [_repo("alpha"), _repo("beta")],
+                ],
+                "/user/memberships/orgs/ctrl-alt-keith": {
+                    "state": "active",
+                    "role": "member",
+                    "user": {"login": "operator"},
+                },
+                "/repos/ctrl-alt-keith/alpha/pulls?state=open&per_page=100": [[]],
+                "/repos/ctrl-alt-keith/alpha/issues?state=open&per_page=100": [[]],
+            }
+        )
+
+        report = scan_org_work(selected_repos=("alpha",), runner=gh)
+
+        self.assertEqual(("alpha",), tuple(repo.name for repo in report.repositories))
+        self.assertTrue(report.errors)
+        self.assertNotIn(
+            "/repos/ctrl-alt-keith/beta/pulls?state=open&per_page=100",
+            [command[-1] for command in gh.commands],
+        )
 
     def test_unknown_selected_repository_is_an_operator_error(self) -> None:
         gh = FakeGh(
@@ -164,6 +193,8 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertIn("Open issues: 0", text)
         self.assertEqual(0, data["summary"]["open_pull_request_count"])
         self.assertEqual(0, data["summary"]["open_issue_count"])
+        self.assertEqual("matched", data["repository_count_attestation"]["status"])
+        self.assertEqual(1, data["repository_count_attestation"]["enumerated_total"])
 
     def test_inaccessible_repository_is_reported(self) -> None:
         gh = FakeGh(
@@ -273,10 +304,32 @@ class FakeGh:
     def __call__(self, argv: tuple[str, ...]) -> GhCommand:
         self.commands.append(argv)
         endpoint = argv[-1]
-        response = self.responses[endpoint]
+        response = self.responses.get(endpoint)
+        if response is None and endpoint == "/user":
+            return _included_gh(argv, {"login": "operator"})
+        if response is None and endpoint == "/orgs/ctrl-alt-keith":
+            pages = self.responses.get("/orgs/ctrl-alt-keith/repos?type=all&per_page=100", [])
+            repositories = [item for page in pages for item in page] if isinstance(pages, list) else []
+            return _included_gh(
+                argv,
+                {
+                    "login": "ctrl-alt-keith",
+                    "public_repos": sum(item.get("visibility") == "public" for item in repositories),
+                    "total_private_repos": sum(item.get("visibility") == "private" for item in repositories),
+                },
+            )
+        if response is None and endpoint.startswith("/user/memberships/orgs/"):
+            response = {"state": "active", "role": "admin", "user": {"login": "operator"}}
+        if response is None:
+            raise KeyError(endpoint)
         if isinstance(response, GhCommand):
             return response
         return GhCommand(argv=argv, returncode=0, stdout=json.dumps(response), stderr="")
+
+
+def _included_gh(argv: tuple[str, ...], body: object) -> GhCommand:
+    headers = "HTTP/2 200 OK\nX-OAuth-Scopes: repo, admin:org\n\n"
+    return GhCommand(argv=argv, returncode=0, stdout=headers + json.dumps(body), stderr="")
 
 
 def _run_main_with_report(report: object, *args: str) -> tuple[int, str]:
@@ -289,8 +342,14 @@ def _run_main_with_report(report: object, *args: str) -> tuple[int, str]:
 
 def _repo(name: str) -> dict[str, object]:
     return {
+        "id": sum((index + 1) * ord(char) for index, char in enumerate(name)),
         "name": name,
         "full_name": f"ctrl-alt-keith/{name}",
+        "owner": {"login": "ctrl-alt-keith"},
+        "archived": False,
+        "private": False,
+        "visibility": "public",
+        "default_branch": "main",
         "html_url": f"https://github.com/ctrl-alt-keith/{name}",
     }
 

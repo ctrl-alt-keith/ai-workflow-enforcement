@@ -1,14 +1,14 @@
 """Dry-run-first branch cleanup planning and execution.
 
-The module is intentionally small and operational. It inspects configured Git
-repositories, reports deletion candidates, and only mutates refs when callers
-pass ``--apply``.
+The module is intentionally operational. It reconciles provider-backed or
+legacy-compatible Git repository scope, reports deletion candidates, and only
+mutates refs when callers pass ``--apply`` with complete scope evidence.
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -16,6 +16,12 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Iterable
+
+from .github_org_repositories import enumerate_organization_repositories
+from .github_repository_identity import (
+    RepositoryIdentityVerification,
+    verify_local_repository_identity,
+)
 
 
 DEFAULT_PROTECTED_BRANCHES = ("main", "master", "trunk", "develop")
@@ -30,6 +36,8 @@ class RepoTarget:
     path: Path
     remote: str = "origin"
     default_branch: str | None = None
+    expected_repository: str = ""
+    expected_repository_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -43,10 +51,87 @@ class StaleApproval:
 
 
 @dataclass(frozen=True)
+class RepositoryExclusion:
+    repository_id: int
+    repository: str
+    reason: str
+    authority: str
+
+
+@dataclass(frozen=True)
+class RepositoryOverride:
+    repository: str
+    path: Path | None = None
+    remote: str | None = None
+    default_branch: str | None = None
+
+
+@dataclass(frozen=True)
+class GitHubOrganizationScope:
+    organization: str
+    workspace_root: Path
+    exclusions: tuple[RepositoryExclusion, ...] = ()
+    overrides: tuple[RepositoryOverride, ...] = ()
+
+
+@dataclass(frozen=True)
+class ScopeTarget:
+    repository_id: int | None
+    repository: str
+    name: str
+    private: bool | None
+    path: str
+    remote: str
+    default_branch: str
+
+
+@dataclass(frozen=True)
+class ScopeExclusion:
+    repository_id: int
+    recorded_repository: str
+    current_repository: str
+    reason: str
+    authority: str
+    status: str
+    locator_drift: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class ScopeReconciliation:
+    mode: str
+    organization: str
+    completeness: str
+    detail: str
+    candidates: tuple[str, ...]
+    archived_members: tuple[str, ...]
+    exclusions: tuple[ScopeExclusion, ...]
+    resolved_targets: tuple[ScopeTarget, ...]
+    unmatched_exclusions: tuple[str, ...] = ()
+    unmatched_overrides: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+    credential_kind: str = "unknown"
+    credential_access: str = "unknown"
+    credential_actor: str = ""
+    credential_scopes: tuple[str, ...] = ()
+    attested_public_repositories: int | None = None
+    attested_private_repositories: int | None = None
+    enumerated_public_repositories: int = 0
+    enumerated_private_repositories: int = 0
+    enumerated_total_repositories: int = 0
+    count_attestation_status: str = "unknown"
+    count_attestation_detail: str = "repository-count attestation was not established"
+    mutation_ready: bool = False
+    mutation_blockers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class BranchCleanupConfig:
     repositories: tuple[RepoTarget, ...]
     protected_branches: tuple[str, ...] = DEFAULT_PROTECTED_BRANCHES
     stale_approvals: tuple[StaleApproval, ...] = ()
+    organization_scope: GitHubOrganizationScope | None = None
+    scope_reconciliation: ScopeReconciliation | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "protected_branches", _protected_branches(self.protected_branches))
@@ -156,6 +241,7 @@ class RepoReport:
     worktree_inspection_error: str = ""
     worktree_prune_error: str = ""
     worktrees: list[WorktreeDisposition] = field(default_factory=list)
+    identity: RepositoryIdentityVerification | None = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +251,9 @@ class BranchCleanupReport:
     started_at: str
     finished_at: str
     repos: tuple[RepoReport, ...]
+    scope: ScopeReconciliation | None = None
+    requested_apply: bool = False
+    mutation_blocked: str = ""
 
 
 @dataclass(frozen=True)
@@ -181,18 +270,245 @@ class BranchCleanupSequenceReport:
 
 def load_config(path: Path) -> BranchCleanupConfig:
     """Load branch cleanup JSON config, resolving repo paths near the config."""
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+    if not isinstance(data, dict):
+        raise ValueError("branch cleanup config must be a JSON object")
     base = path.parent
-    repositories = tuple(_repo_target(item, base) for item in data.get("repositories", ()))
+    raw_repositories = data.get("repositories", [])
+    if not isinstance(raw_repositories, list):
+        raise ValueError("repositories must be an array")
+    repositories = tuple(_repo_target(item, base) for item in raw_repositories)
+    organization_scope = _organization_scope(data.get("scope"), base)
     approvals = tuple(_stale_approval(item) for item in data.get("stale_approvals", ()))
     protected = _protected_branches(data.get("protected_branches", ()))
-    if not repositories:
-        raise ValueError("branch cleanup config must define at least one repository")
+    if organization_scope is not None and repositories:
+        raise ValueError("provider-backed scope and legacy repositories cannot be combined")
+    if organization_scope is None and not repositories:
+        raise ValueError("branch cleanup config must define provider-backed scope or at least one repository")
+    names = [repo.name.casefold() for repo in repositories]
+    if len(names) != len(set(names)):
+        raise ValueError("legacy repository names must be unique")
     return BranchCleanupConfig(
         repositories=repositories,
         protected_branches=protected,
         stale_approvals=approvals,
+        organization_scope=organization_scope,
     )
+
+
+def resolve_branch_cleanup_scope(
+    config: BranchCleanupConfig,
+    *,
+    runner=None,
+) -> BranchCleanupConfig:
+    """Resolve provider membership once without changing cleanup safety policy."""
+    if config.scope_reconciliation is not None:
+        return config
+    if config.organization_scope is None:
+        reconciliation = ScopeReconciliation(
+            mode="legacy_explicit_compatibility",
+            organization="",
+            completeness="explicit_compatibility",
+            detail=(
+                "targets came from the legacy explicit repositories array; this compatibility mode "
+                "does not establish complete organization membership"
+            ),
+            candidates=tuple(target.name for target in config.repositories),
+            archived_members=(),
+            exclusions=(),
+            resolved_targets=tuple(
+                ScopeTarget(
+                    repository_id=None,
+                    repository=target.name,
+                    name=target.name,
+                    private=None,
+                    path=str(target.path),
+                    remote=target.remote,
+                    default_branch=target.default_branch or "",
+                )
+                for target in config.repositories
+            ),
+            mutation_ready=True,
+        )
+        return replace(config, scope_reconciliation=reconciliation)
+
+    scope = config.organization_scope
+    enumeration = enumerate_organization_repositories(scope.organization, runner or _provider_gh)
+    overrides = {item.repository.casefold(): item for item in scope.overrides}
+    active = tuple(repo for repo in enumeration.repositories if not repo.archived)
+    active_locators = {repo.full_name.casefold() for repo in active}
+    members_by_id = {repo.repository_id: repo for repo in enumeration.repositories}
+    members_by_locator = {repo.full_name.casefold(): repo for repo in enumeration.repositories}
+    archived = tuple(repo.full_name for repo in enumeration.repositories if repo.archived)
+    targets: list[RepoTarget] = []
+    target_records: list[ScopeTarget] = []
+    reconciled_exclusions: list[ScopeExclusion] = []
+    unresolved_exclusions: list[str] = []
+    excluded_ids: set[int] = set()
+    for exclusion in scope.exclusions:
+        member = members_by_id.get(exclusion.repository_id)
+        locator_member = members_by_locator.get(exclusion.repository.casefold())
+        if member is None:
+            unresolved_exclusions.append(exclusion.repository)
+            reconciled_exclusions.append(
+                ScopeExclusion(
+                    repository_id=exclusion.repository_id,
+                    recorded_repository=exclusion.repository,
+                    current_repository="",
+                    reason=exclusion.reason,
+                    authority=exclusion.authority,
+                    status="unresolved",
+                    locator_drift=False,
+                    detail="stable repository ID is absent from current organization enumeration",
+                )
+            )
+            continue
+        locator_drift = member.full_name.casefold() != exclusion.repository.casefold()
+        locator_conflict = locator_member is not None and locator_member.repository_id != exclusion.repository_id
+        status = "archived_member" if member.archived else "active_excluded"
+        detail = (
+            "stable repository ID resolved an archived organization member"
+            if member.archived
+            else "stable repository ID resolved an active organization member"
+        )
+        if locator_drift:
+            detail += f"; recorded locator drifted to {member.full_name}"
+        if locator_conflict:
+            unresolved_exclusions.append(exclusion.repository)
+            status = "conflict"
+            detail += "; recorded locator now identifies a different repository ID"
+        excluded_ids.add(member.repository_id)
+        reconciled_exclusions.append(
+            ScopeExclusion(
+                repository_id=exclusion.repository_id,
+                recorded_repository=exclusion.repository,
+                current_repository=member.full_name,
+                reason=exclusion.reason,
+                authority=exclusion.authority,
+                status=status,
+                locator_drift=locator_drift,
+                detail=detail,
+            )
+        )
+    for repository in active:
+        if repository.repository_id in excluded_ids:
+            continue
+        key = repository.full_name.casefold()
+        override = overrides.get(key)
+        path = override.path if override is not None and override.path is not None else scope.workspace_root / repository.name
+        remote = override.remote if override is not None and override.remote is not None else "origin"
+        default_branch = (
+            override.default_branch
+            if override is not None and override.default_branch is not None
+            else repository.default_branch
+        )
+        targets.append(
+            RepoTarget(
+                repository.name,
+                path,
+                remote,
+                default_branch,
+                repository.full_name,
+                repository.repository_id,
+            )
+        )
+        target_records.append(
+            ScopeTarget(
+                repository_id=repository.repository_id,
+                repository=repository.full_name,
+                name=repository.name,
+                private=repository.private,
+                path=str(path),
+                remote=remote,
+                default_branch=default_branch,
+            )
+        )
+    mutation_blockers = list(enumeration.errors)
+    if not enumeration.complete:
+        mutation_blockers.insert(0, "complete provider-backed candidate scope could not be established")
+    if unresolved_exclusions:
+        mutation_blockers.append(
+            "unresolved or conflicting stable-identity exclusions require human disposition: "
+            + ", ".join(sorted(set(unresolved_exclusions), key=str.casefold))
+        )
+    reconciliation = ScopeReconciliation(
+        mode="github_organization",
+        organization=scope.organization,
+        completeness="complete" if enumeration.complete else "unknown",
+        detail=enumeration.detail,
+        candidates=tuple(repo.full_name for repo in active),
+        archived_members=archived,
+        exclusions=tuple(reconciled_exclusions),
+        resolved_targets=tuple(target_records),
+        unmatched_exclusions=tuple(sorted(set(unresolved_exclusions), key=str.casefold)),
+        unmatched_overrides=tuple(
+            item.repository for item in scope.overrides if item.repository.casefold() not in active_locators
+        ),
+        errors=enumeration.errors,
+        credential_kind=enumeration.credential_kind,
+        credential_access=enumeration.credential_access,
+        credential_actor=enumeration.credential_actor,
+        credential_scopes=enumeration.credential_scopes,
+        attested_public_repositories=enumeration.attested_public_repositories,
+        attested_private_repositories=enumeration.attested_private_repositories,
+        enumerated_public_repositories=enumeration.enumerated_public_repositories,
+        enumerated_private_repositories=enumeration.enumerated_private_repositories,
+        enumerated_total_repositories=enumeration.enumerated_total_repositories,
+        count_attestation_status=enumeration.count_attestation_status,
+        count_attestation_detail=enumeration.count_attestation_detail,
+        mutation_ready=not mutation_blockers,
+        mutation_blockers=tuple(mutation_blockers),
+    )
+    return replace(
+        config,
+        repositories=tuple(targets),
+        scope_reconciliation=reconciliation,
+    )
+
+
+def project_branch_cleanup_scope(
+    config: BranchCleanupConfig,
+    selected_repositories: Iterable[str],
+) -> BranchCleanupConfig:
+    """Project resolved targets without discarding their scope provenance."""
+    selected = tuple(dict.fromkeys(item.split("/", 1)[-1] for item in selected_repositories if item))
+    if not selected:
+        return config
+    selected_names = set(selected)
+    targets = tuple(target for target in config.repositories if target.name in selected_names)
+    scope = config.scope_reconciliation
+    if scope is None:
+        return replace(config, repositories=targets)
+    if scope.mode == "legacy_explicit_compatibility":
+        if not targets:
+            raise ValueError("selected repositories are absent from legacy branch cleanup config")
+        return replace(config, repositories=targets)
+
+    candidate_names = {item.split("/", 1)[-1] for item in scope.candidates}
+    missing = tuple(sorted(selected_names - candidate_names, key=str.casefold))
+    if missing and scope.completeness == "complete":
+        raise ValueError(f"selected repositories are absent from complete provider scope: {list(missing)}")
+    errors = list(scope.errors)
+    blockers = list(scope.mutation_blockers)
+    mutation_ready = scope.mutation_ready
+    if missing:
+        detail = "selected repositories were absent from partial provider evidence: " + ", ".join(missing)
+        errors.append(detail)
+        blockers.append(detail)
+        mutation_ready = False
+    projected = replace(
+        scope,
+        candidates=tuple(
+            locator for locator in scope.candidates if locator.split("/", 1)[-1] in selected_names
+        ),
+        resolved_targets=tuple(
+            target for target in scope.resolved_targets if target.name in selected_names
+        ),
+        errors=tuple(errors),
+        mutation_ready=mutation_ready,
+        mutation_blockers=tuple(blockers),
+    )
+    return replace(config, repositories=targets, scope_reconciliation=projected)
 
 
 def cleanup_branches(
@@ -205,24 +521,67 @@ def cleanup_branches(
 ) -> BranchCleanupReport:
     """Run discover, audit, normal cleanup, approved stale cleanup, and report phases."""
     started = _utc_now()
+    config = resolve_branch_cleanup_scope(config)
+    scope = config.scope_reconciliation
+    mutation_blocked = ""
+    if apply and scope is not None and not scope.mutation_ready:
+        mutation_blocked = "; ".join(scope.mutation_blockers) or "provider-backed scope is not mutation-ready"
+        finished = _utc_now()
+        return BranchCleanupReport(
+            schema_version=5,
+            dry_run=True,
+            started_at=started,
+            finished_at=finished,
+            repos=(),
+            scope=scope,
+            requested_apply=True,
+            mutation_blocked=mutation_blocked,
+        )
+    identity_checks = tuple(_target_identity(target) for target in config.repositories)
+    identity_blockers = tuple(
+        check
+        for check in identity_checks
+        if check is not None and not check.verified
+    )
+    if apply and identity_blockers:
+        mutation_blocked = "provider-backed local checkout identity preflight failed: " + "; ".join(
+            f"{check.expected_repository}: {check.detail}" for check in identity_blockers
+        )
+        finished = _utc_now()
+        return BranchCleanupReport(
+            schema_version=5,
+            dry_run=True,
+            started_at=started,
+            finished_at=finished,
+            repos=tuple(
+                _identity_preflight_report(target, check, mutation_blocked)
+                for target, check in zip(config.repositories, identity_checks)
+            ),
+            scope=scope,
+            requested_apply=True,
+            mutation_blocked=mutation_blocked,
+        )
     repo_reports = tuple(
         _cleanup_repo(
             config,
             target,
+            identity=identity,
             apply=apply,
             audit_stale=audit_stale,
             audit_github_prs=audit_github_prs,
             apply_normal_only=apply_normal_only,
         )
-        for target in config.repositories
+        for target, identity in zip(config.repositories, identity_checks)
     )
     finished = _utc_now()
     return BranchCleanupReport(
-        schema_version=3,
+        schema_version=5,
         dry_run=not apply,
         started_at=started,
         finished_at=finished,
         repos=repo_reports,
+        scope=scope,
+        requested_apply=apply,
     )
 
 
@@ -238,11 +597,34 @@ def cleanup_branches_with_retries(
     if max_apply_passes < 1:
         raise ValueError("max apply passes must be at least 1")
     started = _utc_now()
+    config = resolve_branch_cleanup_scope(config)
     reports: list[BranchCleanupReport] = []
     first = cleanup_branches(config, apply=False, audit_stale=audit_stale, audit_github_prs=audit_github_prs)
     reports.append(first)
     stopped_reason = "dry-run only; apply mode not requested"
     if apply:
+        scope = config.scope_reconciliation
+        if scope is not None and not scope.mutation_ready:
+            reports.append(
+                cleanup_branches(
+                    config,
+                    apply=True,
+                    audit_stale=audit_stale,
+                    audit_github_prs=audit_github_prs,
+                )
+            )
+            stopped_reason = "mutation blocked because complete provider-backed candidate scope was not established"
+            finished = _utc_now()
+            return BranchCleanupSequenceReport(
+                schema_version=5,
+                report_type="branch_cleanup_sequence",
+                dry_run=True,
+                started_at=started,
+                finished_at=finished,
+                max_apply_passes=max_apply_passes,
+                stopped_reason=stopped_reason,
+                reports=tuple(reports),
+            )
         stopped_reason = "no normal_cleanup would_delete refs remain"
         for pass_number in range(max_apply_passes):
             if pass_number > 0 and not _has_normal_would_delete(reports[-1]):
@@ -265,7 +647,7 @@ def cleanup_branches_with_retries(
                 stopped_reason = f"max apply passes reached ({max_apply_passes})"
     finished = _utc_now()
     return BranchCleanupSequenceReport(
-        schema_version=3,
+        schema_version=5,
         report_type="branch_cleanup_sequence",
         dry_run=not apply,
         started_at=started,
@@ -341,7 +723,7 @@ def main(argv: list[str] | None = None) -> int:
         print(render_sequence_text_report(report))
     else:
         print(render_text_report(report))
-    return 0
+    return 1 if _mutation_blocked(report) else 0
 
 
 def render_sequence_text_report(report: BranchCleanupSequenceReport) -> str:
@@ -370,6 +752,88 @@ def render_text_report(report: BranchCleanupReport) -> str:
         f"Mode: {mode}",
         f"Started: {report.started_at}",
         f"Finished: {report.finished_at}",
+        f"Scope mode: {report.scope.mode if report.scope is not None else 'unknown'}",
+        f"Scope completeness: {report.scope.completeness if report.scope is not None else 'unknown'}",
+        *(
+            [f"Organization: {report.scope.organization}"]
+            if report.scope is not None and report.scope.organization
+            else []
+        ),
+        *([f"Scope detail: {report.scope.detail}"] if report.scope is not None else []),
+        *(
+            [
+                "Credential: "
+                f"kind={report.scope.credential_kind} access={report.scope.credential_access} "
+                f"actor={report.scope.credential_actor or 'unknown'}"
+            ]
+            if report.scope is not None
+            else []
+        ),
+        *(
+            [
+                "Repository count attestation: "
+                f"status={report.scope.count_attestation_status} "
+                f"attested_public={report.scope.attested_public_repositories!r} "
+                f"attested_private={report.scope.attested_private_repositories!r} "
+                f"enumerated_public={report.scope.enumerated_public_repositories} "
+                f"enumerated_private={report.scope.enumerated_private_repositories} "
+                f"enumerated_total={report.scope.enumerated_total_repositories}"
+            ]
+            if report.scope is not None
+            else []
+        ),
+        *(
+            [f"Scope mutation blocker: {item}" for item in report.scope.mutation_blockers]
+            if report.scope is not None
+            else []
+        ),
+        *([f"Mutation blocked: {report.mutation_blocked}"] if report.mutation_blocked else []),
+        *(
+            [
+                "Scope summary: "
+                f"candidates={len(report.scope.candidates)} "
+                f"archived={len(report.scope.archived_members)} "
+                f"excluded={len(report.scope.exclusions)} "
+                f"resolved={len(report.scope.resolved_targets)} "
+                f"errors={len(report.scope.errors)}"
+            ]
+            if report.scope is not None
+            else []
+        ),
+        *(
+            [f"Scope error: {error}" for error in report.scope.errors]
+            if report.scope is not None
+            else []
+        ),
+        *(
+            [f"Unmatched exclusion: {item}" for item in report.scope.unmatched_exclusions]
+            if report.scope is not None
+            else []
+        ),
+        *(
+            [f"Unmatched override: {item}" for item in report.scope.unmatched_overrides]
+            if report.scope is not None
+            else []
+        ),
+        *(
+            [
+                f"Exclusion: id={item.repository_id} recorded={item.recorded_repository} "
+                f"current={item.current_repository or 'unresolved'} status={item.status} "
+                f"(reason={item.reason}; authority={item.authority})"
+                for item in report.scope.exclusions
+            ]
+            if report.scope is not None
+            else []
+        ),
+        *(
+            [
+                f"Resolved target: {item.repository} -> {item.path} "
+                f"(remote={item.remote}; default_branch={item.default_branch})"
+                for item in report.scope.resolved_targets
+            ]
+            if report.scope is not None
+            else []
+        ),
         (
             "Worktrees: "
             f"discovered={worktree_summary['discovered']} "
@@ -386,6 +850,11 @@ def render_text_report(report: BranchCleanupReport) -> str:
     for repo in report.repos:
         lines.append(f"{repo.repo}:")
         lines.append(f"  path: {repo.path}")
+        if repo.identity is not None:
+            lines.append(
+                f"  identity: {repo.identity.status} ({repo.identity.detail}); "
+                f"expected={repo.identity.expected_repository} id={repo.identity.expected_repository_id}"
+            )
         if repo.worktree_inspection_error:
             lines.append(f"  worktree inspection error: {repo.worktree_inspection_error}")
         if repo.worktree_prune_error:
@@ -462,6 +931,9 @@ def _cleanup_report_to_json(report: BranchCleanupReport) -> dict[str, object]:
         "dry_run": report.dry_run,
         "started_at": report.started_at,
         "finished_at": report.finished_at,
+        "requested_apply": report.requested_apply,
+        "mutation_blocked": report.mutation_blocked,
+        "scope": _scope_to_json(report.scope),
         "worktree_summary": _worktree_summary(report.repos),
         "repositories": [
             {
@@ -471,6 +943,7 @@ def _cleanup_report_to_json(report: BranchCleanupReport) -> dict[str, object]:
                 "starting_branch": repo.starting_branch,
                 "default_branch": repo.default_branch,
                 "default_branch_evidence": repo.default_branch_evidence,
+                "identity": _identity_to_json(repo.identity),
                 "worktree_inspection_error": repo.worktree_inspection_error,
                 "worktree_prune_error": repo.worktree_prune_error,
                 "actions": [
@@ -588,6 +1061,86 @@ def _sequence_report_to_json(report: BranchCleanupSequenceReport) -> dict[str, o
     }
 
 
+def _scope_to_json(scope: ScopeReconciliation | None) -> dict[str, object] | None:
+    if scope is None:
+        return None
+    return {
+        "mode": scope.mode,
+        "organization": scope.organization,
+        "completeness": scope.completeness,
+        "detail": scope.detail,
+        "credential": {
+            "kind": scope.credential_kind,
+            "access": scope.credential_access,
+            "actor": scope.credential_actor,
+            "scopes": list(scope.credential_scopes),
+        },
+        "repository_count_attestation": {
+            "status": scope.count_attestation_status,
+            "detail": scope.count_attestation_detail,
+            "attested_public": scope.attested_public_repositories,
+            "attested_private": scope.attested_private_repositories,
+            "enumerated_public": scope.enumerated_public_repositories,
+            "enumerated_private": scope.enumerated_private_repositories,
+            "enumerated_total": scope.enumerated_total_repositories,
+        },
+        "mutation_ready": scope.mutation_ready,
+        "mutation_blockers": list(scope.mutation_blockers),
+        "candidates": list(scope.candidates),
+        "archived_members": list(scope.archived_members),
+        "exclusions": [
+            {
+                "repository_id": item.repository_id,
+                "recorded_repository": item.recorded_repository,
+                "current_repository": item.current_repository,
+                "reason": item.reason,
+                "authority": item.authority,
+                "status": item.status,
+                "locator_drift": item.locator_drift,
+                "detail": item.detail,
+            }
+            for item in scope.exclusions
+        ],
+        "resolved_targets": [
+            {
+                "repository_id": item.repository_id,
+                "repository": item.repository,
+                "name": item.name,
+                "private": item.private,
+                "path": item.path,
+                "remote": item.remote,
+                "default_branch": item.default_branch,
+            }
+            for item in scope.resolved_targets
+        ],
+        "unmatched_exclusions": list(scope.unmatched_exclusions),
+        "unmatched_overrides": list(scope.unmatched_overrides),
+        "errors": list(scope.errors),
+    }
+
+
+def _identity_to_json(identity: RepositoryIdentityVerification | None) -> dict[str, object] | None:
+    if identity is None:
+        return None
+    return {
+        "status": identity.status,
+        "detail": identity.detail,
+        "expected_repository": identity.expected_repository,
+        "expected_repository_id": identity.expected_repository_id,
+        "remote": identity.remote,
+        "fetch_urls": list(identity.fetch_urls),
+        "push_urls": list(identity.push_urls),
+        "observed_repository": identity.observed_repository,
+        "observed_repository_id": identity.observed_repository_id,
+    }
+
+
+def _mutation_blocked(report: BranchCleanupReport | BranchCleanupSequenceReport) -> bool:
+    if isinstance(report, BranchCleanupSequenceReport):
+        return any(item.mutation_blocked for item in report.reports)
+    return bool(report.mutation_blocked)
+
+
 def remote_branch_name(refname: str, remote: str = "origin") -> str | None:
     prefix = f"refs/remotes/{remote}/"
     if not refname.startswith(prefix):
@@ -598,22 +1151,59 @@ def remote_branch_name(refname: str, remote: str = "origin") -> str | None:
     return branch
 
 
+def _target_identity(target: RepoTarget) -> RepositoryIdentityVerification | None:
+    if not target.expected_repository or target.expected_repository_id is None:
+        return None
+    if not target.path.exists() or not target.path.is_dir():
+        return None
+    if _git(target.path, "rev-parse", "--git-dir").returncode != 0:
+        return None
+    return verify_local_repository_identity(
+        target.path,
+        target.remote,
+        target.expected_repository,
+        target.expected_repository_id,
+    )
+
+
+def _identity_preflight_report(
+    target: RepoTarget,
+    identity: RepositoryIdentityVerification | None,
+    blocker: str,
+) -> RepoReport:
+    report = RepoReport(repo=target.name, path=str(target.path), identity=identity)
+    if not target.path.exists():
+        report.skipped = "repository path does not exist"
+    elif not target.path.is_dir() or _git(target.path, "rev-parse", "--git-dir").returncode != 0:
+        report.skipped = "path is not a Git repository"
+    elif identity is not None and not identity.verified:
+        report.skipped = f"repository identity {identity.status}: {identity.detail}"
+    else:
+        report.skipped = blocker
+    return report
+
+
 def _cleanup_repo(
     config: BranchCleanupConfig,
     target: RepoTarget,
     *,
+    identity: RepositoryIdentityVerification | None,
     apply: bool,
     audit_stale: bool,
     audit_github_prs: bool,
     apply_normal_only: bool,
 ) -> RepoReport:
     report = RepoReport(repo=target.name, path=str(target.path))
+    report.identity = identity
     path = target.path
     if not path.exists():
         report.skipped = "repository path does not exist"
         return report
     if _git(path, "rev-parse", "--git-dir").returncode != 0:
         report.skipped = "path is not a Git repository"
+        return report
+    if identity is not None and not identity.verified:
+        report.skipped = f"repository identity {identity.status}: {identity.detail}"
         return report
     initial_worktrees, worktree_error = _discover_worktrees(path)
     if worktree_error:
@@ -1960,6 +2550,24 @@ def _gh(cwd: Path, *argv: str) -> GitCommand:
     )
 
 
+def _provider_gh(argv: tuple[str, ...]) -> GitCommand:
+    process = subprocess.run(
+        argv,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+        env=_noninteractive_environment(),
+    )
+    return GitCommand(
+        argv=argv,
+        returncode=process.returncode,
+        stdout=process.stdout.rstrip("\n"),
+        stderr=process.stderr.rstrip("\n"),
+    )
+
+
 def _noninteractive_environment() -> dict[str, str]:
     environment = dict(os.environ)
     environment["GIT_TERMINAL_PROMPT"] = "0"
@@ -1990,6 +2598,127 @@ def _repo_target(item: dict[str, object], base: Path) -> RepoTarget:
         remote=str(item.get("remote", "origin")),
         default_branch=str(item["default_branch"]) if item.get("default_branch") else None,
     )
+
+
+def _organization_scope(value: object, base: Path) -> GitHubOrganizationScope | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("scope must be an object")
+    allowed = {"provider", "organization", "workspace_root", "exclusions", "repository_overrides"}
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(f"scope contains unsupported fields: {unknown}")
+    if value.get("provider") != "github_organization":
+        raise ValueError("scope.provider must be 'github_organization'")
+    organization = value.get("organization")
+    workspace_root_value = value.get("workspace_root")
+    if not isinstance(organization, str) or not organization.strip() or "/" in organization:
+        raise ValueError("scope.organization must be a non-empty GitHub organization login")
+    organization = organization.strip()
+    if not isinstance(workspace_root_value, str) or not workspace_root_value.strip():
+        raise ValueError("scope.workspace_root must be a non-empty path")
+    workspace_root = Path(workspace_root_value)
+    if not workspace_root.is_absolute():
+        workspace_root = (base / workspace_root).resolve()
+
+    raw_exclusions = value.get("exclusions", [])
+    if not isinstance(raw_exclusions, list):
+        raise ValueError("scope.exclusions must be an array")
+    exclusions = tuple(_repository_exclusion(item, organization) for item in raw_exclusions)
+    exclusion_keys = [item.repository.casefold() for item in exclusions]
+    if len(exclusion_keys) != len(set(exclusion_keys)):
+        raise ValueError("scope.exclusions repository locators must be unique")
+    exclusion_ids = [item.repository_id for item in exclusions]
+    if len(exclusion_ids) != len(set(exclusion_ids)):
+        raise ValueError("scope.exclusions repository IDs must be unique")
+
+    raw_overrides = value.get("repository_overrides", {})
+    if not isinstance(raw_overrides, dict):
+        raise ValueError("scope.repository_overrides must be an object")
+    overrides = tuple(
+        _repository_override(repository, item, organization, workspace_root)
+        for repository, item in raw_overrides.items()
+    )
+    override_keys = [item.repository.casefold() for item in overrides]
+    if len(override_keys) != len(set(override_keys)):
+        raise ValueError("scope.repository_overrides locators must be unique")
+    return GitHubOrganizationScope(organization, workspace_root, exclusions, overrides)
+
+
+def _repository_exclusion(value: object, organization: str) -> RepositoryExclusion:
+    if not isinstance(value, dict):
+        raise ValueError("scope.exclusions entries must be objects")
+    unknown = sorted(set(value) - {"repository_id", "repository", "reason", "authority"})
+    if unknown:
+        raise ValueError(f"scope exclusion contains unsupported fields: {unknown}")
+    repository_id = value.get("repository_id")
+    repository = value.get("repository")
+    reason = value.get("reason")
+    authority = value.get("authority")
+    _validate_repository_locator(repository, organization, "scope exclusion repository")
+    if not isinstance(repository_id, int) or isinstance(repository_id, bool) or repository_id < 1:
+        raise ValueError(f"scope exclusion {repository!r} requires a positive numeric repository_id")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError(f"scope exclusion {repository!r} requires a durable reason")
+    if not isinstance(authority, str) or not authority.strip():
+        raise ValueError(f"scope exclusion {repository!r} requires an authority")
+    return RepositoryExclusion(repository_id, str(repository), reason.strip(), authority.strip())
+
+
+def _repository_override(
+    repository: object,
+    value: object,
+    organization: str,
+    workspace_root: Path,
+) -> RepositoryOverride:
+    _validate_repository_locator(repository, organization, "scope repository override")
+    if not isinstance(value, dict):
+        raise ValueError(f"scope repository override {repository!r} must be an object")
+    unknown = sorted(set(value) - {"path", "remote", "default_branch"})
+    if unknown:
+        raise ValueError(f"scope repository override {repository!r} contains unsupported fields: {unknown}")
+    if not value:
+        raise ValueError(f"scope repository override {repository!r} must change at least one local setting")
+    path_value = value.get("path")
+    path = None
+    if path_value is not None:
+        if not isinstance(path_value, str) or not path_value.strip():
+            raise ValueError(f"scope repository override {repository!r} has an invalid path")
+        path = Path(path_value)
+        if not path.is_absolute():
+            path = (workspace_root / path).resolve()
+    remote = value.get("remote")
+    default_branch = value.get("default_branch")
+    if remote is not None and (not isinstance(remote, str) or not remote.strip()):
+        raise ValueError(f"scope repository override {repository!r} has an invalid remote")
+    if default_branch is not None and (
+        not isinstance(default_branch, str) or not default_branch.strip()
+    ):
+        raise ValueError(f"scope repository override {repository!r} has an invalid default_branch")
+    return RepositoryOverride(
+        repository=str(repository),
+        path=path,
+        remote=remote.strip() if isinstance(remote, str) else None,
+        default_branch=default_branch.strip() if isinstance(default_branch, str) else None,
+    )
+
+
+def _validate_repository_locator(value: object, organization: str, field: str) -> None:
+    if not isinstance(value, str) or value.count("/") != 1:
+        raise ValueError(f"{field} must use exact organization/repository form")
+    owner, name = value.split("/", 1)
+    if owner.casefold() != organization.casefold() or not name:
+        raise ValueError(f"{field} must identify a repository in {organization}")
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise json.JSONDecodeError(f"duplicate object key: {key}", "", 0)
+        result[key] = value
+    return result
 
 
 def _stale_approval(item: dict[str, object]) -> StaleApproval:

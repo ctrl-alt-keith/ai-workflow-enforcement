@@ -1584,7 +1584,11 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual({"match": 0, "drift": 0, "unknown": 0}, data["local_source_summary"])
         self.assertEqual(0, data["hosted_governance_summary"]["drift"])
         self.assertEqual("drift", data["policy_override_membership"]["status"])
+        self.assertEqual("matched", data["repository_count_attestation"]["status"])
+        self.assertEqual(1, data["repository_count_attestation"]["attested_public"])
+        self.assertEqual(1, data["repository_count_attestation"]["enumerated_total"])
         self.assertIn("Local source mode: not_checked", text)
+        self.assertIn("Repository count attestation: status=matched", text)
         self.assertIn("local repo root: not checked", text)
 
     def test_org_audit_reports_orphaned_policy_overrides_after_complete_enumeration(self) -> None:
@@ -1780,19 +1784,40 @@ class FakeGh:
     def __call__(self, argv: tuple[str, ...]) -> GhCommand:
         self.commands.append(argv)
         key = argv[-1]
+        if key == "/user":
+            return _included_settings_gh(argv, {"login": "operator"})
+        if key == "/orgs/ctrl-alt-keith":
+            legacy_repositories = self.responses.get("__repo_list__", [])
+            return _included_settings_gh(
+                argv,
+                {
+                    "login": "ctrl-alt-keith",
+                    "public_repos": sum(not bool(entry.get("isPrivate")) for entry in legacy_repositories),
+                    "total_private_repos": sum(bool(entry.get("isPrivate")) for entry in legacy_repositories),
+                },
+            )
         if key.startswith("/orgs/") and key.endswith("/repos?type=all&per_page=100"):
             legacy_repositories = self.responses.get("__repo_list__", [])
             response = [
                 [
                     {
+                        "id": index,
+                        "name": entry["nameWithOwner"].split("/", 1)[1],
                         "full_name": entry["nameWithOwner"],
                         "owner": {"login": entry["nameWithOwner"].split("/", 1)[0]},
+                        "archived": False,
+                        "private": bool(entry.get("isPrivate")),
+                        "visibility": "private" if entry.get("isPrivate") else "public",
+                        "default_branch": "main",
                     }
-                    for entry in legacy_repositories
+                    for index, entry in enumerate(legacy_repositories, start=1)
                 ]
             ]
         elif key.startswith("/user/memberships/orgs/"):
-            response = self.responses.get(key, {"state": "active", "role": "admin"})
+            response = self.responses.get(
+                key,
+                {"state": "active", "role": "admin", "user": {"login": "operator"}},
+            )
         else:
             response = self.responses[key]
         if isinstance(response, tuple):
@@ -1801,6 +1826,11 @@ class FakeGh:
         if isinstance(response, GhCommand):
             return response
         return GhCommand(argv=argv, returncode=0, stdout=json.dumps(response), stderr="")
+
+
+def _included_settings_gh(argv: tuple[str, ...], body: object) -> GhCommand:
+    headers = "HTTP/2 200 OK\nX-OAuth-Scopes: repo, admin:org\n\n"
+    return GhCommand(argv=argv, returncode=0, stdout=headers + json.dumps(body), stderr="")
 
 
 def _responses(

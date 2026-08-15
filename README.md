@@ -267,9 +267,10 @@ intended local handoff workflow.
 
 ## Safe Refresh Repositories
 
-The safe refresh helper updates configured local Git checkouts before another
-tool depends on local source state. It reuses the branch-cleanup JSON
-`repositories` inventory, verifies clean working trees, expected branches, and
+The safe refresh helper updates resolved local Git checkouts before another
+tool depends on local source state. It reuses branch cleanup's provider-backed
+scope, exclusions, workspace resolution, and narrow overrides, verifies clean
+working trees, exact GitHub repository identity, expected branches, and
 expected upstreams, then runs `git fetch` and `git pull --ff-only`.
 
 ```sh
@@ -304,9 +305,14 @@ behavior.
 ## Branch Cleanup Reinforcement
 
 The branch cleanup tool is a dry-run-first operational reinforcement helper for
-configured Git repositories. It reports normal Git-proven merged branch cleanup
-separately from stale non-ancestor cleanup that current evidence proves
-eligible, and it only mutates refs with explicit `--apply`.
+active GitHub organization members. It reconciles complete provider scope,
+stable-ID reason/authority exclusions, and provider-verified local checkout
+identity before it reports normal Git-proven merged branch cleanup separately
+from stale non-ancestor cleanup that current evidence proves eligible. It only
+mutates refs with explicit `--apply`; incomplete credential scope, missing or
+mismatched full-organization public/private/total count attestation, unresolved
+exclusions, and local identity failures block apply before cleanup. Archived
+members participate in count attestation but are not cleanup candidates.
 
 ```sh
 python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json

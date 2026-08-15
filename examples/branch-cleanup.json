@@ -1,12 +1,11 @@
 {
-  "repositories": [
-    {
-      "name": "ai-workflow-enforcement",
-      "path": "..",
-      "remote": "origin",
-      "default_branch": "main"
-    }
-  ],
+  "scope": {
+    "provider": "github_organization",
+    "organization": "ctrl-alt-keith",
+    "workspace_root": "[workspace-root]",
+    "exclusions": [],
+    "repository_overrides": {}
+  },
   "protected_branches": [
     "main",
     "master",

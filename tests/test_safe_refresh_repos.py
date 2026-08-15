@@ -7,6 +7,10 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
+
+from enforcement import branch_cleanup, safe_refresh_repos as safe_refresh_module
+from enforcement.github_org_repositories import OrganizationRepository, OrganizationRepositoryEnumeration
 
 from enforcement.safe_refresh_repos import (
     RepoTarget,
@@ -91,6 +95,42 @@ class SafeRefreshReposTests(unittest.TestCase):
         self.assertEqual("blocked", result.status)
         self.assertIn("current branch is 'topic', expected 'main'", result.details)
 
+    def test_provider_identity_mismatch_blocks_before_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            target = RepoTarget(
+                "sample",
+                repo,
+                expected_repository="ctrl-alt-keith/sample",
+                expected_repository_id=7,
+            )
+            identity = branch_cleanup.RepositoryIdentityVerification(
+                status="mismatch",
+                detail="configured remote identifies 'someone-else/sample'",
+                expected_repository="ctrl-alt-keith/sample",
+                expected_repository_id=7,
+                remote="origin",
+                observed_repository="someone-else/sample",
+            )
+            with (
+                mock.patch.object(
+                    safe_refresh_module,
+                    "verify_local_repository_identity",
+                    return_value=identity,
+                ),
+                mock.patch.object(
+                    safe_refresh_module,
+                    "_git",
+                    wraps=safe_refresh_module._git,
+                ) as git,
+            ):
+                report = safe_refresh_repos(SafeRefreshConfig((target,)))
+
+        result = report.repositories[0]
+        self.assertEqual("blocked", result.status)
+        self.assertEqual("mismatch", result.identity.status)
+        self.assertFalse(any(call.args[1][0] == "fetch" for call in git.call_args_list))
+
     def test_selected_repos_skip_unselected_inventory_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -147,6 +187,42 @@ class SafeRefreshReposTests(unittest.TestCase):
         self.assertEqual((root / "repo").resolve(), config.repositories[0].path)
         self.assertFalse(hasattr(config, "protected_branches"))
         self.assertFalse(hasattr(config, "stale_approvals"))
+
+    def test_loads_complete_provider_backed_branch_cleanup_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "branch-cleanup.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "scope": {
+                            "provider": "github_organization",
+                            "organization": "ctrl-alt-keith",
+                            "workspace_root": str(root),
+                            "exclusions": [],
+                            "repository_overrides": {},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            enumeration = OrganizationRepositoryEnumeration(
+                organization="ctrl-alt-keith",
+                repositories=(
+                    OrganizationRepository(1, "sample", "ctrl-alt-keith/sample", False, True, "main"),
+                ),
+                complete=True,
+                detail="complete",
+            )
+            with mock.patch.object(
+                branch_cleanup,
+                "enumerate_organization_repositories",
+                return_value=enumeration,
+            ):
+                config = load_config(config_path)
+
+        self.assertEqual(("sample",), tuple(repo.name for repo in config.repositories))
+        self.assertEqual(root / "sample", config.repositories[0].path)
 
     def test_config_rejects_duplicate_object_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

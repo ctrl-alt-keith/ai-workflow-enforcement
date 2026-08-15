@@ -1,8 +1,8 @@
-"""Safely refresh configured Git repository checkouts.
+"""Safely refresh branch-cleanup-resolved Git repository checkouts.
 
 This helper intentionally owns only the deterministic refresh mechanics:
 verify the checkout is safe to update, fetch, fast-forward, and report the
-result. Inventory can be loaded from the existing branch-cleanup JSON config.
+result. Inventory is resolved by the existing branch-cleanup JSON contract.
 """
 
 from __future__ import annotations
@@ -15,6 +15,12 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Iterable
+
+from . import branch_cleanup
+from .github_repository_identity import (
+    RepositoryIdentityVerification,
+    verify_local_repository_identity,
+)
 
 
 STATUS_REFRESHED = "refreshed"
@@ -29,6 +35,8 @@ class RepoTarget:
     path: Path
     remote: str = "origin"
     default_branch: str = "main"
+    expected_repository: str = ""
+    expected_repository_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +62,7 @@ class RepoRefreshResult:
     details: list[str] = field(default_factory=list)
     before: str = ""
     after: str = ""
+    identity: RepositoryIdentityVerification | None = None
 
 
 @dataclass(frozen=True)
@@ -70,30 +79,26 @@ class SafeRefreshReport:
 
 
 def load_config(path: Path) -> SafeRefreshConfig:
-    """Load repository inventory from branch-cleanup-compatible JSON config."""
-    data = json.loads(
-        path.read_text(encoding="utf-8"),
-        object_pairs_hook=_unique_object,
+    """Resolve the canonical branch-cleanup inventory for safe refresh."""
+    cleanup_config = branch_cleanup.resolve_branch_cleanup_scope(branch_cleanup.load_config(path))
+    scope = cleanup_config.scope_reconciliation
+    if scope is not None and not scope.mutation_ready:
+        details = "; ".join(scope.mutation_blockers) or scope.detail
+        raise ValueError(f"safe refresh requires mutation-ready provider-backed candidate scope: {details}")
+    repositories = tuple(
+        RepoTarget(
+            target.name,
+            target.path,
+            target.remote,
+            target.default_branch or "main",
+            target.expected_repository,
+            target.expected_repository_id,
+        )
+        for target in cleanup_config.repositories
     )
-    base = path.parent
-    raw_repositories = data.get("repositories", ())
-    repositories = tuple(_repo_target(item, base) for item in raw_repositories)
     if not repositories:
-        raise ValueError("safe refresh config must define at least one repository")
-    names = [repo.name for repo in repositories]
-    duplicate_names = sorted({name for name in names if names.count(name) > 1})
-    if duplicate_names:
-        raise ValueError(f"repository names must be unique: {duplicate_names}")
+        raise ValueError("safe refresh config resolved no active, included repositories")
     return SafeRefreshConfig(repositories=repositories)
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise json.JSONDecodeError(f"duplicate object key: {key}", "", 0)
-        result[key] = value
-    return result
 
 
 def safe_refresh_repos(
@@ -155,6 +160,17 @@ def safe_refresh_repo(target: RepoTarget) -> RepoRefreshResult:
     if git_dir.returncode != 0:
         result.details.append(f"path is not a Git repository: {_command_failure_detail(git_dir)}")
         return result
+    if target.expected_repository and target.expected_repository_id is not None:
+        identity = verify_local_repository_identity(
+            target.path,
+            target.remote,
+            target.expected_repository,
+            target.expected_repository_id,
+        )
+        result.identity = identity
+        if not identity.verified:
+            result.details.append(f"repository identity {identity.status}: {identity.detail}")
+            return result
 
     clean = _require_clean_worktree(target.path)
     if clean is not None:
@@ -279,6 +295,8 @@ def render_text_report(report: SafeRefreshReport) -> str:
         lines.append(f"  path: {repo.path}")
         lines.append(f"  expected branch: {repo.default_branch}")
         lines.append(f"  remote: {repo.remote}")
+        if repo.identity is not None:
+            lines.append(f"  identity: {repo.identity.status} ({repo.identity.detail})")
         if repo.before:
             lines.append(f"  before: {repo.before}")
         if repo.after:
@@ -309,6 +327,7 @@ def _report_to_json(report: SafeRefreshReport) -> dict[str, object]:
                 "status": repo.status,
                 "before": repo.before,
                 "after": repo.after,
+                "identity": _identity_to_json(repo.identity),
                 "details": list(repo.details),
             }
             for repo in report.repositories
@@ -316,25 +335,20 @@ def _report_to_json(report: SafeRefreshReport) -> dict[str, object]:
     }
 
 
-def _repo_target(data: object, base: Path) -> RepoTarget:
-    if not isinstance(data, dict):
-        raise ValueError("repository entries must be objects")
-    name = data.get("name")
-    path = data.get("path")
-    if not isinstance(name, str) or not name:
-        raise ValueError("repository entry missing non-empty name")
-    if not isinstance(path, str) or not path:
-        raise ValueError(f"repository {name!r} missing non-empty path")
-    remote = data.get("remote", "origin")
-    default_branch = data.get("default_branch", "main")
-    if not isinstance(remote, str) or not remote:
-        raise ValueError(f"repository {name!r} has invalid remote")
-    if not isinstance(default_branch, str) or not default_branch:
-        raise ValueError(f"repository {name!r} has invalid default_branch")
-    repo_path = Path(path)
-    if not repo_path.is_absolute():
-        repo_path = (base / repo_path).resolve()
-    return RepoTarget(name=name, path=repo_path, remote=remote, default_branch=default_branch)
+def _identity_to_json(identity: RepositoryIdentityVerification | None) -> dict[str, object] | None:
+    if identity is None:
+        return None
+    return {
+        "status": identity.status,
+        "detail": identity.detail,
+        "expected_repository": identity.expected_repository,
+        "expected_repository_id": identity.expected_repository_id,
+        "remote": identity.remote,
+        "fetch_urls": list(identity.fetch_urls),
+        "push_urls": list(identity.push_urls),
+        "observed_repository": identity.observed_repository,
+        "observed_repository_id": identity.observed_repository_id,
+    }
 
 
 def _require_clean_worktree(path: Path) -> str | None:
