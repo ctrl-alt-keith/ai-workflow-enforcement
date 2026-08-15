@@ -1829,7 +1829,7 @@ class FakeGh:
 
 
 def _included_settings_gh(argv: tuple[str, ...], body: object) -> GhCommand:
-    headers = "HTTP/2 200 OK\nX-OAuth-Scopes: repo, admin:org\n\n"
+    headers = "HTTP/2 200 OK\nX-OAuth-Scopes: repo, read:org, gist\n\n"
     return GhCommand(argv=argv, returncode=0, stdout=headers + json.dumps(body), stderr="")
 
 

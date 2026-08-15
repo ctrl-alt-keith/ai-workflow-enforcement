@@ -15,29 +15,38 @@ class Result:
 
 
 class GitHubOrganizationRepositoryTests(unittest.TestCase):
-    def test_exact_public_private_and_total_match_is_complete(self) -> None:
-        runner = FakeRunner(
-            pages=[
-                [_repo("public", 1)],
-                [_repo("private", 2, private=True), _repo("archived", 3, archived=True, private=True)],
-            ],
-        )
-        enumeration = enumerate_organization_repositories("ctrl-alt-keith", runner)
-        self.assertTrue(enumeration.complete)
-        self.assertEqual("oauth_scope_bearing", enumeration.credential_kind)
-        self.assertEqual("all_repositories", enumeration.credential_access)
-        self.assertEqual(("admin:org", "repo"), enumeration.credential_scopes)
-        self.assertEqual(1, enumeration.attested_public_repositories)
-        self.assertEqual(2, enumeration.attested_private_repositories)
-        self.assertEqual(1, enumeration.enumerated_public_repositories)
-        self.assertEqual(2, enumeration.enumerated_private_repositories)
-        self.assertEqual(3, enumeration.enumerated_total_repositories)
-        self.assertEqual("matched", enumeration.count_attestation_status)
-        self.assertEqual(("archived", "private", "public"), tuple(repo.name for repo in enumeration.repositories))
-        self.assertTrue(enumeration.repositories[0].archived)
-        self.assertIn("--paginate", runner.commands[0])
-        self.assertIn("--slurp", runner.commands[0])
-        self.assertIn(("gh", "api", "--include", "/orgs/ctrl-alt-keith"), runner.commands)
+    def test_supported_scope_profiles_with_exact_counts_are_complete(self) -> None:
+        for scopes in (
+            ("admin:public_key", "gist", "read:org", "repo"),
+            ("admin:org", "notifications", "repo"),
+        ):
+            with self.subTest(scopes=scopes):
+                runner = FakeRunner(
+                    pages=[
+                        [_repo("public", 1)],
+                        [_repo("private", 2, private=True), _repo("archived", 3, archived=True, private=True)],
+                    ],
+                    scopes=scopes,
+                )
+                enumeration = enumerate_organization_repositories("ctrl-alt-keith", runner)
+                self.assertTrue(enumeration.complete)
+                self.assertEqual("oauth_scope_bearing", enumeration.credential_kind)
+                self.assertEqual("all_repositories", enumeration.credential_access)
+                self.assertEqual(tuple(sorted(scopes, key=str.casefold)), enumeration.credential_scopes)
+                self.assertEqual(1, enumeration.attested_public_repositories)
+                self.assertEqual(2, enumeration.attested_private_repositories)
+                self.assertEqual(1, enumeration.enumerated_public_repositories)
+                self.assertEqual(2, enumeration.enumerated_private_repositories)
+                self.assertEqual(3, enumeration.enumerated_total_repositories)
+                self.assertEqual("matched", enumeration.count_attestation_status)
+                self.assertEqual(
+                    ("archived", "private", "public"),
+                    tuple(repo.name for repo in enumeration.repositories),
+                )
+                self.assertTrue(enumeration.repositories[0].archived)
+                self.assertIn("--paginate", runner.commands[0])
+                self.assertIn("--slurp", runner.commands[0])
+                self.assertIn(("gh", "api", "--include", "/orgs/ctrl-alt-keith"), runner.commands)
 
     def test_private_count_mismatch_is_unknown_with_partial_evidence(self) -> None:
         runner = FakeRunner(
@@ -106,17 +115,73 @@ class GitHubOrganizationRepositoryTests(unittest.TestCase):
                 self.assertEqual(("visible",), tuple(repo.name for repo in enumeration.repositories))
                 self.assertTrue(any("full organization details" in item for item in enumeration.errors))
 
-    def test_repo_and_read_org_without_admin_org_is_unknown(self) -> None:
-        enumeration = enumerate_organization_repositories(
-            "ctrl-alt-keith", FakeRunner(pages=[[_repo("visible", 1)]], scopes=("read:org", "repo"))
+    def test_full_organization_identity_or_scope_disagreement_is_unknown(self) -> None:
+        cases = (
+            (
+                FakeRunner(
+                    pages=[[_repo("visible", 1)]],
+                    org_details={"login": "different-org", "public_repos": 1, "total_private_repos": 0},
+                ),
+                "did not identify the requested organization",
+            ),
+            (
+                FakeRunner(
+                    pages=[[_repo("visible", 1)]],
+                    org_scopes=("admin:org", "repo"),
+                ),
+                "did not prove the same OAuth scope set",
+            ),
         )
-        self.assertFalse(enumeration.complete)
-        self.assertEqual("unknown", enumeration.credential_access)
+        for runner, expected in cases:
+            with self.subTest(expected=expected):
+                enumeration = enumerate_organization_repositories("ctrl-alt-keith", runner)
+                self.assertFalse(enumeration.complete)
+                self.assertEqual(("visible",), tuple(repo.name for repo in enumeration.repositories))
+                self.assertTrue(any(expected in item for item in enumeration.errors))
+
+    def test_default_gh_scopes_require_successful_full_detail_and_count_proof(self) -> None:
+        enumeration = enumerate_organization_repositories(
+            "ctrl-alt-keith",
+            FakeRunner(
+                pages=[[_repo("visible", 1)]],
+                scopes=("admin:public_key", "gist", "read:org", "repo"),
+            ),
+        )
+        self.assertTrue(enumeration.complete)
+        self.assertEqual("all_repositories", enumeration.credential_access)
         self.assertEqual(("visible",), tuple(repo.name for repo in enumeration.repositories))
         self.assertEqual(1, enumeration.attested_public_repositories)
         self.assertEqual(0, enumeration.attested_private_repositories)
-        self.assertEqual("unknown", enumeration.count_attestation_status)
-        self.assertIn("acting OAuth credential lacks required all-repository scopes: admin:org", enumeration.errors)
+        self.assertEqual("matched", enumeration.count_attestation_status)
+        self.assertEqual((), enumeration.errors)
+
+    def test_missing_required_repository_or_organization_scope_is_unknown(self) -> None:
+        cases = (
+            (("read:org",), "repo"),
+            (("repo",), "read:org or admin:org"),
+        )
+        for scopes, missing in cases:
+            with self.subTest(scopes=scopes):
+                enumeration = enumerate_organization_repositories(
+                    "ctrl-alt-keith", FakeRunner(pages=[[_repo("visible", 1)]], scopes=scopes)
+                )
+                self.assertFalse(enumeration.complete)
+                self.assertEqual("unknown", enumeration.credential_access)
+                self.assertEqual(("visible",), tuple(repo.name for repo in enumeration.repositories))
+                self.assertTrue(any(missing in item for item in enumeration.errors))
+
+    def test_default_gh_scopes_with_actor_disagreement_are_unknown(self) -> None:
+        enumeration = enumerate_organization_repositories(
+            "ctrl-alt-keith",
+            FakeRunner(
+                pages=[[_repo("visible", 1)]],
+                scopes=("gist", "read:org", "repo"),
+                membership={"state": "active", "role": "admin", "user": {"login": "different-actor"}},
+            ),
+        )
+        self.assertFalse(enumeration.complete)
+        self.assertEqual("matched", enumeration.count_attestation_status)
+        self.assertTrue(any("identity does not match" in item for item in enumeration.errors))
 
     def test_fine_grained_or_app_credential_without_scope_breadth_is_unknown(self) -> None:
         enumeration = enumerate_organization_repositories(
@@ -178,6 +243,14 @@ class GitHubOrganizationRepositoryTests(unittest.TestCase):
         self.assertEqual((), enumeration.repositories)
         self.assertIn("HTTP 403", enumeration.errors[0])
 
+    def test_malformed_pagination_is_unknown(self) -> None:
+        enumeration = enumerate_organization_repositories(
+            "ctrl-alt-keith", FakeRunner(pages=[_repo("not-a-page", 1)])
+        )
+        self.assertFalse(enumeration.complete)
+        self.assertEqual((), enumeration.repositories)
+        self.assertIn("paginated repository lists", enumeration.errors[0])
+
 
 class FakeRunner:
     def __init__(
@@ -186,7 +259,8 @@ class FakeRunner:
         pages: object,
         membership: object | None = None,
         user: object | None = None,
-        scopes: tuple[str, ...] = ("admin:org", "repo"),
+        scopes: tuple[str, ...] = ("gist", "read:org", "repo"),
+        org_scopes: tuple[str, ...] | None = None,
         include_scope_header: bool = True,
         sso: str = "",
         org_details: object | None = None,
@@ -195,6 +269,7 @@ class FakeRunner:
         self.membership = membership or {"state": "active", "role": "admin", "user": {"login": "operator"}}
         self.user = user
         self.scopes = scopes
+        self.org_scopes = org_scopes or scopes
         self.include_scope_header = include_scope_header
         self.sso = sso
         self.org_details = org_details
@@ -211,7 +286,7 @@ class FakeRunner:
             details = self.org_details if self.org_details is not None else _counts_for_pages(self.pages)
             if isinstance(details, Result):
                 return details
-            return Result(0, _included(details, self.scopes, self.include_scope_header, self.sso))
+            return Result(0, _included(details, self.org_scopes, self.include_scope_header, self.sso))
         response = self.membership if "/user/memberships/orgs/" in endpoint else self.pages
         if isinstance(response, Result):
             return response

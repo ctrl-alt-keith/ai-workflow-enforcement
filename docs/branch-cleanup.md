@@ -81,8 +81,7 @@ implementation's supported scope-bearing credential profile. The same acting
 credential must provide all of this evidence:
 
 - `/user` identifies the actor and returns an `X-OAuth-Scopes` header containing
-  both `repo` and `admin:org`; GitHub's documented scope hierarchy places
-  `read:org` beneath `admin:org`
+  `repo` plus either `read:org` or its documented `admin:org` parent
 - `GET /orgs/{org}` returns full organization details with the same scope set,
   no `X-GitHub-SSO` restriction, and valid non-negative integer
   `public_repos` and `total_private_repos` fields
@@ -96,15 +95,33 @@ credential must provide all of this evidence:
   `total_private_repos`, and their sum
 
 GitHub documents `repo` as the classic OAuth/PAT scope for public and private
-repository access and requires `admin:org` plus organization-owner authority to
-see full organization details. The independently returned repository totals are
-the positive population attestation; the enumerated list does not attest to its
-own completeness. A missing scope header, `repo` plus `read:org` without
-`admin:org`, a fine-grained personal access token, a selected-repository GitHub
-App installation, a missing or malformed count, a count mismatch, an SSO
-restriction, actor disagreement, or non-owner membership remains `unknown`.
-The implementation preserves valid visible repositories in those cases but
-does not authorize mutation.
+repository access, `read:org` as read-only organization membership access, and
+`admin:org` as the parent organization scope. GitHub also documents GitHub CLI
+as a privileged GitHub-owned OAuth app and documents `repo`, `read:org`, and
+`gist` as the CLI's minimum scope set. An ordinary stored GitHub CLI login is
+therefore an eligible credential profile when it actually returns every item
+of evidence above; `admin:org` remains accepted but is not mandatory.
+
+Scope labels are prerequisites and diagnostics, not the completeness proof.
+In particular, declaring `repo` plus `read:org` does not by itself establish
+full organization visibility. The independently returned repository totals
+are the positive population attestation; the enumerated list does not attest
+to its own completeness. GitHub's REST responses do not expose a stable OAuth
+client identity that this implementation can use to prove the GitHub CLI app,
+so the contract is deliberately capability-verified: the same acting
+credential must successfully return full organization details, matching scope
+headers, unrestricted active-owner membership, fully parsed pagination, and
+exact public/private/total count agreement. This does not assert that every
+arbitrary token carrying `repo` and `read:org` has full organization visibility.
+
+A missing scope header, missing `repo`, missing both `read:org` and `admin:org`,
+an inaccessible or malformed full-organization response, a fine-grained
+personal access token, a selected-repository GitHub App installation, a missing
+or malformed count, a count mismatch, an SSO restriction, actor disagreement,
+or non-owner membership remains `unknown`. Organization OAuth restrictions and
+personal-access-token policy can also deny required evidence; provider failure
+remains fail-closed. The implementation preserves valid visible repositories
+in incomplete cases but does not authorize mutation.
 
 GitHub documents internal visibility for Enterprise Cloud repositories, but
 the full-organization-details reference does not define whether internal
@@ -113,11 +130,17 @@ model therefore preserves any visible internal repository as partial evidence
 and fails count attestation closed instead of assigning it to either total.
 
 This provider contract was verified on 2026-08-14 against GitHub's official
+[GitHub CLI login reference](https://cli.github.com/manual/gh_auth_login),
+[GitHub CLI authentication-status reference](https://cli.github.com/manual/gh_auth_status),
+[GitHub CLI environment precedence](https://cli.github.com/manual/gh_help_environment),
+[privileged OAuth app reference](https://docs.github.com/en/apps/oauth-apps/using-oauth-apps/privileged-oauth-apps),
+[OAuth app access-restriction reference](https://docs.github.com/en/organizations/managing-oauth-access-to-your-organizations-data/about-oauth-app-access-restrictions),
+[organization personal-access-token policy reference](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/setting-a-personal-access-token-policy-for-your-organization),
 [organization repository endpoint](https://docs.github.com/en/rest/repos/repos#list-organization-repositories),
 [full organization details endpoint](https://docs.github.com/en/rest/orgs/orgs#get-an-organization),
 [authenticated membership endpoint](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user),
 [OAuth scope reference](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps),
-[repository visibility reference](https://docs.github.com/en/repositories/creating-and-managing-repositories/about-repositories#about-repository-visibility),
+[repository visibility reference](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/setting-repository-visibility),
 [organization repository-role reference](https://docs.github.com/en/organizations/managing-user-access-to-your-organizations-repositories/managing-repository-roles/repository-roles-for-an-organization),
 [fine-grained personal access token reference](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens),
 [GitHub App installation repository reference](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation),

@@ -61,6 +61,11 @@ paginated public/private/total population. The report includes the deterministic
 count-attestation fields; coverage is incomplete and `--fail-on-error` returns
 nonzero when the attestation is not `matched`.
 
+The ordinary stored GitHub CLI credential is supported when it carries `repo`
+plus `read:org` (or `admin:org`) and its effective full-organization details,
+actor/owner identity, pagination, and exact count evidence all succeed. Scope
+labels alone never establish complete coverage.
+
 `--repo` may be repeated and accepts either a repository name or `org/name`
 within the selected organization. Unknown selected repositories are treated as
 operator input errors after organization enumeration, so the tool stops instead
