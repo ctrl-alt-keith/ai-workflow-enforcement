@@ -154,6 +154,7 @@ class OrgRepoSettingsReport:
     reports: tuple[RepoSettingsReport, ...]
     policy_override_membership: AuditItem
     errors: tuple[str, ...] = ()
+    repository_enumeration: OrganizationRepositoryEnumeration | None = None
 
 
 Runner = Callable[[tuple[str, ...]], GhCommand]
@@ -245,6 +246,7 @@ def audit_org_repo_settings(
         reports=tuple(reports),
         policy_override_membership=_policy_override_membership_item(enumeration),
         errors=tuple(errors),
+        repository_enumeration=enumeration,
     )
 
 
@@ -405,6 +407,7 @@ def render_org_text_report(report: OrgRepoSettingsReport) -> str:
         f"Finished: {report.finished_at}",
         f"Repositories discovered: {len(report.repositories)}",
         f"Repositories audited: {len(report.reports)}",
+        *_org_count_attestation_text(report.repository_enumeration),
         (
             "Hosted governance summary: "
             f"match={hosted_summary['match']} drift={hosted_summary['drift']} unknown={hosted_summary['unknown']}"
@@ -473,6 +476,7 @@ def render_org_json_report(report: OrgRepoSettingsReport) -> str:
         "started_at": report.started_at,
         "finished_at": report.finished_at,
         "repositories": list(report.repositories),
+        "repository_count_attestation": _org_count_attestation_json(report.repository_enumeration),
         "summary": {
             "repository_count": len(report.repositories),
             "audited_repository_count": len(report.reports),
@@ -484,6 +488,36 @@ def render_org_json_report(report: OrgRepoSettingsReport) -> str:
         "reports": [json.loads(render_json_report(repo_report)) for repo_report in report.reports],
     }
     return json.dumps(data, indent=2, sort_keys=True)
+
+
+def _org_count_attestation_text(enumeration: OrganizationRepositoryEnumeration | None) -> list[str]:
+    if enumeration is None:
+        return ["Repository count attestation: unavailable"]
+    return [
+        "Repository count attestation: "
+        f"status={enumeration.count_attestation_status} "
+        f"attested_public={enumeration.attested_public_repositories!r} "
+        f"attested_private={enumeration.attested_private_repositories!r} "
+        f"enumerated_public={enumeration.enumerated_public_repositories} "
+        f"enumerated_private={enumeration.enumerated_private_repositories} "
+        f"enumerated_total={enumeration.enumerated_total_repositories}"
+    ]
+
+
+def _org_count_attestation_json(
+    enumeration: OrganizationRepositoryEnumeration | None,
+) -> dict[str, object] | None:
+    if enumeration is None:
+        return None
+    return {
+        "status": enumeration.count_attestation_status,
+        "detail": enumeration.count_attestation_detail,
+        "attested_public": enumeration.attested_public_repositories,
+        "attested_private": enumeration.attested_private_repositories,
+        "enumerated_public": enumeration.enumerated_public_repositories,
+        "enumerated_private": enumeration.enumerated_private_repositories,
+        "enumerated_total": enumeration.enumerated_total_repositories,
+    }
 
 
 def _hosted_items(remote: RemoteSnapshot, state: HostedState) -> list[AuditItem]:

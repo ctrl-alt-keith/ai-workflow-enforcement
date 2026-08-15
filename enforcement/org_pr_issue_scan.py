@@ -10,7 +10,7 @@ import subprocess
 import sys
 from typing import Callable, Iterable
 
-from .github_org_repositories import enumerate_organization_repositories
+from .github_org_repositories import OrganizationRepositoryEnumeration, enumerate_organization_repositories
 
 
 DEFAULT_ORG = "ctrl-alt-keith"
@@ -67,6 +67,7 @@ class OrgWorkReport:
     finished_at: str
     repositories: tuple[RepositoryWork, ...]
     errors: tuple[str, ...] = ()
+    repository_enumeration: OrganizationRepositoryEnumeration | None = None
 
 
 Runner = Callable[[tuple[str, ...]], GhCommand]
@@ -81,10 +82,10 @@ def scan_org_work(
     """Collect current open pull requests and issues for all visible org repos."""
     started = _utc_now()
     gh = runner or _gh
-    repositories, errors, enumeration_complete = _fetch_repositories(org, gh)
+    repositories, errors, enumeration = _fetch_repositories(org, gh)
     selected = _repo_selection_names(org, selected_repos)
     if selected:
-        if enumeration_complete:
+        if enumeration.complete:
             repositories = _select_repositories(org, repositories, selected)
         else:
             repositories, missing = _select_visible_repositories(repositories, selected)
@@ -107,6 +108,7 @@ def scan_org_work(
         finished_at=finished,
         repositories=repo_reports,
         errors=errors,
+        repository_enumeration=enumeration,
     )
 
 
@@ -161,6 +163,7 @@ def render_text_report(report: OrgWorkReport) -> str:
         f"Started: {report.started_at}",
         f"Finished: {report.finished_at}",
         f"Repositories scanned: {len(report.repositories)}",
+        *_count_attestation_text(report.repository_enumeration),
         f"Open pull requests: {total_prs}",
         f"Open issues: {total_issues}",
         f"Skipped or partial repositories: {len(skipped)}",
@@ -205,6 +208,7 @@ def report_to_dict(report: OrgWorkReport) -> dict[str, object]:
         "started_at": report.started_at,
         "finished_at": report.finished_at,
         "errors": list(report.errors),
+        "repository_count_attestation": _count_attestation_json(report.repository_enumeration),
         "summary": {
             "repository_count": len(report.repositories),
             "open_pull_request_count": sum(len(repo.pull_requests) for repo in report.repositories),
@@ -248,7 +252,7 @@ def _scan_repository(org: str, repo: Repository, runner: Runner) -> RepositoryWo
 def _fetch_repositories(
     org: str,
     runner: Runner,
-) -> tuple[tuple[Repository, ...], tuple[str, ...], bool]:
+) -> tuple[tuple[Repository, ...], tuple[str, ...], OrganizationRepositoryEnumeration]:
     enumeration = enumerate_organization_repositories(org, runner)
     repositories = tuple(
         Repository(
@@ -258,7 +262,35 @@ def _fetch_repositories(
         )
         for item in enumeration.repositories
     )
-    return repositories, enumeration.errors, enumeration.complete
+    return repositories, enumeration.errors, enumeration
+
+
+def _count_attestation_text(enumeration: OrganizationRepositoryEnumeration | None) -> list[str]:
+    if enumeration is None:
+        return ["Repository count attestation: unavailable"]
+    return [
+        "Repository count attestation: "
+        f"status={enumeration.count_attestation_status} "
+        f"attested_public={enumeration.attested_public_repositories!r} "
+        f"attested_private={enumeration.attested_private_repositories!r} "
+        f"enumerated_public={enumeration.enumerated_public_repositories} "
+        f"enumerated_private={enumeration.enumerated_private_repositories} "
+        f"enumerated_total={enumeration.enumerated_total_repositories}"
+    ]
+
+
+def _count_attestation_json(enumeration: OrganizationRepositoryEnumeration | None) -> dict[str, object] | None:
+    if enumeration is None:
+        return None
+    return {
+        "status": enumeration.count_attestation_status,
+        "detail": enumeration.count_attestation_detail,
+        "attested_public": enumeration.attested_public_repositories,
+        "attested_private": enumeration.attested_private_repositories,
+        "enumerated_public": enumeration.enumerated_public_repositories,
+        "enumerated_private": enumeration.enumerated_private_repositories,
+        "enumerated_total": enumeration.enumerated_total_repositories,
+    }
 
 
 def _repo_selection_names(org: str, selected_repos: Iterable[str]) -> tuple[str, ...]:

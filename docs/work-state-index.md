@@ -27,8 +27,10 @@ do not add a second classifier.
 
 Repository selection projects the already-reconciled branch-cleanup scope. It
 retains the original provider mode, organization, completeness, credential
-evidence, detail and errors, archived members, exclusions, unmatched entries,
-mutation blockers, and selected target provenance. A selection from partial or
+evidence, independent repository-count attestation, detail and errors, archived
+members, exclusions, unmatched entries, mutation blockers, and selected target
+provenance. Attested public/private and enumerated public/private/total values
+are not recomputed or discarded by selection. A selection from partial or
 unknown provider evidence therefore remains provider-backed and `unknown`; it
 is never relabeled as legacy explicit compatibility. A selected name absent
 from complete evidence is an operator error. One absent from partial evidence

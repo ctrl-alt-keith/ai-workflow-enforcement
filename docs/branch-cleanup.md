@@ -81,33 +81,53 @@ implementation's supported scope-bearing credential profile. The same acting
 credential must provide all of this evidence:
 
 - `/user` identifies the actor and returns an `X-OAuth-Scopes` header containing
-  both `repo` and `read:org`
-- an organization-repository access probe returns the same scope set and no
-  `X-GitHub-SSO` restriction
+  both `repo` and `admin:org`; GitHub's documented scope hierarchy places
+  `read:org` beneath `admin:org`
+- `GET /orgs/{org}` returns full organization details with the same scope set,
+  no `X-GitHub-SSO` restriction, and valid non-negative integer
+  `public_repos` and `total_private_repos` fields
 - the actor's organization membership response identifies the same login with
   `state=active` and `role=admin`
 - every paginated repository response succeeds and every entry parses,
-  including positive numeric repository ID, current `full_name`, private and
-  archived flags, and default branch
+  including positive numeric repository ID, current `full_name`, visibility,
+  private and archived flags, and default branch
+- counts from the complete paginated result, before archived repositories are
+  removed from branch-cleanup candidates, exactly match `public_repos`,
+  `total_private_repos`, and their sum
 
 GitHub documents `repo` as the classic OAuth/PAT scope for public and private
-repository access, `read:org` as organization-membership read access, and
-organization owners as administrators of every organization repository. This
-combination is the supported all-repository proof for this implementation. A
-missing scope header, a fine-grained personal access token, a selected-repository
-GitHub App installation, a missing required scope, an SSO restriction, actor
-disagreement, non-owner membership, or malformed evidence remains `unknown`.
-The implementation does not infer all-repository access for those unsupported
-credential profiles, even when the associated user is an owner.
+repository access and requires `admin:org` plus organization-owner authority to
+see full organization details. The independently returned repository totals are
+the positive population attestation; the enumerated list does not attest to its
+own completeness. A missing scope header, `repo` plus `read:org` without
+`admin:org`, a fine-grained personal access token, a selected-repository GitHub
+App installation, a missing or malformed count, a count mismatch, an SSO
+restriction, actor disagreement, or non-owner membership remains `unknown`.
+The implementation preserves valid visible repositories in those cases but
+does not authorize mutation.
+
+GitHub documents internal visibility for Enterprise Cloud repositories, but
+the full-organization-details reference does not define whether internal
+repositories contribute to `public_repos` or `total_private_repos`. The current
+model therefore preserves any visible internal repository as partial evidence
+and fails count attestation closed instead of assigning it to either total.
 
 This provider contract was verified on 2026-08-14 against GitHub's official
 [organization repository endpoint](https://docs.github.com/en/rest/repos/repos#list-organization-repositories),
+[full organization details endpoint](https://docs.github.com/en/rest/orgs/orgs#get-an-organization),
 [authenticated membership endpoint](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user),
 [OAuth scope reference](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps),
+[repository visibility reference](https://docs.github.com/en/repositories/creating-and-managing-repositories/about-repositories#about-repository-visibility),
 [organization repository-role reference](https://docs.github.com/en/organizations/managing-user-access-to-your-organizations-repositories/managing-repository-roles/repository-roles-for-an-organization),
 [fine-grained personal access token reference](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens),
 [GitHub App installation repository reference](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation),
 and [REST pagination guidance](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api).
+
+Reports expose `repository_count_attestation` with its status and detail plus
+attested public/private and enumerated public/private/total counts. For example,
+a complete one-public/two-private population (including one archived private
+member) reports attested `1`/`2` and enumerated `1`/`2`/`3`; only the two active
+members become cleanup candidates.
 
 Read-only runs preserve valid partial provider evidence, resolved targets, and
 errors without describing the result as complete. An `--apply` run with

@@ -114,6 +114,13 @@ class ScopeReconciliation:
     credential_access: str = "unknown"
     credential_actor: str = ""
     credential_scopes: tuple[str, ...] = ()
+    attested_public_repositories: int | None = None
+    attested_private_repositories: int | None = None
+    enumerated_public_repositories: int = 0
+    enumerated_private_repositories: int = 0
+    enumerated_total_repositories: int = 0
+    count_attestation_status: str = "unknown"
+    count_attestation_detail: str = "repository-count attestation was not established"
     mutation_ready: bool = False
     mutation_blockers: tuple[str, ...] = ()
 
@@ -442,6 +449,13 @@ def resolve_branch_cleanup_scope(
         credential_access=enumeration.credential_access,
         credential_actor=enumeration.credential_actor,
         credential_scopes=enumeration.credential_scopes,
+        attested_public_repositories=enumeration.attested_public_repositories,
+        attested_private_repositories=enumeration.attested_private_repositories,
+        enumerated_public_repositories=enumeration.enumerated_public_repositories,
+        enumerated_private_repositories=enumeration.enumerated_private_repositories,
+        enumerated_total_repositories=enumeration.enumerated_total_repositories,
+        count_attestation_status=enumeration.count_attestation_status,
+        count_attestation_detail=enumeration.count_attestation_detail,
         mutation_ready=not mutation_blockers,
         mutation_blockers=tuple(mutation_blockers),
     )
@@ -756,6 +770,19 @@ def render_text_report(report: BranchCleanupReport) -> str:
             else []
         ),
         *(
+            [
+                "Repository count attestation: "
+                f"status={report.scope.count_attestation_status} "
+                f"attested_public={report.scope.attested_public_repositories!r} "
+                f"attested_private={report.scope.attested_private_repositories!r} "
+                f"enumerated_public={report.scope.enumerated_public_repositories} "
+                f"enumerated_private={report.scope.enumerated_private_repositories} "
+                f"enumerated_total={report.scope.enumerated_total_repositories}"
+            ]
+            if report.scope is not None
+            else []
+        ),
+        *(
             [f"Scope mutation blocker: {item}" for item in report.scope.mutation_blockers]
             if report.scope is not None
             else []
@@ -1047,6 +1074,15 @@ def _scope_to_json(scope: ScopeReconciliation | None) -> dict[str, object] | Non
             "access": scope.credential_access,
             "actor": scope.credential_actor,
             "scopes": list(scope.credential_scopes),
+        },
+        "repository_count_attestation": {
+            "status": scope.count_attestation_status,
+            "detail": scope.count_attestation_detail,
+            "attested_public": scope.attested_public_repositories,
+            "attested_private": scope.attested_private_repositories,
+            "enumerated_public": scope.enumerated_public_repositories,
+            "enumerated_private": scope.enumerated_private_repositories,
+            "enumerated_total": scope.enumerated_total_repositories,
         },
         "mutation_ready": scope.mutation_ready,
         "mutation_blockers": list(scope.mutation_blockers),

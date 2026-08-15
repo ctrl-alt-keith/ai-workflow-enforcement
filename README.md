@@ -309,8 +309,10 @@ active GitHub organization members. It reconciles complete provider scope,
 stable-ID reason/authority exclusions, and provider-verified local checkout
 identity before it reports normal Git-proven merged branch cleanup separately
 from stale non-ancestor cleanup that current evidence proves eligible. It only
-mutates refs with explicit `--apply`; incomplete credential scope, unresolved
-exclusions, and local identity failures block apply before cleanup.
+mutates refs with explicit `--apply`; incomplete credential scope, missing or
+mismatched full-organization public/private/total count attestation, unresolved
+exclusions, and local identity failures block apply before cleanup. Archived
+members participate in count attestation but are not cleanup candidates.
 
 ```sh
 python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json

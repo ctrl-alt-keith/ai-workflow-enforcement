@@ -40,6 +40,8 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertEqual(("workflow",), report.repositories[0].pull_requests[0].labels)
         self.assertEqual(("keith",), report.repositories[0].pull_requests[0].assignees)
         self.assertEqual("octocat", report.repositories[0].issues[0].author)
+        self.assertEqual("matched", report.repository_enumeration.count_attestation_status)
+        self.assertEqual(2, report.repository_enumeration.enumerated_total_repositories)
 
     def test_issue_results_exclude_pull_requests(self) -> None:
         gh = FakeGh(
@@ -191,6 +193,8 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertIn("Open issues: 0", text)
         self.assertEqual(0, data["summary"]["open_pull_request_count"])
         self.assertEqual(0, data["summary"]["open_issue_count"])
+        self.assertEqual("matched", data["repository_count_attestation"]["status"])
+        self.assertEqual(1, data["repository_count_attestation"]["enumerated_total"])
 
     def test_inaccessible_repository_is_reported(self) -> None:
         gh = FakeGh(
@@ -303,8 +307,17 @@ class FakeGh:
         response = self.responses.get(endpoint)
         if response is None and endpoint == "/user":
             return _included_gh(argv, {"login": "operator"})
-        if response is None and endpoint.startswith("/orgs/") and endpoint.endswith("/repos?type=all&per_page=1"):
-            return _included_gh(argv, [])
+        if response is None and endpoint == "/orgs/ctrl-alt-keith":
+            pages = self.responses.get("/orgs/ctrl-alt-keith/repos?type=all&per_page=100", [])
+            repositories = [item for page in pages for item in page] if isinstance(pages, list) else []
+            return _included_gh(
+                argv,
+                {
+                    "login": "ctrl-alt-keith",
+                    "public_repos": sum(item.get("visibility") == "public" for item in repositories),
+                    "total_private_repos": sum(item.get("visibility") == "private" for item in repositories),
+                },
+            )
         if response is None and endpoint.startswith("/user/memberships/orgs/"):
             response = {"state": "active", "role": "admin", "user": {"login": "operator"}}
         if response is None:
@@ -315,7 +328,7 @@ class FakeGh:
 
 
 def _included_gh(argv: tuple[str, ...], body: object) -> GhCommand:
-    headers = "HTTP/2 200 OK\nX-OAuth-Scopes: repo, read:org\n\n"
+    headers = "HTTP/2 200 OK\nX-OAuth-Scopes: repo, admin:org\n\n"
     return GhCommand(argv=argv, returncode=0, stdout=headers + json.dumps(body), stderr="")
 
 
@@ -335,6 +348,7 @@ def _repo(name: str) -> dict[str, object]:
         "owner": {"login": "ctrl-alt-keith"},
         "archived": False,
         "private": False,
+        "visibility": "public",
         "default_branch": "main",
         "html_url": f"https://github.com/ctrl-alt-keith/{name}",
     }

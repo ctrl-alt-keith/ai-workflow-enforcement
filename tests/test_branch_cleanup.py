@@ -47,6 +47,10 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual(("existing", "new-private"), tuple(item.name for item in config.repositories))
         self.assertEqual("complete", config.scope_reconciliation.completeness)
         self.assertTrue(config.scope_reconciliation.resolved_targets[1].private)
+        self.assertEqual("matched", config.scope_reconciliation.count_attestation_status)
+        self.assertEqual(1, config.scope_reconciliation.attested_public_repositories)
+        self.assertEqual(1, config.scope_reconciliation.attested_private_repositories)
+        self.assertEqual(2, config.scope_reconciliation.enumerated_total_repositories)
 
     def test_provider_scope_excludes_archived_members_and_drops_former_members(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,29 +297,38 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertIn("local checkout identity preflight failed", report.mutation_blocked)
         self.assertEqual("mismatch", report.repos[0].identity.status)
 
-    def test_incomplete_provider_scope_blocks_apply_before_repository_cleanup(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            config = load_config(_write_provider_config(Path(tmp)))
-            enumeration = _organization_enumeration(
-                _organization_repository("partial"),
-                complete=False,
-                errors=("authenticated organization-owner membership could not be verified",),
-            )
-            with (
-                mock.patch.object(
-                    branch_cleanup,
-                    "enumerate_organization_repositories",
-                    return_value=enumeration,
-                ),
-                mock.patch.object(branch_cleanup, "_cleanup_repo") as cleanup_repo,
-            ):
-                report = cleanup_branches(config, apply=True)
+    def test_each_incomplete_count_attestation_blocks_apply_before_repository_cleanup(self) -> None:
+        cases = (
+            "full organization details omitted required public_repos count",
+            "enumerated public repository count does not match organization public_repos",
+            "enumerated private repository count does not match organization total_private_repos",
+            "enumerated total repository count does not match attested public/private total",
+        )
+        for error in cases:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as tmp:
+                config = load_config(_write_provider_config(Path(tmp)))
+                enumeration = _organization_enumeration(
+                    _organization_repository("partial"),
+                    complete=False,
+                    errors=(error,),
+                )
+                with (
+                    mock.patch.object(
+                        branch_cleanup,
+                        "enumerate_organization_repositories",
+                        return_value=enumeration,
+                    ),
+                    mock.patch.object(branch_cleanup, "_cleanup_repo") as cleanup_repo,
+                ):
+                    report = cleanup_branches(config, apply=True)
 
-        cleanup_repo.assert_not_called()
-        self.assertTrue(report.dry_run)
-        self.assertTrue(report.requested_apply)
-        self.assertEqual("unknown", report.scope.completeness)
-        self.assertIn("complete provider-backed candidate scope", report.mutation_blocked)
+                cleanup_repo.assert_not_called()
+                self.assertTrue(report.dry_run)
+                self.assertTrue(report.requested_apply)
+                self.assertEqual("unknown", report.scope.completeness)
+                self.assertEqual("unknown", report.scope.count_attestation_status)
+                self.assertIn(error, report.scope.errors)
+                self.assertIn("complete provider-backed candidate scope", report.mutation_blocked)
 
     def test_incomplete_provider_scope_cli_returns_nonzero_with_json_blocker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1875,12 +1888,21 @@ def _organization_enumeration(
     complete: bool = True,
     errors: tuple[str, ...] = (),
 ) -> OrganizationRepositoryEnumeration:
+    public_count = sum(not repository.private for repository in repositories)
+    private_count = sum(repository.private for repository in repositories)
     return OrganizationRepositoryEnumeration(
         organization="ctrl-alt-keith",
         repositories=tuple(repositories),
         complete=complete,
         detail="complete" if complete else "unknown",
         errors=errors,
+        attested_public_repositories=public_count if complete else None,
+        attested_private_repositories=private_count if complete else None,
+        enumerated_public_repositories=public_count,
+        enumerated_private_repositories=private_count,
+        enumerated_total_repositories=len(repositories),
+        count_attestation_status="matched" if complete else "unknown",
+        count_attestation_detail="counts matched" if complete else "counts unproven",
     )
 
 

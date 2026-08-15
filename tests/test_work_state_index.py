@@ -124,6 +124,10 @@ class WorkStateIndexTests(unittest.TestCase):
         self.assertEqual(("example/archived",), scope.archived_members)
         self.assertEqual("example/excluded", scope.exclusions[0].current_repository)
         self.assertEqual(("example/old-override",), scope.unmatched_overrides)
+        self.assertEqual("matched", scope.count_attestation_status)
+        self.assertEqual(2, scope.attested_public_repositories)
+        self.assertEqual(1, scope.attested_private_repositories)
+        self.assertEqual(3, scope.enumerated_total_repositories)
         cleanup = next(source for source in index.sources if source.name == "branch_cleanup_dry_run")
         self.assertEqual("github_organization", cleanup.payload["scope"]["mode"])
 
@@ -141,6 +145,8 @@ class WorkStateIndexTests(unittest.TestCase):
         self.assertEqual("unknown", scope.completeness)
         self.assertEqual(("credential breadth unproven",), scope.errors)
         self.assertFalse(scope.mutation_ready)
+        self.assertEqual("unknown", scope.count_attestation_status)
+        self.assertEqual(3, scope.enumerated_total_repositories)
         self.assertEqual(
             ("complete provider-backed candidate scope could not be established",),
             scope.mutation_blockers,
@@ -264,7 +270,14 @@ def _provider_config(
         credential_kind="oauth_scope_bearing",
         credential_access="all_repositories" if completeness == "complete" else "unknown",
         credential_actor="operator",
-        credential_scopes=("read:org", "repo"),
+        credential_scopes=("admin:org", "repo"),
+        attested_public_repositories=2 if completeness == "complete" else None,
+        attested_private_repositories=1 if completeness == "complete" else None,
+        enumerated_public_repositories=2,
+        enumerated_private_repositories=1,
+        enumerated_total_repositories=3,
+        count_attestation_status="matched" if completeness == "complete" else "unknown",
+        count_attestation_detail="counts matched" if completeness == "complete" else "counts unproven",
         mutation_ready=mutation_ready,
         mutation_blockers=blockers,
     )
