@@ -314,6 +314,11 @@ mismatched full-organization public/private/total count attestation, unresolved
 exclusions, and local identity failures block apply before cleanup. Archived
 members participate in count attestation but are not cleanup candidates.
 
+The ordinary stored GitHub CLI login is supported with its default `repo` and
+`read:org` organization-read scopes when the same credential actually returns
+matching full-detail, identity, pagination, and count evidence. `admin:org` is
+accepted but is not required, and scope labels alone do not prove completeness.
+
 ```sh
 python3 -m enforcement.branch_cleanup --config examples/branch-cleanup.json
 ```

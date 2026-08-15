@@ -125,6 +125,7 @@ class WorkStateIndexTests(unittest.TestCase):
         self.assertEqual("example/excluded", scope.exclusions[0].current_repository)
         self.assertEqual(("example/old-override",), scope.unmatched_overrides)
         self.assertEqual("matched", scope.count_attestation_status)
+        self.assertEqual(("gist", "read:org", "repo"), scope.credential_scopes)
         self.assertEqual(2, scope.attested_public_repositories)
         self.assertEqual(1, scope.attested_private_repositories)
         self.assertEqual(3, scope.enumerated_total_repositories)
@@ -270,7 +271,7 @@ def _provider_config(
         credential_kind="oauth_scope_bearing",
         credential_access="all_repositories" if completeness == "complete" else "unknown",
         credential_actor="operator",
-        credential_scopes=("admin:org", "repo"),
+        credential_scopes=("gist", "read:org", "repo"),
         attested_public_repositories=2 if completeness == "complete" else None,
         attested_private_repositories=1 if completeness == "complete" else None,
         enumerated_public_repositories=2,

@@ -75,6 +75,27 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertEqual(("ctrl-alt-keith/archived",), scope.archived_members)
         self.assertEqual(("ctrl-alt-keith/transferred-out",), scope.unmatched_overrides)
 
+    def test_archived_filtering_preserves_reconciled_population_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            enumeration = _organization_enumeration(
+                _organization_repository("active"),
+                _organization_repository("archived", repository_id=2, archived=True, private=True),
+            )
+            with mock.patch.object(
+                branch_cleanup,
+                "enumerate_organization_repositories",
+                return_value=enumeration,
+            ):
+                config = resolve_branch_cleanup_scope(load_config(_write_provider_config(Path(tmp))))
+
+        scope = config.scope_reconciliation
+        self.assertEqual(("active",), tuple(item.name for item in config.repositories))
+        self.assertEqual(("ctrl-alt-keith/archived",), scope.archived_members)
+        self.assertEqual(1, scope.attested_private_repositories)
+        self.assertEqual(1, scope.enumerated_private_repositories)
+        self.assertEqual(2, scope.enumerated_total_repositories)
+        self.assertEqual("matched", scope.count_attestation_status)
+
     def test_provider_scope_applies_explicit_exclusion_with_reason_and_authority(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -297,12 +318,20 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertIn("local checkout identity preflight failed", report.mutation_blocked)
         self.assertEqual("mismatch", report.repos[0].identity.status)
 
-    def test_each_incomplete_count_attestation_blocks_apply_before_repository_cleanup(self) -> None:
+    def test_each_incomplete_provider_proof_blocks_apply_before_repository_cleanup(self) -> None:
         cases = (
+            "acting OAuth credential lacks required all-repository scope: repo",
+            "acting OAuth credential lacks required organization-read scope: read:org or admin:org",
+            "full organization details request failed",
             "full organization details omitted required public_repos count",
             "enumerated public repository count does not match organization public_repos",
             "enumerated private repository count does not match organization total_private_repos",
             "enumerated total repository count does not match attested public/private total",
+            "full organization details response reported an SSO authorization restriction",
+            "organization membership identity does not match the acting credential",
+            "authenticated caller is not a proven active organization owner",
+            "acting credential is not a supported scope-bearing OAuth credential",
+            "repository enumeration did not return paginated repository lists",
         )
         for error in cases:
             with self.subTest(error=error), tempfile.TemporaryDirectory() as tmp:

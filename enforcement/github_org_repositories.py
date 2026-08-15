@@ -55,12 +55,13 @@ def enumerate_organization_repositories(
     """Enumerate every visible repository and prove completeness conservatively.
 
     The supported completeness contract requires a scope-bearing OAuth
-    credential with ``repo`` and ``admin:org`` (which subsumes ``read:org``),
+    credential with ``repo`` plus ``read:org`` or its ``admin:org`` parent,
     the same credential's active organization-owner membership, full
     organization details without an SSO restriction, matching authoritative
-    public/private repository counts, and complete pagination. Other credential
-    profiles remain unknown while valid partial repository evidence is
-    preserved.
+    public/private repository counts, and complete pagination. Scope labels
+    are prerequisites rather than proof of repository breadth. Other
+    credential profiles remain unknown while valid partial repository evidence
+    is preserved.
     """
     org = organization.strip()
     if not org:
@@ -206,8 +207,8 @@ def enumerate_organization_repositories(
     )
     detail = (
         "all GitHub REST result pages and entries matched full organization public/private/total "
-        "counts for a scope-bearing OAuth credential with repo/admin:org, unrestricted organization "
-        "access, and active organization-owner identity"
+        "counts for a scope-bearing OAuth credential with repo and organization-read scope, "
+        "unrestricted organization access, and active organization-owner identity"
         if complete
         else "pagination, credential repository breadth, repository entries, independent repository counts, and active-owner identity were not all proven"
     )
@@ -271,11 +272,12 @@ def _credential_access(organization: str, runner: Runner) -> _CredentialAccess:
             "acting credential is not a supported scope-bearing OAuth credential; "
             "fine-grained PAT and GitHub App repository breadth is unproven"
         )
-    # GitHub's OAuth scope hierarchy documents read:org beneath admin:org, so
-    # admin:org is the conservative single organization scope required here.
-    missing = tuple(scope for scope in ("repo", "admin:org") if scope not in scopes)
-    if raw_scopes is not None and missing:
-        access_errors.append(f"acting OAuth credential lacks required all-repository scopes: {', '.join(missing)}")
+    if raw_scopes is not None and "repo" not in scopes:
+        access_errors.append("acting OAuth credential lacks required all-repository scope: repo")
+    if raw_scopes is not None and not {"read:org", "admin:org"}.intersection(scopes):
+        access_errors.append(
+            "acting OAuth credential lacks required organization-read scope: read:org or admin:org"
+        )
 
     endpoint = f"/orgs/{quote(organization, safe='')}"
     org_command = runner(("gh", "api", "--include", endpoint))
