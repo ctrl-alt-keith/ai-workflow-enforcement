@@ -117,6 +117,20 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
                     "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
                 )
 
+    def test_resolve_ref_fails_closed_for_non_object_json(self) -> None:
+        for body in ([], None):
+            with self.subTest(body=body):
+                result = subprocess.CompletedProcess(
+                    args=(), returncode=0, stdout=json.dumps(body), stderr=""
+                )
+                with mock.patch.object(self.gateway, "_run", return_value=result):
+                    with self.assertRaisesRegex(
+                        GitHubError, "GitHub returned malformed commit JSON"
+                    ):
+                        self.gateway.resolve_ref(
+                            "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
+                        )
+
     def test_existing_pr_lookup_matches_only_selected_strategy_marker(self) -> None:
         pages = [
             [

@@ -76,7 +76,7 @@ class GitHubGateway:
         try:
             data = json.loads(result.stdout)
             sha = data["sha"]
-        except (KeyError, json.JSONDecodeError) as exc:
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
             raise GitHubError("GitHub returned malformed commit JSON") from exc
         return _commit_sha(sha, source="commit")
 
