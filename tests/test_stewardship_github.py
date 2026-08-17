@@ -87,6 +87,36 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
                     "ctrl-alt-keith/ai-workflow-enforcement", "main"
                 )
 
+    def test_branch_sha_fails_closed_for_non_commit_sha(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=(),
+            returncode=0,
+            stdout=json.dumps({"object": {"sha": "not-a-commit"}}),
+            stderr="",
+        )
+        with mock.patch.object(self.gateway, "_run", return_value=result):
+            with self.assertRaisesRegex(
+                GitHubError, "GitHub returned malformed branch ref SHA"
+            ):
+                self.gateway.branch_sha(
+                    "ctrl-alt-keith/ai-workflow-enforcement", "main"
+                )
+
+    def test_resolve_ref_fails_closed_for_non_commit_sha(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=(),
+            returncode=0,
+            stdout=json.dumps({"sha": "A" * 40}),
+            stderr="",
+        )
+        with mock.patch.object(self.gateway, "_run", return_value=result):
+            with self.assertRaisesRegex(
+                GitHubError, "GitHub returned malformed commit SHA"
+            ):
+                self.gateway.resolve_ref(
+                    "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
+                )
+
     def test_existing_pr_lookup_matches_only_selected_strategy_marker(self) -> None:
         pages = [
             [

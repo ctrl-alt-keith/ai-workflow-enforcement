@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import tempfile
@@ -13,6 +14,9 @@ from typing import Iterator
 from urllib.parse import quote
 
 from .models import DeliveryProposal, DeliveryResult, RepositoryInfo
+
+
+_COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 
 
 class GitHubError(RuntimeError):
@@ -53,9 +57,10 @@ class GitHubGateway:
             raise GitHubError(_bounded(result.stderr or result.stdout))
         try:
             data = json.loads(result.stdout)
-            return str(data["object"]["sha"])
+            sha = data["object"]["sha"]
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
             raise GitHubError("GitHub returned malformed branch ref JSON") from exc
+        return _commit_sha(sha, source="branch ref")
 
     def resolve_ref(self, repository: str, target_ref: str) -> str | None:
         """Resolve a branch, tag, or commit reference to an exact commit SHA."""
@@ -70,9 +75,10 @@ class GitHubGateway:
             raise GitHubError(_bounded(result.stderr or result.stdout))
         try:
             data = json.loads(result.stdout)
-            return str(data["sha"])
+            sha = data["sha"]
         except (KeyError, json.JSONDecodeError) as exc:
             raise GitHubError("GitHub returned malformed commit JSON") from exc
+        return _commit_sha(sha, source="commit")
 
     def hydrate(self, repository: str, base_sha: str, destination: Path) -> None:
         if destination.exists():
@@ -311,3 +317,9 @@ def _scrub_token_environment(environment: dict[str, str]) -> None:
 def _bounded(value: str, limit: int = 2000) -> str:
     normalized = value.strip()
     return normalized[:limit] + ("…" if len(normalized) > limit else "")
+
+
+def _commit_sha(value: object, *, source: str) -> str:
+    if not isinstance(value, str) or _COMMIT_SHA_PATTERN.fullmatch(value) is None:
+        raise GitHubError(f"GitHub returned malformed {source} SHA")
+    return value
