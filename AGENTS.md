@@ -8,13 +8,18 @@ repository-specific behavior.
 ## Repo Scope
 
 - This repo contains lightweight reinforcement tools for the workflow ecosystem.
-- It should surface operational signals, not automate remediation or own
-  canonical workflow policy.
+- It should surface operational signals and does not own canonical workflow
+  policy or remediation authority. The narrow Hosted Stewardship Engine
+  exception may create one validated, review-ready pull request through its
+  fixed strategies; it must not merge, enable auto-merge, update a proposal, or
+  otherwise accept its own change. Human merge remains the remediation boundary.
 - Keep staging material, canonical playbook guidance, and repo-local execution
   guidance distinct.
 
 ## Startup And Interaction Mode
 
+- Start with `ai-workflow-playbook/docs/start-here.md` before repository or
+  software work.
 - Before acting, select the interaction mode from
   `ai-workflow-playbook/docs/repo-readiness.md`: implementation, review/audit,
   or orchestration/prompt-authoring.
@@ -70,8 +75,3 @@ repository-specific behavior.
 
 - Use the playbook for reusable workflow rules instead of duplicating them
   here.
-
-
-## Shared Workflow Entry Point
-
-Start with `ai-workflow-playbook/docs/start-here.md` before repository or software work. Use this `AGENTS.md` only for repository-specific execution guidance.
