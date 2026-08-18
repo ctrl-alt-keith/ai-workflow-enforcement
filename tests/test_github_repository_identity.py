@@ -67,6 +67,13 @@ class RepositoryIdentityTests(unittest.TestCase):
         self.assertEqual("mismatch", verification.status)
         self.assertEqual(99, verification.observed_repository_id)
 
+    def test_invalid_provider_identity_json_is_unverified(self) -> None:
+        verification = _verify(provider_stdout="not-json")
+
+        self.assertEqual("unverified", verification.status)
+        self.assertIn("invalid JSON", verification.detail)
+        self.assertEqual("ctrl-alt-keith/sample", verification.observed_repository)
+
 
 def _verify(
     *,
@@ -74,6 +81,7 @@ def _verify(
     push: str = "git@github.com:ctrl-alt-keith/sample.git",
     fetch_result: Result | None = None,
     provider_id: int = 7,
+    provider_stdout: str | None = None,
 ):
     def git_runner(_path: Path, argv: tuple[str, ...]) -> Result:
         if "--push" in argv:
@@ -81,7 +89,7 @@ def _verify(
         return fetch_result or Result(0, fetch)
 
     def provider_runner(_argv: tuple[str, ...]) -> Result:
-        return Result(0, json.dumps({"id": provider_id, "full_name": "ctrl-alt-keith/sample"}))
+        return Result(0, provider_stdout or json.dumps({"id": provider_id, "full_name": "ctrl-alt-keith/sample"}))
 
     return verify_local_repository_identity(
         Path("/not-inspected"),
