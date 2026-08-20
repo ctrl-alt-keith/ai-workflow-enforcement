@@ -2515,10 +2515,6 @@ def _unknown_or_value(value: object) -> str:
     return "unknown" if value is None else str(value)
 
 
-def _yes_no(value: bool) -> str:
-    return "yes" if value else "no"
-
-
 def _yes_no_unknown(value: object) -> str:
     if isinstance(value, bool):
         return "yes" if value else "no"
