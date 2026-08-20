@@ -803,10 +803,6 @@ def _playbook_phrase_set(playbook: tuple[Document, ...]) -> set[str]:
     return phrases
 
 
-def _has_full_command_form_guidance(normalized: str, *, require_execution_layer: bool = True) -> bool:
-    return not _command_form_gaps(normalized, require_execution_layer=require_execution_layer)
-
-
 def _command_form_gaps(normalized: str, *, require_execution_layer: bool = True) -> list[str]:
     required = [
         ("direct command execution", ("direct command", "direct git", "direct gh")),
