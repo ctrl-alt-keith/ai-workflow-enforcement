@@ -123,10 +123,20 @@ class GitHubGateway:
             ),
             token=self._read_token,
         )
+        if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+            raise GitHubError("GitHub returned malformed pull-request pagination JSON")
         for page in pages:
             for pull_request in page:
-                if collision_marker in (pull_request.get("body") or ""):
-                    return str(pull_request["html_url"])
+                if not isinstance(pull_request, dict):
+                    raise GitHubError("GitHub returned malformed pull-request JSON")
+                body = pull_request.get("body")
+                html_url = pull_request.get("html_url")
+                if body is not None and not isinstance(body, str):
+                    raise GitHubError("GitHub returned malformed pull-request JSON")
+                if not isinstance(html_url, str) or not html_url:
+                    raise GitHubError("GitHub returned malformed pull-request JSON")
+                if collision_marker in (body or ""):
+                    return html_url
         return None
 
     def deliver(self, repository_root: Path, proposal: DeliveryProposal) -> DeliveryResult:
