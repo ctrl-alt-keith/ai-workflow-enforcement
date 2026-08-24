@@ -194,6 +194,28 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
 
         self.assertEqual("https://github.com/example/pull/3", actual)
 
+    def test_existing_pr_lookup_fails_closed_for_malformed_page(self) -> None:
+        with mock.patch.object(self.gateway, "_gh_json", return_value=[{}]):
+            with self.assertRaisesRegex(
+                GitHubError, "malformed pull-request pagination JSON"
+            ):
+                self.gateway.existing_stewardship_pr(
+                    "ctrl-alt-keith/ai-workflow-enforcement",
+                    AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
+                )
+
+    def test_existing_pr_lookup_fails_closed_for_malformed_entry(self) -> None:
+        with mock.patch.object(
+            self.gateway,
+            "_gh_json",
+            return_value=[[{"body": 3, "html_url": "url"}]],
+        ):
+            with self.assertRaisesRegex(GitHubError, "malformed pull-request JSON"):
+                self.gateway.existing_stewardship_pr(
+                    "ctrl-alt-keith/ai-workflow-enforcement",
+                    AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
