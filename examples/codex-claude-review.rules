@@ -1,0 +1,31 @@
+# Permit only direct governed review and authentication-preflight launches. The
+# launcher must reject combinations of these modes with lifecycle controls.
+prefix_rule(
+    pattern=["./scripts/claude-review", "--auth-preflight"],
+    decision="allow",
+    justification="The governed launcher constrains the authentication preflight and keeps lifecycle controls in mutually exclusive modes.",
+    match=[
+        "./scripts/claude-review --auth-preflight --claude-bin claude --diagnostics-file /tmp/claude-auth.json -- --model claude-opus-5 --effort high",
+    ],
+    not_match=[
+        "scripts/claude-review --auth-preflight",
+        "./scripts/claude-review --terminate /tmp/live-state.json --termination-authority operator-approved",
+        "./scripts/claude-review --request-termination /tmp/live-state.json",
+        "./scripts/claude-review --permission-hook /tmp/review-config.json",
+    ],
+)
+
+prefix_rule(
+    pattern=["./scripts/claude-review", "--review-config"],
+    decision="allow",
+    justification="The governed launcher validates the immutable review configuration and keeps lifecycle controls in mutually exclusive modes.",
+    match=[
+        "./scripts/claude-review --review-config /tmp/review-config.json --claude-bin claude --diagnostics-file /tmp/claude-review.json -- --model claude-opus-5 --effort high",
+    ],
+    not_match=[
+        "scripts/claude-review --review-config /tmp/review-config.json",
+        "./scripts/claude-review --terminate /tmp/live-state.json --termination-authority operator-approved",
+        "./scripts/claude-review --decline-termination /tmp/live-state.json",
+        "./scripts/claude-review --permission-hook /tmp/review-config.json",
+    ],
+)

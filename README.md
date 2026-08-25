@@ -9,6 +9,12 @@ It is not an independent workflow-policy source: `ai-workflow-playbook` remains
 the canonical source of reusable workflow doctrine, and this repository
 implements selected, checkable portions of that doctrine mechanically.
 
+Portable Codex policy examples include the narrow governed Claude review
+launcher grants documented in
+[`docs/codex-claude-review-policy.md`](docs/codex-claude-review-policy.md) and
+the safe recursive-removal delegation documented in
+[`docs/codex-safe-rm.md`](docs/codex-safe-rm.md).
+
 ## Current Tools
 
 Compare repository-local validation claims with directly observable Makefile
