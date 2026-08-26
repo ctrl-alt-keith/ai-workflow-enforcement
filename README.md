@@ -11,6 +11,22 @@ implements selected, checkable portions of that doctrine mechanically.
 
 ## Current Tools
 
+Run an unscheduled, explicitly human-invoked integrity check against one
+manifest-bound Dropbox artifact scope:
+
+```sh
+python3 -m enforcement.artifact_store_integrity \
+  --manifest /permitted/local/integrity-manifest.json \
+  --issue CAK-144
+```
+
+The command is read-only against Dropbox, follows provider pagination, verifies
+raw-byte and recorded provider identities, preserves unknowns as non-passes,
+and emits JSON plus a concise human summary. It is not a recurring audit,
+scheduler, monitor, backup, or authority source. See
+`docs/artifact-store-integrity.md` for the manifest contract, bounded scopes,
+claim limits, and runbook.
+
 Compare repository-local validation claims with directly observable Makefile
 targets without executing validation or mutating repositories:
 
