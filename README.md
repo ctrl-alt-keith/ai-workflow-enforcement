@@ -238,6 +238,26 @@ provider changes. This repository currently has no generated workflow artifact
 family; the checked-in workflow definition and its repository contract tests
 are the applicable consistency surfaces.
 
+## Workflow-Drift GitHub App Policy Audit
+
+The read-only GitHub App policy audit compares reviewed, non-secret workflow-
+drift App intent with supplied receipt and App/JWT snapshot evidence. It never
+creates, configures, installs, or reconciles the App:
+
+```sh
+python3 -m enforcement.github_app_policy_audit \
+  --receipt receipt.json \
+  --live-state live-state.json
+```
+
+Use `--fetch-installation-repositories` to capture and hash the repositories
+visible to the current installation token. That proves only the observed
+installation scope, not whether GitHub was configured for **All repositories**.
+Missing live evidence remains `unable-to-verify`; receipt and policy files are
+not authoritative current state. See
+`docs/github-apps/workflow-drift/README.md` for the non-secret evidence and
+approval-gated key-rotation contract.
+
 ## Hosted Stewardship Engine
 
 The manually dispatched Hosted Stewardship Engine is a separate, bounded
