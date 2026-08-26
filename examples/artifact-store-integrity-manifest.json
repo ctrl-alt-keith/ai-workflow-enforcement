@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "provider": "dropbox",
+  "store": {
+    "namespace_id": "123456789",
+    "root": "/issues",
+    "human_path": "/artifacts/issues"
+  },
+  "authority": {
+    "source": "Linear EXAMPLE-123 human authorization comment"
+  },
+  "objects": [
+    {
+      "path": "EXAMPLE-123/example-package/example-evidence-v1-2026-08-26.md",
+      "size": 4,
+      "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "dropbox_content_hash": "954d5a49fd70d9b8bcdb35d252267829957f7ef7fa6c74f88419bdc5e82209f4",
+      "file_id": "id:synthetic-example",
+      "revision": "synthetic-revision",
+      "evidence_source": "Synthetic example identity; replace before use",
+      "samples": [
+        "risk-stratified-example"
+      ]
+    }
+  ]
+}
