@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -34,9 +35,20 @@ class ManifestError(ValueError):
 class ProviderError(RuntimeError):
     """A Dropbox observation failed without changing provider state."""
 
-    def __init__(self, kind: str, message: str) -> None:
+    def __init__(
+        self,
+        kind: str,
+        message: str,
+        *,
+        pages: int = 0,
+        listed_entries: int = 0,
+        bytes_read: int = 0,
+    ) -> None:
         super().__init__(message)
         self.kind = kind
+        self.pages = pages
+        self.listed_entries = listed_entries
+        self.bytes_read = bytes_read
 
 
 @dataclass(frozen=True)
@@ -61,13 +73,13 @@ class DropboxClient:
         self._namespace_id = namespace_id
         self._timeout = timeout
 
-    def list_folder(self, path: str) -> Listing:
+    def list_folder(self, path: str, *, max_files: int) -> Listing:
         payload = {
             "path": path,
             "recursive": True,
             "include_deleted": True,
             "include_media_info": False,
-            "limit": 1000,
+            "limit": min(1000, max_files + 1),
         }
         page = self._rpc("list_folder", payload)
         entries: list[dict[str, object]] = []
@@ -78,6 +90,14 @@ class DropboxClient:
             if not isinstance(raw_entries, list):
                 raise ProviderError("unverifiable", "Dropbox list_folder omitted entries")
             entries.extend(entry for entry in raw_entries if isinstance(entry, dict))
+            file_entries = sum(entry.get(".tag") != "folder" for entry in entries)
+            if file_entries > max_files:
+                raise ProviderError(
+                    "unverifiable",
+                    f"listing exceeded the declared file bound of {max_files}",
+                    pages=pages,
+                    listed_entries=len(entries),
+                )
             has_more = page.get("has_more")
             if has_more is False:
                 return Listing(tuple(entries), pages)
@@ -102,30 +122,47 @@ class DropboxClient:
                 "Dropbox-API-Path-Root": self._path_root_header(),
             },
         )
+        chunks: list[bytes] = []
+        total = 0
         try:
             with request.urlopen(req, timeout=self._timeout) as response:
                 raw_metadata = response.headers.get("Dropbox-API-Result")
                 if not raw_metadata:
                     raise ProviderError("unverifiable", "Dropbox download omitted result metadata")
                 metadata = json.loads(raw_metadata)
-                chunks: list[bytes] = []
-                total = 0
                 while True:
                     chunk = response.read(min(1024 * 1024, max_bytes - total + 1))
                     if not chunk:
                         break
                     total += len(chunk)
                     if total > max_bytes:
-                        raise ProviderError("unverifiable", "download exceeded the declared byte bound")
+                        raise ProviderError(
+                            "unverifiable",
+                            "download exceeded the declared byte bound",
+                            bytes_read=total,
+                        )
                     chunks.append(chunk)
         except ProviderError:
             raise
         except error.HTTPError as exc:
             raise _http_provider_error(exc) from exc
-        except (error.URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ProviderError("unverifiable", f"Dropbox download unavailable: {type(exc).__name__}") from exc
+        except (error.URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError, http.client.HTTPException) as exc:
+            partial = getattr(exc, "partial", b"")
+            partial_size = len(partial) if isinstance(partial, bytes) else 0
+            raise ProviderError(
+                "unverifiable",
+                f"Dropbox download unavailable or incomplete: {type(exc).__name__}",
+                bytes_read=total + partial_size,
+            ) from exc
         if not isinstance(metadata, dict):
             raise ProviderError("unverifiable", "Dropbox download metadata is not an object")
+        declared_size = metadata.get("size")
+        if isinstance(declared_size, int) and not isinstance(declared_size, bool) and declared_size != total:
+            raise ProviderError(
+                "unverifiable",
+                f"Dropbox download was incomplete: metadata declared {declared_size} bytes but {total} were read",
+                bytes_read=total,
+            )
         return metadata, b"".join(chunks)
 
     def _rpc(self, endpoint: str, payload: dict[str, object]) -> dict[str, object]:
@@ -237,6 +274,8 @@ def verify(
     selected = _select_objects(manifest["objects"], scope)
     if not selected:
         raise ManifestError(f"scope {scope.kind}={scope.value!r} selects no manifest objects")
+    if len(selected) > max_files:
+        raise ManifestError(f"manifest scope contains {len(selected)} files, exceeding --max-files {max_files}")
     store = manifest["store"]
     root = str(store["root"]).rstrip("/")
     pages = 0
@@ -246,12 +285,14 @@ def verify(
     if scope.kind in {"issue", "package"}:
         scope_path = _join(root, scope.value)
         try:
-            listing = client.list_folder(scope_path)
+            listing = client.list_folder(scope_path, max_files=max_files)
             pages = listing.pages
             listed_entries = len(listing.entries)
             discovery = _index_listing(listing.entries, root)
         except ProviderError as exc:
             discovery_failure = exc
+            pages = exc.pages or pages
+            listed_entries = exc.listed_entries or listed_entries
     else:
         for item in selected:
             full_path = _join(root, str(item["path"]))
@@ -302,10 +343,21 @@ def verify(
         if remaining < 1:
             results.append(_terminal_result(item, "unverifiable", "run exhausted the declared byte bound"))
             continue
+        declared_size = metadata.get("size")
+        if isinstance(declared_size, int) and not isinstance(declared_size, bool) and declared_size > remaining:
+            results.append(
+                _terminal_result(
+                    item,
+                    "unverifiable",
+                    f"provider metadata size {declared_size} exceeds the remaining byte bound {remaining}",
+                )
+            )
+            continue
         full_path = _join(root, str(item["path"]))
         try:
             download_metadata, content = client.download(full_path, max_bytes=remaining)
         except ProviderError as exc:
+            downloaded_bytes += exc.bytes_read
             results.append(_provider_failure_result(item, exc))
             continue
         downloaded_bytes += len(content)
@@ -514,7 +566,13 @@ def _index_listing(entries: Iterable[dict[str, object]], root: str) -> dict[str,
     for entry in entries:
         relative = _relative_path(entry, root)
         if relative is not None:
-            indexed[relative.casefold()] = entry
+            key = relative.casefold()
+            if key in indexed:
+                raise ProviderError(
+                    "unverifiable",
+                    f"provider returned an ambiguous duplicate path: {relative}",
+                )
+            indexed[key] = entry
     return indexed
 
 

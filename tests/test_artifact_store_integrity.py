@@ -77,8 +77,8 @@ class FakeClient:
         self.download_error = download_error
         self.calls: list[tuple[object, ...]] = []
 
-    def list_folder(self, path: str) -> Listing:
-        self.calls.append(("list_folder", path))
+    def list_folder(self, path: str, *, max_files: int) -> Listing:
+        self.calls.append(("list_folder", path, max_files))
         if self.metadata_error:
             raise self.metadata_error
         return self.listing or Listing((self.current_metadata,), 1)
@@ -168,7 +168,7 @@ class ArtifactStoreIntegrityTests(unittest.TestCase):
             return next(pages)
 
         with mock.patch.object(client, "_rpc", side_effect=rpc):
-            listing = client.list_folder("/issues/CAK-144")
+            listing = client.list_folder("/issues/CAK-144", max_files=10)
 
         self.assertEqual(3, listing.pages)
         self.assertEqual(3, len(listing.entries))
@@ -178,6 +178,22 @@ class ArtifactStoreIntegrityTests(unittest.TestCase):
         )
         self.assertEqual({"cursor": "cursor-1"}, calls[1][1])
         self.assertEqual({"cursor": "cursor-2"}, calls[2][1])
+
+    def test_pagination_stops_and_preserves_counts_when_file_bound_is_exceeded(self) -> None:
+        client = DropboxClient("secret", "14962822355")
+        page = {
+            "entries": [
+                {".tag": "file", "path_display": "/issues/CAK-144/a"},
+                {".tag": "file", "path_display": "/issues/CAK-144/b"},
+            ],
+            "has_more": True,
+            "cursor": "unused",
+        }
+        with mock.patch.object(client, "_rpc", return_value=page), self.assertRaises(ProviderError) as raised:
+            client.list_folder("/issues/CAK-144", max_files=1)
+
+        self.assertEqual(1, raised.exception.pages)
+        self.assertEqual(2, raised.exception.listed_entries)
 
     def test_partial_current_metadata_is_unverifiable_not_clean(self) -> None:
         partial = metadata()
@@ -221,13 +237,58 @@ class ArtifactStoreIntegrityTests(unittest.TestCase):
             two["objects"].append({**two["objects"][0], "path": "CAK-144/package/second.bin"})
             verify(two, Scope("issue", "CAK-144"), FakeClient(), max_files=1)
 
+        too_small_client = FakeClient()
         too_small = verify(
             manifest(),
             Scope("path", "CAK-144/package/file.bin"),
-            FakeClient(),
+            too_small_client,
             max_bytes=3,
         )
         self.assertEqual("unverifiable", too_small["objects"][0]["status"])
+        self.assertEqual(["get_metadata"], [call[0] for call in too_small_client.calls])
+
+    def test_partial_transfer_is_unverifiable_and_charged_to_the_byte_bound(self) -> None:
+        client = FakeClient(download_error=ProviderError("unverifiable", "incomplete transfer", bytes_read=5))
+        report = verify(
+            manifest(),
+            Scope("path", "CAK-144/package/file.bin"),
+            client,
+            max_bytes=20,
+        )
+
+        self.assertEqual("unverifiable", report["objects"][0]["status"])
+        self.assertEqual(5, report["observation"]["downloaded_bytes"])
+
+    def test_dropbox_client_rejects_a_short_body_as_unverifiable(self) -> None:
+        class Response:
+            headers = {"Dropbox-API-Result": json.dumps(metadata(size=20))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self, size: int) -> bytes:
+                if not hasattr(self, "done"):
+                    self.done = True
+                    return b"short"
+                return b""
+
+        client = DropboxClient("secret", "14962822355")
+        with mock.patch("enforcement.artifact_store_integrity.request.urlopen", return_value=Response()):
+            with self.assertRaisesRegex(ProviderError, "incomplete") as raised:
+                client.download("/issues/CAK-144/package/file.bin", max_bytes=100)
+
+        self.assertEqual(5, raised.exception.bytes_read)
+
+    def test_duplicate_casefolded_listing_paths_fail_closed(self) -> None:
+        duplicate = metadata(path_display="/issues/cak-144/package/FILE.bin", rev="other")
+        listing = Listing((metadata(), duplicate), 1)
+        report = verify(manifest(), Scope("issue", "CAK-144"), FakeClient(listing=listing))
+
+        self.assertEqual("unverifiable", report["objects"][0]["status"])
+        self.assertIn("ambiguous duplicate", report["objects"][0]["reasons"][0])
 
     def test_manifest_fails_closed_on_ambiguous_authority_or_identity(self) -> None:
         missing_authority = manifest()

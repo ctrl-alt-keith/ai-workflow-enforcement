@@ -35,8 +35,11 @@ request headers and is never included in the report.
 
 Every invocation names exactly one scope and has explicit file and byte bounds.
 The defaults are 100 files and 100 MiB; lower them when the intended check is
-smaller. Raise them only as a deliberate human choice after checking the
-manifest and expected provider cost.
+smaller. Discovery stops and reports `unverifiable` as soon as it observes more
+files than the declared bound. A provider-reported object size larger than the
+remaining byte budget is not downloaded, and partial transfer bytes count
+against the run budget. Raise either bound only as a deliberate human choice
+after checking the manifest and expected provider cost.
 
 Verify one issue directory, including pagination-complete discovery of current
 and deleted entries:
