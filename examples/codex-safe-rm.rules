@@ -1,5 +1,9 @@
-# Direct rm remains approval-gated. Dynamic operand validation is delegated to
-# the versioned enforcement helper because prefix_rule cannot validate suffixes.
+# Template only. Replace every __CODEX_SAFE_RM_ABSOLUTE_PATH__ token with the
+# exact resolved absolute path verified by the Playbook installer before this
+# rule is activated. An unresolved token is not a valid active rule.
+#
+# Direct rm remains prompt-gated. Dynamic operand validation is delegated to
+# the Playbook-managed helper because prefix_rule cannot validate suffixes.
 prefix_rule(
     pattern=["rm"],
     decision="prompt",
@@ -9,24 +13,24 @@ prefix_rule(
         "rm -rf -- /tmp/foo",
     ],
     not_match=[
-        "/Users/keith/.local/bin/codex-safe-rm -rf -- build",
+        "__CODEX_SAFE_RM_ABSOLUTE_PATH__ -rf -- build",
     ],
 )
 
 prefix_rule(
-    pattern=["/Users/keith/.local/bin/codex-safe-rm", "-rf", "--"],
+    pattern=["__CODEX_SAFE_RM_ABSOLUTE_PATH__", "-rf", "--"],
     decision="allow",
-    justification="The versioned enforcement helper validates every operand and performs fd-relative, symlink-resistant deletion beneath the invocation cwd.",
+    justification="The Playbook-managed helper validates every operand and enforces safe containment beneath the invocation cwd.",
     match=[
-        "/Users/keith/.local/bin/codex-safe-rm -rf -- pytest-of-root",
-        "/Users/keith/.local/bin/codex-safe-rm -rf -- .pytest_cache",
-        "/Users/keith/.local/bin/codex-safe-rm -rf -- build dist",
-        "/Users/keith/.local/bin/codex-safe-rm -rf -- docs/_build",
-        "/Users/keith/.local/bin/codex-safe-rm -rf -- knowledge-adapters",
+        "__CODEX_SAFE_RM_ABSOLUTE_PATH__ -rf -- pytest-of-root",
+        "__CODEX_SAFE_RM_ABSOLUTE_PATH__ -rf -- .pytest_cache",
+        "__CODEX_SAFE_RM_ABSOLUTE_PATH__ -rf -- build dist",
+        "__CODEX_SAFE_RM_ABSOLUTE_PATH__ -rf -- docs/_build",
+        "__CODEX_SAFE_RM_ABSOLUTE_PATH__ -rf -- knowledge-adapters",
     ],
     not_match=[
         "rm -rf -- build",
-        "/Users/keith/.local/bin/codex-safe-rm -r -- build",
-        "/Users/keith/.local/bin/codex-safe-rm -- build",
+        "__CODEX_SAFE_RM_ABSOLUTE_PATH__ -r -- build",
+        "__CODEX_SAFE_RM_ABSOLUTE_PATH__ -- build",
     ],
 )
