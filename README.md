@@ -324,7 +324,8 @@ This repository owns the Codex consumer policy for the Playbook-managed
 `codex-safe-rm` helper. Direct `rm` remains prompt-gated, while delegation is
 limited to an exact installed absolute path followed by the fixed `-rf --`
 prefix. The Playbook owns the executable source, installation, verification,
-migration, and source-focused tests.
+migration, and source-focused tests. Within `~/.local`, only `~/.local/bin` is
+a permitted CAK-managed production publication surface.
 
 See `docs/codex-safe-rm.md` for the policy boundary and reusable rule template.
 

@@ -18,6 +18,9 @@ guidance. Enforcement does not carry or wrap a second source or installer.
 ## Consumer Policy
 
 - Direct `rm` remains prompt-gated.
+- Within `~/.local`, only the effective operator's `~/.local/bin` is a
+  permitted CAK-managed production publication surface. No `.local/libexec`,
+  `.local/state`, or other `.local` subtree is a permitted CAK destination.
 - Delegation is allowed only for the exact installed absolute executable path
   followed by the fixed `-rf --` prefix.
 - The active rule must not rely on `~`, `$HOME`, environment expansion, PATH

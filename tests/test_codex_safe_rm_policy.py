@@ -39,6 +39,9 @@ class CodexSafeRmOwnershipTests(unittest.TestCase):
         self.assertIn("ai-workflow-playbook", guidance)
         self.assertIn("scripts/codex-safe-rm", guidance)
         self.assertIn("scripts/install-codex-safe-rm", guidance)
+        self.assertIn("only `~/.local/bin`", guidance)
+        self.assertIn("No `.local/libexec`", guidance)
+        self.assertIn("`.local/state`", guidance)
         self.assertNotIn("enforcement/safe_rm.py", guidance)
         self.assertNotIn("enforcement/install_safe_rm.py", guidance)
         for stale_instruction in (
