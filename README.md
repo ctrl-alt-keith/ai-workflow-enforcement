@@ -320,23 +320,14 @@ work. See `docs/safe-refresh-repos.md`.
 
 ## Codex Safe Recursive Removal
 
-`codex-safe-rm` is a versioned enforcement control for deleting literal
-relative directory trees beneath the invocation working directory. It gives a
-Codex fixed-prefix approval rule a reviewed executable that validates every
-dynamic operand, rejects `.git` and containment escapes, and requires
-fd-relative, symlink-resistant removal support.
+This repository owns the Codex consumer policy for the Playbook-managed
+`codex-safe-rm` helper. Direct `rm` remains prompt-gated, while delegation is
+limited to an exact installed absolute path followed by the fixed `-rf --`
+prefix. The Playbook owns the executable source, installation, verification,
+migration, and source-focused tests. Within `~/.local`, only `~/.local/bin` is
+a permitted CAK-managed production publication surface.
 
-The reviewed source is installed explicitly rather than maintained under
-`~/.local/bin`:
-
-```sh
-make install
-make verify-install
-```
-
-Direct `rm` remains approval-gated. See `docs/codex-safe-rm.md` for the threat
-model, guarantees, non-guarantees, rule fixture, update flow, and uninstall
-behavior.
+See `docs/codex-safe-rm.md` for the policy boundary and reusable rule template.
 
 ## Branch Cleanup Reinforcement
 

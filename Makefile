@@ -1,8 +1,4 @@
-.PHONY: help check workflow-drift-setup workflow-drift-audit install verify-install uninstall
-
-INSTALL_BIN ?= $(HOME)/.local/bin
-INSTALL_FORCE_ARG := $(if $(filter 1 true yes,$(FORCE)),--force,)
-INSTALL_DIRTY_ARG := $(if $(filter 1 true yes,$(ALLOW_DIRTY)),--allow-dirty,)
+.PHONY: help check workflow-drift-setup workflow-drift-audit
 REPOSITORY_ROOT := $(abspath $(dir $(shell git rev-parse --path-format=absolute --git-common-dir)))
 WORKFLOW_DRIFT_WORKSPACE ?= $(abspath $(REPOSITORY_ROOT)/..)
 
@@ -25,12 +21,3 @@ workflow-drift-audit: ## Run the canonical advisory workflow drift scan.
 		--playbook-root "$(WORKFLOW_DRIFT_WORKSPACE)/ai-workflow-playbook/docs" \
 		--workspace-root "$(WORKFLOW_DRIFT_WORKSPACE)" \
 		--output-format json
-
-install: ## Install the reviewed codex-safe-rm control.
-	python3 -m enforcement.install_safe_rm install --destination "$(INSTALL_BIN)/codex-safe-rm" $(INSTALL_FORCE_ARG) $(INSTALL_DIRTY_ARG)
-
-verify-install: ## Verify the installed codex-safe-rm control and provenance.
-	python3 -m enforcement.install_safe_rm verify --destination "$(INSTALL_BIN)/codex-safe-rm"
-
-uninstall: ## Remove an owned codex-safe-rm installation.
-	python3 -m enforcement.install_safe_rm uninstall --destination "$(INSTALL_BIN)/codex-safe-rm" $(INSTALL_FORCE_ARG)
