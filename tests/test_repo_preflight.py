@@ -40,6 +40,19 @@ class RepoPreflightTests(unittest.TestCase):
         self.assertIn("timed out after 30 seconds", result.stderr)
         self.assertEqual(COMMAND_TIMEOUT_SECONDS, run.call_args.kwargs["timeout"])
 
+    def test_default_runner_reports_unavailable_command_without_escaping(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            cwd = Path(raw)
+            with mock.patch(
+                "enforcement.repo_preflight.subprocess.run",
+                side_effect=FileNotFoundError("missing executable"),
+            ):
+                result = run_command(cwd, ("gh", "api", "repos/example/sample"))
+
+        self.assertEqual(127, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("command unavailable: FileNotFoundError: missing executable", result.stderr)
+
     def test_documentation_repository_reports_direct_sources(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repo = _repo(Path(raw), agents="# Instructions\n\n## Validation\n", makefile="check: ## Validate docs\n\ttrue\n")
