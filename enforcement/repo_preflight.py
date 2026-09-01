@@ -272,6 +272,8 @@ def _run(cwd: Path, argv: tuple[str, ...]) -> CommandResult:
         )
     except subprocess.TimeoutExpired:
         return CommandResult(124, "", f"command timed out after {COMMAND_TIMEOUT_SECONDS} seconds")
+    except OSError as exc:
+        return CommandResult(127, "", f"command unavailable: {type(exc).__name__}: {exc}")
     return CommandResult(result.returncode, result.stdout, result.stderr)
 
 
