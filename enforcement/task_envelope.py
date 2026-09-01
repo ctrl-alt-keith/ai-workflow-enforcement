@@ -49,6 +49,10 @@ def validate_task_envelope(envelope: dict[str, Any]) -> None:
     if missing:
         raise EnvelopeValidationError(f"missing required fields: {', '.join(missing)}")
 
+    unexpected = sorted(set(envelope) - set(REQUIRED_FIELDS))
+    if unexpected:
+        raise EnvelopeValidationError(f"unexpected fields: {', '.join(unexpected)}")
+
     task_type = envelope["task_type"]
     if not isinstance(task_type, str) or task_type not in KNOWN_TASK_TYPES:
         raise EnvelopeValidationError(

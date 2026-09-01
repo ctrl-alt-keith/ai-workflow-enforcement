@@ -45,6 +45,16 @@ class TaskEnvelopeTests(unittest.TestCase):
         ):
             validate_task_envelope(envelope)
 
+    def test_unknown_fields_are_rejected_to_match_schema_contract(self) -> None:
+        envelope = _example()
+        envelope["execution_authority"] = "autonomous"
+
+        with self.assertRaisesRegex(
+            EnvelopeValidationError,
+            "unexpected fields: execution_authority",
+        ):
+            validate_task_envelope(envelope)
+
     def test_invalid_schema_version_is_rejected(self) -> None:
         envelope = _example()
         envelope["schema_version"] = 2
