@@ -7,5 +7,8 @@ from typing import TextIO
 
 def emit_handoff(handoff: str, output: TextIO) -> None:
     """Write and flush metadata-only handoff text supplied by the fixed DAG."""
-    output.write(handoff + "\n")
+    payload = handoff + "\n"
+    written = output.write(payload)
+    if written != len(payload):
+        raise OSError("incomplete handoff write")
     output.flush()
