@@ -270,6 +270,20 @@ class PromptDeliveryDAGTests(unittest.TestCase):
         self.assertFalse(receipt["frozen_prompt"]["text_format"]["final_newline"])
         self.assertFalse(receipt["acting_identity_verified"])
 
+    def test_freeze_failure_is_fail_closed_and_still_produces_a_receipt(self) -> None:
+        with mock.patch.object(PromptMaterial, "freeze", side_effect=ValueError("must not escape")):
+            result = FixedPromptDeliveryDAG(FakeProvider()).execute(CONTENT, request())
+
+        self.assertEqual("BLOCKED", result.terminal_status)
+        self.assertEqual(
+            ["BLOCKED", "NOT_RUN", "NOT_RUN", "NOT_RUN", "NOT_RUN", "NOT_RUN"],
+            [node.status for node in result.nodes],
+        )
+        self.assertEqual("internal_ValueError", result.nodes[0].code)
+        receipt = result.durable_receipt()
+        self.assertEqual(hashlib.sha256(CONTENT).hexdigest(), receipt["frozen_prompt"]["sha256"])
+        self.assertIsNone(receipt["artifact"])
+
     def test_final_renderer_has_only_byte_free_inputs_and_cannot_emit_canary(self) -> None:
         self.assertEqual(
             ["artifact", "link", "recipient", "bootstrap"],

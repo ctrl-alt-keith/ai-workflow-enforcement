@@ -218,6 +218,18 @@ class FixedPromptDeliveryDAG:
         verified: VerifiedArtifact | None = None
         receiver_link: ReceiverLink | None = None
         handoff: str | None = None
+        context = ReceiptContext(
+            issue_id=request.issue_id,
+            destination=request.destination,
+            acting_email=request.acting_email,
+            prompt_size=len(content),
+            prompt_sha256=hashlib.sha256(content).hexdigest(),
+            prompt_dropbox_content_hash=dropbox_content_hash(content),
+            utf8=_is_utf8(content),
+            bom_present=content.startswith(b"\xef\xbb\xbf"),
+            lf_only=b"\r" not in content,
+            final_newline=content.endswith(b"\n"),
+        )
 
         def run(
             node_id: str,
@@ -256,20 +268,6 @@ class FixedPromptDeliveryDAG:
             ),
         )
         assert material is None or isinstance(material, PromptMaterial)
-        if material is None:
-            raise RuntimeError("fixed freeze_input node did not produce prompt material")
-        context = ReceiptContext(
-            issue_id=request.issue_id,
-            destination=request.destination,
-            acting_email=request.acting_email,
-            prompt_size=material.size,
-            prompt_sha256=material.sha256,
-            prompt_dropbox_content_hash=material.dropbox_content_hash,
-            utf8=_is_utf8(material.content),
-            bom_present=material.content.startswith(b"\xef\xbb\xbf"),
-            lf_only=b"\r" not in material.content,
-            final_newline=material.content.endswith(b"\n"),
-        )
 
         run(
             "validate_scope",
