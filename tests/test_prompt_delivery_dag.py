@@ -167,6 +167,7 @@ class PromptDeliveryDAGTests(unittest.TestCase):
         self.assertIn("perform one download for this attempt", result.handoff or "")
         self.assertNotIn("Download exactly once", result.handoff or "")
         self.assertEqual("id:pilot", result.artifact.file_id if result.artifact else None)
+        self.assertEqual("verified", result.durable_receipt()["provider_effect"]["status"])
 
     def test_upload_failure_blocks_every_descendant_without_retry(self) -> None:
         provider = FakeProvider(upload_failure=ProviderError("unverifiable", "failure contains CANARY-ALPHA-207"))
@@ -181,6 +182,7 @@ class PromptDeliveryDAGTests(unittest.TestCase):
         self.assertEqual(0, provider.link_count)
         serialized = json.dumps(result.durable_receipt())
         self.assertNotIn("CANARY-ALPHA-207", serialized)
+        self.assertEqual("unknown_after_attempt", result.durable_receipt()["provider_effect"]["status"])
 
     def test_identity_or_integrity_mismatch_blocks_link_and_handoff(self) -> None:
         cases = {
@@ -216,6 +218,22 @@ class PromptDeliveryDAGTests(unittest.TestCase):
         self.assertEqual(1, provider.upload_count)
         blocked = next(node for node in result.nodes if node.status == "BLOCKED")
         self.assertEqual("destination_collision", blocked.code)
+        self.assertEqual("collision_no_create", result.durable_receipt()["provider_effect"]["status"])
+
+    def test_post_upload_block_retains_sanitized_effect_identity(self) -> None:
+        provider = FakeProvider(observed=metadata(size=len(CONTENT) + 1))
+        result = FixedPromptDeliveryDAG(provider).execute(CONTENT, request())
+
+        self.assertEqual("BLOCKED", result.terminal_status)
+        effect = result.durable_receipt()["provider_effect"]
+        self.assertEqual("observed_unverified", effect["status"])
+        self.assertEqual("id:pilot", effect["file_id"])
+        self.assertEqual(DESTINATION, effect["path"])
+        self.assertEqual("0123456789abcdef", effect["revision"])
+        self.assertEqual(len(CONTENT), effect["size"])
+        self.assertEqual(dropbox_content_hash(CONTENT), effect["dropbox_content_hash"])
+        self.assertNotIn("CANARY-ALPHA-207", json.dumps(effect))
+        self.assertNotIn(RAW_URL, json.dumps(effect))
 
     def test_validation_failure_never_uploads_or_creates_a_link(self) -> None:
         provider = FakeProvider()

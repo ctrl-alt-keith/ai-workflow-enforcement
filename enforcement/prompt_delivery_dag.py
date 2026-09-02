@@ -106,6 +106,26 @@ class ReceiverLink:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderEffect:
+    status: str
+    file_id: str | None = None
+    path: str | None = None
+    revision: str | None = None
+    size: int | None = None
+    dropbox_content_hash: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "file_id": self.file_id,
+            "path": self.path,
+            "revision": self.revision,
+            "size": self.size,
+            "dropbox_content_hash": self.dropbox_content_hash,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class NodeResult:
     node_id: str
     dependencies: tuple[str, ...]
@@ -145,6 +165,7 @@ class ExecutionResult:
     nodes: tuple[NodeResult, ...]
     context: ReceiptContext
     artifact: VerifiedArtifact | None
+    provider_effect: ProviderEffect
     handoff: str | None = field(default=None, repr=False)
 
     def durable_receipt(self) -> dict[str, object]:
@@ -163,7 +184,7 @@ class ExecutionResult:
             for node in self.nodes
         )
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "workflow": "cak-207-fixed-prompt-delivery-dag",
             "attempt_id": self.attempt_id,
             "terminal_status": self.terminal_status,
@@ -185,6 +206,7 @@ class ExecutionResult:
                 },
             },
             "node_results": [node.as_dict() for node in self.nodes],
+            "provider_effect": self.provider_effect.as_dict(),
             "artifact": artifact,
             "receiver_link": {
                 "created": link_created,
@@ -217,6 +239,7 @@ class FixedPromptDeliveryDAG:
         statuses: dict[str, str] = {}
         material: PromptMaterial | None = None
         upload_metadata: dict[str, object] | None = None
+        provider_effect = ProviderEffect("not_attempted")
         verified: VerifiedArtifact | None = None
         receiver_link: ReceiverLink | None = None
         handoff: str | None = None
@@ -294,6 +317,7 @@ class FixedPromptDeliveryDAG:
             ),
         )
         assert upload_metadata is None or isinstance(upload_metadata, dict)
+        provider_effect = self._provider_effect(upload_metadata, results)
 
         verified = run(
             "verify_artifact",
@@ -301,6 +325,15 @@ class FixedPromptDeliveryDAG:
             lambda: self._verify(material, request, upload_metadata),
         )
         assert verified is None or isinstance(verified, VerifiedArtifact)
+        if verified is not None:
+            provider_effect = ProviderEffect(
+                status="verified",
+                file_id=verified.file_id,
+                path=verified.path,
+                revision=verified.revision,
+                size=verified.size,
+                dropbox_content_hash=verified.dropbox_content_hash,
+            )
 
         receiver_link = run(
             "mint_download_link",
@@ -326,8 +359,30 @@ class FixedPromptDeliveryDAG:
             nodes=tuple(results),
             context=context,
             artifact=verified,
+            provider_effect=provider_effect,
             handoff=handoff,
         )
+
+    @staticmethod
+    def _provider_effect(
+        upload_metadata: dict[str, object] | None,
+        results: list[NodeResult],
+    ) -> ProviderEffect:
+        if upload_metadata is not None:
+            return ProviderEffect(
+                status="observed_unverified",
+                file_id=_optional_string(upload_metadata.get("id")),
+                path=_optional_string(upload_metadata.get("path_display")),
+                revision=_optional_string(upload_metadata.get("rev")),
+                size=_optional_integer(upload_metadata.get("size")),
+                dropbox_content_hash=_optional_string(upload_metadata.get("content_hash")),
+            )
+        upload_result = next(result for result in results if result.node_id == "upload_prompt")
+        if upload_result.status == "NOT_RUN":
+            return ProviderEffect("not_attempted")
+        if upload_result.code == "destination_collision":
+            return ProviderEffect("collision_no_create")
+        return ProviderEffect("unknown_after_attempt")
 
     @staticmethod
     def _freeze_with_context(
@@ -513,6 +568,16 @@ def _is_utf8(content: bytes) -> bool:
     except UnicodeDecodeError:
         return False
     return True
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _optional_integer(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
 
 
 def build_parser() -> argparse.ArgumentParser:

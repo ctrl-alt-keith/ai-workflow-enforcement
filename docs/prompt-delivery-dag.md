@@ -43,10 +43,57 @@ The final renderer accepts only `VerifiedArtifact`, `ReceiverLink`, recipient,
 and bootstrap values. It has no prompt bytes, file path reader, Dropbox client,
 preview callback, or content-retrieval capability.
 
-## Running one attempt
+## Normal invocation boundary
 
-Use the repository's normal Python module entry point. All digest values must
-be computed from the exact input file before invocation:
+`enforcement.prompt_delivery_invocation` is the smallest normal local boundary
+around the fixed DAG. It accepts one already-authored exact prompt file and
+derives the size, ordinary SHA-256, and Dropbox content hash from those same
+bytes, so the operator does not manually assemble the low-level integrity
+arguments:
+
+```sh
+python3 -m enforcement.prompt_delivery_invocation \
+  --prompt-file [exact-prompt-file] \
+  --issue CAK-123 \
+  --destination /issues/CAK-123/example-prompt-v1-2026-09-02.md \
+  --recipient codex \
+  --acting-email [expected-dropbox-account] \
+  --namespace-id [dropbox-namespace-id] \
+  --access-token-env DROPBOX_ACCESS_TOKEN \
+  --non-secret \
+  --checkout /required/existing/checkout \
+  --receipt-file [fresh-attempt-local-path]/receipt.json
+```
+
+The named credential environment variable must already contain the qualified
+bearer credential. Its name is retained but its value is never written to the
+receipt. Credential absence produces a byte-free blocked receipt before
+provider construction or mutation.
+
+The boundary invokes `FixedPromptDeliveryDAG` rather than copying its graph. A
+successful DAG result is not yet end-to-end invocation success: the boundary
+must write and flush the compact handoff first. Its outer receipt records the
+DAG receipt and a URL-free `handoff_emission` observation. A failed or partial
+handoff write blocks end-to-end success and is not retried.
+
+After `handoff_emission_failed`, do not rerun against the occupied destination.
+The current bounded invocation has no link-only resume operation. Preserve the
+blocked receipt and artifact identity, then start a separately authorized fresh
+attempt with a new versioned destination when delivery is still required. That
+limitation is explicit: v1 may repeat already valid upload work rather than
+silently adding retry or recovery behavior to the fixed DAG.
+
+When upload returns provider identity but a later node blocks, the DAG receipt
+retains only the upload's file ID, path, revision, size, and Dropbox content
+hash as `observed_unverified` partial-effect evidence. An ambiguous upload
+failure is `unknown_after_attempt`; a known collision is
+`collision_no_create`. None of those states authorizes retry. Prompt bytes,
+tokens, arbitrary provider errors, and raw receiver URLs remain excluded.
+
+## Low-level DAG invocation
+
+The lower-level module remains available for focused DAG inspection. All digest
+values must be computed from the exact input file before invocation:
 
 ```sh
 python3 -m enforcement.prompt_delivery_dag \
@@ -82,11 +129,14 @@ one-time temporary *upload* links.
 
 ## Result boundary
 
-The durable receipt records the fixed node order, per-node status and checks,
+The DAG receipt uses schema version 2 and records the fixed node order,
+per-node status and checks,
 terminal `SUCCESS` or `BLOCKED`, governing issue, intended destination, acting
-identity, frozen prompt size and hashes, text-format evidence, verified
-artifact identity, and whether one temporary link was created. The URL remains
-only in the transient handoff.
+identity, frozen prompt size and hashes, text-format evidence, sanitized
+provider-effect evidence, verified artifact identity, and whether one temporary
+link was created. The normal invocation receipt additionally binds explicit
+namespace and credential-key inputs to the final-emission observation. The URL
+remains only in the transient handoff.
 
 The receipt, prompt, provider object, link, validation, and successful run
 grant zero authority and perform no lifecycle transition. Human review still
