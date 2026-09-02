@@ -29,10 +29,12 @@ intent and constraints in a stable envelope:
 - `expected_outputs`
 - `validation_expectations`
 
-The envelope remains descriptive. The validator checks only required top-level
-fields, known task type, schema version, and object-shaped sections. It does
-not run scans, render packets, remediate drift, persist decisions, call GitHub,
-enforce policy, or coordinate agents.
+The envelope remains descriptive. The validator checks the required and
+allowed top-level fields, known task type, schema version, and object-shaped
+sections. Unknown top-level fields are rejected so the validator stays aligned
+with the strict schema contract. It does not run scans, render packets,
+remediate drift, persist decisions, call GitHub, enforce policy, or coordinate
+agents.
 
 ## Review Result Attestations
 
