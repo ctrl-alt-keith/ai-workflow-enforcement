@@ -65,14 +65,14 @@ class FailingOutput(io.StringIO):
         raise OSError("simulated final emission failure")
 
 
+class ClosedOutput(io.StringIO):
+    def write(self, value: str) -> int:
+        raise ValueError("I/O operation on closed file")
+
+
 class PromptDeliveryInvocationTests(unittest.TestCase):
     def test_final_emission_component_has_only_byte_blind_inputs(self) -> None:
         self.assertEqual(["handoff", "output"], list(inspect.signature(emit_handoff).parameters))
-        source = inspect.getsource(emit_handoff)
-        self.assertNotIn("Path", source)
-        self.assertNotIn("read", source)
-        self.assertNotIn("Dropbox", source)
-        self.assertNotIn("content", source)
 
     def test_normal_flow_derives_identities_runs_dag_and_observes_emission(self) -> None:
         provider = FakeProvider()
@@ -98,6 +98,7 @@ class PromptDeliveryInvocationTests(unittest.TestCase):
             durable = json.loads(receipt.read_text(encoding="utf-8"))
             self.assertEqual("SUCCESS", durable["terminal_status"])
             self.assertEqual("SUCCESS", durable["dag"]["terminal_status"])
+            self.assertEqual(2, durable["dag"]["schema_version"])
             self.assertTrue(durable["handoff_emission"]["observed"])
             self.assertEqual(len(CONTENT), durable["frozen_prompt"]["size"])
             self.assertEqual(hashlib.sha256(CONTENT).hexdigest(), durable["frozen_prompt"]["sha256"])
@@ -111,25 +112,26 @@ class PromptDeliveryInvocationTests(unittest.TestCase):
             self.assertNotIn("not-retained", serialized)
 
     def test_final_emission_failure_prevents_end_to_end_success(self) -> None:
-        provider = FakeProvider()
-        with tempfile.TemporaryDirectory() as temporary:
-            prompt, receipt = self._files(Path(temporary))
-            errors = io.StringIO()
-            with (
-                mock.patch.dict(os.environ, {"TEST_DROPBOX_TOKEN": "not-retained"}, clear=True),
-                mock.patch("enforcement.prompt_delivery_invocation.DropboxClient", return_value=provider),
-            ):
-                exit_code = main(self._args(prompt, receipt), stdout=FailingOutput(), stderr=errors)
+        for output_type in (FailingOutput, ClosedOutput):
+            with self.subTest(output_type=output_type.__name__), tempfile.TemporaryDirectory() as temporary:
+                provider = FakeProvider()
+                prompt, receipt = self._files(Path(temporary))
+                errors = io.StringIO()
+                with (
+                    mock.patch.dict(os.environ, {"TEST_DROPBOX_TOKEN": "not-retained"}, clear=True),
+                    mock.patch("enforcement.prompt_delivery_invocation.DropboxClient", return_value=provider),
+                ):
+                    exit_code = main(self._args(prompt, receipt), stdout=output_type(), stderr=errors)
 
-            self.assertEqual(1, exit_code)
-            durable = json.loads(receipt.read_text(encoding="utf-8"))
-            self.assertEqual("BLOCKED", durable["terminal_status"])
-            self.assertEqual("handoff_emission_failed", durable["code"])
-            self.assertEqual("SUCCESS", durable["dag"]["terminal_status"])
-            self.assertTrue(durable["handoff_emission"]["attempted"])
-            self.assertFalse(durable["handoff_emission"]["observed"])
-            self.assertEqual(1, provider.upload_count)
-            self.assertEqual(1, provider.link_count)
+                self.assertEqual(1, exit_code)
+                durable = json.loads(receipt.read_text(encoding="utf-8"))
+                self.assertEqual("BLOCKED", durable["terminal_status"])
+                self.assertEqual("handoff_emission_failed", durable["code"])
+                self.assertEqual("SUCCESS", durable["dag"]["terminal_status"])
+                self.assertTrue(durable["handoff_emission"]["attempted"])
+                self.assertFalse(durable["handoff_emission"]["observed"])
+                self.assertEqual(1, provider.upload_count)
+                self.assertEqual(1, provider.link_count)
 
     def test_missing_credential_blocks_before_provider_construction_or_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

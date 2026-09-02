@@ -171,7 +171,7 @@ def main(
                 emission_attempted = True
                 try:
                     emit_handoff(dag_result.handoff or "", output)
-                except (OSError, UnicodeError):
+                except Exception:  # fail closed on any ordinary output-stream failure
                     code = "handoff_emission_failed"
                 else:
                     terminal_status = "SUCCESS"

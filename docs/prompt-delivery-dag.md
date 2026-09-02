@@ -76,6 +76,13 @@ must write and flush the compact handoff first. Its outer receipt records the
 DAG receipt and a URL-free `handoff_emission` observation. A failed or partial
 handoff write blocks end-to-end success and is not retried.
 
+After `handoff_emission_failed`, do not rerun against the occupied destination.
+The current bounded invocation has no link-only resume operation. Preserve the
+blocked receipt and artifact identity, then start a separately authorized fresh
+attempt with a new versioned destination when delivery is still required. That
+limitation is explicit: v1 may repeat already valid upload work rather than
+silently adding retry or recovery behavior to the fixed DAG.
+
 When upload returns provider identity but a later node blocks, the DAG receipt
 retains only the upload's file ID, path, revision, size, and Dropbox content
 hash as `observed_unverified` partial-effect evidence. An ambiguous upload
@@ -122,7 +129,8 @@ one-time temporary *upload* links.
 
 ## Result boundary
 
-The DAG receipt records the fixed node order, per-node status and checks,
+The DAG receipt uses schema version 2 and records the fixed node order,
+per-node status and checks,
 terminal `SUCCESS` or `BLOCKED`, governing issue, intended destination, acting
 identity, frozen prompt size and hashes, text-format evidence, sanitized
 provider-effect evidence, verified artifact identity, and whether one temporary

@@ -184,7 +184,7 @@ class ExecutionResult:
             for node in self.nodes
         )
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "workflow": "cak-207-fixed-prompt-delivery-dag",
             "attempt_id": self.attempt_id,
             "terminal_status": self.terminal_status,
