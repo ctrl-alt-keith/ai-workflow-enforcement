@@ -124,10 +124,25 @@ class NodeResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ReceiptContext:
+    issue_id: str
+    destination: str
+    acting_email: str
+    prompt_size: int
+    prompt_sha256: str
+    prompt_dropbox_content_hash: str
+    utf8: bool
+    bom_present: bool
+    lf_only: bool
+    final_newline: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionResult:
     attempt_id: str
     terminal_status: str
     nodes: tuple[NodeResult, ...]
+    context: ReceiptContext
     artifact: VerifiedArtifact | None
     handoff: str | None = field(default=None, repr=False)
 
@@ -151,6 +166,22 @@ class ExecutionResult:
             "workflow": "cak-207-fixed-prompt-delivery-dag",
             "attempt_id": self.attempt_id,
             "terminal_status": self.terminal_status,
+            "scope": {
+                "issue_id": self.context.issue_id,
+                "destination": self.context.destination,
+                "acting_email": self.context.acting_email,
+            },
+            "frozen_prompt": {
+                "size": self.context.prompt_size,
+                "sha256": self.context.prompt_sha256,
+                "dropbox_content_hash": self.context.prompt_dropbox_content_hash,
+                "text_format": {
+                    "utf8": self.context.utf8,
+                    "bom_present": self.context.bom_present,
+                    "lf_only": self.context.lf_only,
+                    "final_newline": self.context.final_newline,
+                },
+            },
             "node_results": [node.as_dict() for node in self.nodes],
             "artifact": artifact,
             "receiver_link": {
@@ -159,6 +190,10 @@ class ExecutionResult:
                 "expires_after_seconds": TEMPORARY_LINK_SECONDS if link_created else None,
                 "single_use": False if link_created else None,
             },
+            "acting_identity_verified": any(
+                node.node_id == "validate_scope" and node.status == "SUCCESS"
+                for node in self.nodes
+            ),
             "authority": ZERO_AUTHORITY,
         }
 
@@ -221,6 +256,20 @@ class FixedPromptDeliveryDAG:
             ),
         )
         assert material is None or isinstance(material, PromptMaterial)
+        if material is None:
+            raise RuntimeError("fixed freeze_input node did not produce prompt material")
+        context = ReceiptContext(
+            issue_id=request.issue_id,
+            destination=request.destination,
+            acting_email=request.acting_email,
+            prompt_size=material.size,
+            prompt_sha256=material.sha256,
+            prompt_dropbox_content_hash=material.dropbox_content_hash,
+            utf8=_is_utf8(material.content),
+            bom_present=material.content.startswith(b"\xef\xbb\xbf"),
+            lf_only=b"\r" not in material.content,
+            final_newline=material.content.endswith(b"\n"),
+        )
 
         run(
             "validate_scope",
@@ -267,6 +316,7 @@ class FixedPromptDeliveryDAG:
             attempt_id=request.attempt_id,
             terminal_status=terminal,
             nodes=tuple(results),
+            context=context,
             artifact=verified,
             handoff=handoff,
         )
@@ -282,6 +332,8 @@ class FixedPromptDeliveryDAG:
             raise DeliveryBlocked("utf8_bom", "prompt must not contain a UTF-8 BOM")
         if b"\r" in material.content:
             raise DeliveryBlocked("non_lf_line_endings", "prompt must use LF line endings")
+        if not material.content.endswith(b"\n"):
+            raise DeliveryBlocked("missing_final_newline", "prompt must end with one LF newline")
         if not request.non_secret_confirmed:
             raise DeliveryBlocked("non_secret_unconfirmed", "caller did not confirm non-secret content")
         if re.fullmatch(r"CAK-[1-9][0-9]*", request.issue_id) is None:
@@ -308,6 +360,7 @@ class FixedPromptDeliveryDAG:
             "utf8",
             "no_bom",
             "lf_line_endings",
+            "final_newline",
             "non_secret_attested",
             "issue_valid",
             "destination_contained_and_versioned",
@@ -410,7 +463,7 @@ def render_handoff(
     return "\n".join(
         (
             f"Recipient: {recipient}",
-            f"Download exactly once: {link.url}",
+            f"Receiver URL (perform one download for this attempt): {link.url}",
             f"Dropbox path: {artifact.path}",
             f"Dropbox file ID: {artifact.file_id}",
             f"Provider revision: {artifact.revision}",
@@ -424,6 +477,14 @@ def render_handoff(
             ZERO_AUTHORITY,
         )
     )
+
+
+def _is_utf8(content: bytes) -> bool:
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -471,7 +532,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with args.receipt_file.open("x", encoding="utf-8", errors="strict") as stream:
             result = FixedPromptDeliveryDAG(DropboxClient(token, args.namespace_id)).execute(content, request_value)
-            stream.write(json.dumps(result.durable_receipt(), indent=2, sort_keys=True) + "\n")
+            receipt_body = json.dumps(result.durable_receipt(), indent=2, sort_keys=True) + "\n"
+            stream.write(receipt_body)
+            stream.flush()
+            os.fsync(stream.fileno())
     except FileExistsError:
         print("prompt-delivery: receipt destination already exists", file=sys.stderr)
         return 2

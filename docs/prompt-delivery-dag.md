@@ -22,15 +22,18 @@ There is no automatic retry, alternate provider, inline fallback, second
 upload, plugin hook, dynamic node registration, or workflow selection.
 
 The first two nodes freeze exact bytes, compute the ordinary whole-file
-SHA-256 and Dropbox content hash, and validate the caller-supplied issue,
-recipient, contained versioned destination, acting account, non-secret
-attestation, and integrity values. Upload uses Dropbox `add` mode with
+SHA-256 and Dropbox content hash, and validate UTF-8 without a BOM, LF-only
+line endings, a required final newline, the caller-supplied issue, recipient,
+contained versioned destination, acting account, non-secret attestation, and
+integrity values. Upload uses Dropbox `add` mode with
 `strict_conflict=true` and `autorename=false`, so an occupied destination
 blocks instead of overwriting, accepting identical content, or creating a
 renamed copy.
 
 Verification re-observes the created file and exact-matches its file ID, path,
-revision, size, and Dropbox content hash before link creation. Ordinary
+revision, size, and Dropbox content hash before link creation. This pilot uses
+the CAK-194 qualified checksum route rather than controller raw-byte readback;
+the downstream receiver still verifies the downloaded raw bytes. Ordinary
 SHA-256 and Dropbox content hash remain separately labeled. Dropbox documents
 `content_hash` as the metadata field for comparing local content with the
 server copy in its [File Access Guide](https://developers.dropbox.com/dbx-file-access-guide)
@@ -80,8 +83,10 @@ one-time temporary *upload* links.
 ## Result boundary
 
 The durable receipt records the fixed node order, per-node status and checks,
-terminal `SUCCESS` or `BLOCKED`, verified artifact identity, and whether one
-temporary link was created. The URL remains only in the transient handoff.
+terminal `SUCCESS` or `BLOCKED`, governing issue, intended destination, acting
+identity, frozen prompt size and hashes, text-format evidence, verified
+artifact identity, and whether one temporary link was created. The URL remains
+only in the transient handoff.
 
 The receipt, prompt, provider object, link, validation, and successful run
 grant zero authority and perform no lifecycle transition. Human review still

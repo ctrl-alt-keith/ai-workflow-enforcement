@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import fields
+import hashlib
 import io
 import inspect
 import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 from urllib import error
@@ -17,6 +22,7 @@ from enforcement.prompt_delivery_dag import (
     PromptMaterial,
     ReceiverLink,
     VerifiedArtifact,
+    main,
     render_handoff,
 )
 
@@ -46,7 +52,7 @@ def request(content: bytes = CONTENT, **overrides: object) -> DeliveryRequest:
         "recipient": "codex",
         "acting_email": "ai@much.email",
         "expected_size": len(content),
-        "expected_sha256": __import__("hashlib").sha256(content).hexdigest(),
+        "expected_sha256": hashlib.sha256(content).hexdigest(),
         "expected_dropbox_content_hash": dropbox_content_hash(content),
         "non_secret_confirmed": True,
         "bootstrap": Bootstrap("/required/ai-workflow-enforcement"),
@@ -158,6 +164,8 @@ class PromptDeliveryDAGTests(unittest.TestCase):
             provider.calls,
         )
         self.assertIn(RAW_URL, result.handoff or "")
+        self.assertIn("perform one download for this attempt", result.handoff or "")
+        self.assertNotIn("Download exactly once", result.handoff or "")
         self.assertEqual("id:pilot", result.artifact.file_id if result.artifact else None)
 
     def test_upload_failure_blocks_every_descendant_without_retry(self) -> None:
@@ -220,6 +228,48 @@ class PromptDeliveryDAGTests(unittest.TestCase):
         self.assertNotIn("upload_absent", provider.calls)
         self.assertNotIn("get_temporary_link", provider.calls)
 
+    def test_every_scope_and_text_format_guard_blocks_before_upload(self) -> None:
+        cases = (
+            (b"invalid \xff\n", {}, "invalid_utf8"),
+            (b"\xef\xbb\xbftext\n", {}, "utf8_bom"),
+            (b"text\r\n", {}, "non_lf_line_endings"),
+            (b"text", {}, "missing_final_newline"),
+            (CONTENT, {"non_secret_confirmed": False}, "non_secret_unconfirmed"),
+            (CONTENT, {"issue_id": "not-an-issue"}, "invalid_issue"),
+            (CONTENT, {"destination": "/issues/CAK-999/prompt-v1-2026-09-02.md"}, "destination_outside_issue"),
+            (CONTENT, {"destination": "/issues/CAK-207/unversioned.md"}, "destination_not_versioned"),
+            (CONTENT, {"destination": "/issues/CAK-207/../prompt-v1-2026-09-02.md"}, "invalid_destination"),
+            (CONTENT, {"destination": "/issues/CAK-207/prompt\\-v1-2026-09-02.md"}, "invalid_destination"),
+            (CONTENT, {"recipient": "human"}, "unsupported_recipient"),
+            (
+                CONTENT,
+                {"bootstrap": Bootstrap("/required/checkout", acquisition_posture="clone_allowed")},
+                "invalid_acquisition_posture",
+            ),
+            (CONTENT, {"bootstrap": Bootstrap("relative/checkout")}, "invalid_checkout"),
+        )
+        for content, overrides, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                provider = FakeProvider()
+                result = FixedPromptDeliveryDAG(provider).execute(content, request(content, **overrides))
+                blocked = next(node for node in result.nodes if node.status == "BLOCKED")
+                self.assertEqual(expected_code, blocked.code)
+                self.assertNotIn("upload_absent", provider.calls)
+
+    def test_blocked_receipt_remains_attributable_and_records_byte_policy(self) -> None:
+        result = FixedPromptDeliveryDAG(FakeProvider()).execute(
+            b"no final newline",
+            request(b"no final newline"),
+        )
+        receipt = result.durable_receipt()
+
+        self.assertEqual("CAK-207", receipt["scope"]["issue_id"])
+        self.assertEqual(DESTINATION, receipt["scope"]["destination"])
+        self.assertEqual("ai@much.email", receipt["scope"]["acting_email"])
+        self.assertEqual(hashlib.sha256(b"no final newline").hexdigest(), receipt["frozen_prompt"]["sha256"])
+        self.assertFalse(receipt["frozen_prompt"]["text_format"]["final_newline"])
+        self.assertFalse(receipt["acting_identity_verified"])
+
     def test_final_renderer_has_only_byte_free_inputs_and_cannot_emit_canary(self) -> None:
         self.assertEqual(
             ["artifact", "link", "recipient", "bootstrap"],
@@ -258,6 +308,113 @@ class PromptDeliveryDAGTests(unittest.TestCase):
     def test_prompt_material_hides_bytes_from_repr(self) -> None:
         material = PromptMaterial.freeze(CONTENT)
         self.assertNotIn("CANARY-ALPHA-207", repr(material))
+
+    def test_cli_success_writes_byte_free_receipt_and_returns_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.md"
+            receipt = root / "receipt.json"
+            prompt.write_bytes(CONTENT)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            provider = FakeProvider()
+            with (
+                mock.patch.dict(os.environ, {"TEST_DROPBOX_TOKEN": "not-retained"}),
+                mock.patch("enforcement.prompt_delivery_dag.DropboxClient", return_value=provider),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main(self._cli_args(prompt, receipt))
+
+            self.assertEqual(0, exit_code)
+            self.assertIn(RAW_URL, stdout.getvalue())
+            receipt_text = receipt.read_text(encoding="utf-8")
+            self.assertNotIn(RAW_URL, receipt_text)
+            self.assertNotIn("CANARY-ALPHA-207", receipt_text)
+            self.assertEqual("SUCCESS", json.loads(receipt_text)["terminal_status"])
+            self.assertEqual("", stderr.getvalue())
+
+    def test_cli_blocks_on_missing_token_and_refuses_existing_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.md"
+            receipt = root / "receipt.json"
+            prompt.write_bytes(CONTENT)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main(self._cli_args(prompt, receipt))
+            self.assertEqual(2, exit_code)
+            self.assertIn("environment variable is unset", stderr.getvalue())
+            self.assertFalse(receipt.exists())
+
+            receipt.write_text("existing\n", encoding="utf-8")
+            stderr = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"TEST_DROPBOX_TOKEN": "not-retained"}),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main(self._cli_args(prompt, receipt))
+            self.assertEqual(2, exit_code)
+            self.assertEqual("existing\n", receipt.read_text(encoding="utf-8"))
+            self.assertIn("receipt destination already exists", stderr.getvalue())
+
+    def test_cli_blocked_attempt_writes_receipt_and_returns_one(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.md"
+            receipt = root / "receipt.json"
+            prompt.write_bytes(CONTENT)
+            stderr = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"TEST_DROPBOX_TOKEN": "not-retained"}),
+                mock.patch(
+                    "enforcement.prompt_delivery_dag.DropboxClient",
+                    return_value=FakeProvider(account_email="other@example.com"),
+                ),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main(self._cli_args(prompt, receipt))
+            self.assertEqual(1, exit_code)
+            self.assertEqual("BLOCKED", json.loads(receipt.read_text(encoding="utf-8"))["terminal_status"])
+            self.assertIn("acting_identity_mismatch", stderr.getvalue())
+
+    @staticmethod
+    def _cli_args(prompt: Path, receipt: Path) -> list[str]:
+        return [
+            "--prompt-file",
+            str(prompt),
+            "--issue",
+            "CAK-207",
+            "--destination",
+            DESTINATION,
+            "--recipient",
+            "codex",
+            "--acting-email",
+            "ai@much.email",
+            "--namespace-id",
+            "14959974083",
+            "--access-token-env",
+            "TEST_DROPBOX_TOKEN",
+            "--expected-size",
+            str(len(CONTENT)),
+            "--expected-sha256",
+            hashlib.sha256(CONTENT).hexdigest(),
+            "--expected-dropbox-content-hash",
+            dropbox_content_hash(CONTENT),
+            "--non-secret",
+            "--checkout",
+            "/required/ai-workflow-enforcement",
+            "--attempt-id",
+            "attempt-cli-207",
+            "--receipt-file",
+            str(receipt),
+        ]
 
 
 if __name__ == "__main__":
