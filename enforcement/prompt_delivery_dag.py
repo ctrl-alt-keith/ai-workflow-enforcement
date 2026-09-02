@@ -131,10 +131,11 @@ class ReceiptContext:
     prompt_size: int
     prompt_sha256: str
     prompt_dropbox_content_hash: str
-    utf8: bool
-    bom_present: bool
-    lf_only: bool
-    final_newline: bool
+    prompt_identity_observed: bool
+    utf8: bool | None
+    bom_present: bool | None
+    lf_only: bool | None
+    final_newline: bool | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +176,7 @@ class ExecutionResult:
                 "size": self.context.prompt_size,
                 "sha256": self.context.prompt_sha256,
                 "dropbox_content_hash": self.context.prompt_dropbox_content_hash,
+                "observed": self.context.prompt_identity_observed,
                 "text_format": {
                     "utf8": self.context.utf8,
                     "bom_present": self.context.bom_present,
@@ -222,13 +224,14 @@ class FixedPromptDeliveryDAG:
             issue_id=request.issue_id,
             destination=request.destination,
             acting_email=request.acting_email,
-            prompt_size=len(content),
-            prompt_sha256=hashlib.sha256(content).hexdigest(),
-            prompt_dropbox_content_hash=dropbox_content_hash(content),
-            utf8=_is_utf8(content),
-            bom_present=content.startswith(b"\xef\xbb\xbf"),
-            lf_only=b"\r" not in content,
-            final_newline=content.endswith(b"\n"),
+            prompt_size=request.expected_size,
+            prompt_sha256=request.expected_sha256,
+            prompt_dropbox_content_hash=request.expected_dropbox_content_hash,
+            prompt_identity_observed=False,
+            utf8=None,
+            bom_present=None,
+            lf_only=None,
+            final_newline=None,
         )
 
         def run(
@@ -259,15 +262,22 @@ class FixedPromptDeliveryDAG:
             results.append(NodeResult(node_id, dependencies, "SUCCESS", "ok", checks))
             return value
 
-        material = run(
+        frozen_input = run(
             "freeze_input",
             (),
             lambda: (
-                PromptMaterial.freeze(content),
+                self._freeze_with_context(content, request),
                 ("exact_bytes_frozen", "size_computed", "sha256_computed", "dropbox_content_hash_computed"),
             ),
         )
-        assert material is None or isinstance(material, PromptMaterial)
+        assert frozen_input is None or (
+            isinstance(frozen_input, tuple)
+            and len(frozen_input) == 2
+            and isinstance(frozen_input[0], PromptMaterial)
+            and isinstance(frozen_input[1], ReceiptContext)
+        )
+        if frozen_input is not None:
+            material, context = frozen_input
 
         run(
             "validate_scope",
@@ -317,6 +327,26 @@ class FixedPromptDeliveryDAG:
             context=context,
             artifact=verified,
             handoff=handoff,
+        )
+
+    @staticmethod
+    def _freeze_with_context(
+        content: bytes,
+        request: DeliveryRequest,
+    ) -> tuple[PromptMaterial, ReceiptContext]:
+        material = PromptMaterial.freeze(content)
+        return material, ReceiptContext(
+            issue_id=request.issue_id,
+            destination=request.destination,
+            acting_email=request.acting_email,
+            prompt_size=material.size,
+            prompt_sha256=material.sha256,
+            prompt_dropbox_content_hash=material.dropbox_content_hash,
+            prompt_identity_observed=True,
+            utf8=_is_utf8(material.content),
+            bom_present=material.content.startswith(b"\xef\xbb\xbf"),
+            lf_only=b"\r" not in material.content,
+            final_newline=material.content.endswith(b"\n"),
         )
 
     def _validate(self, material: PromptMaterial | None, request: DeliveryRequest) -> tuple[str, ...]:

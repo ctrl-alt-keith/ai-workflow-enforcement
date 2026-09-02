@@ -267,11 +267,16 @@ class PromptDeliveryDAGTests(unittest.TestCase):
         self.assertEqual(DESTINATION, receipt["scope"]["destination"])
         self.assertEqual("ai@much.email", receipt["scope"]["acting_email"])
         self.assertEqual(hashlib.sha256(b"no final newline").hexdigest(), receipt["frozen_prompt"]["sha256"])
+        self.assertTrue(receipt["frozen_prompt"]["observed"])
         self.assertFalse(receipt["frozen_prompt"]["text_format"]["final_newline"])
         self.assertFalse(receipt["acting_identity_verified"])
 
-    def test_freeze_failure_is_fail_closed_and_still_produces_a_receipt(self) -> None:
-        with mock.patch.object(PromptMaterial, "freeze", side_effect=ValueError("must not escape")):
+    def test_real_hashing_failure_is_fail_closed_and_still_produces_a_receipt(self) -> None:
+        expected = request()
+        with mock.patch(
+            "enforcement.prompt_delivery_dag.dropbox_content_hash",
+            side_effect=MemoryError("must not escape"),
+        ):
             result = FixedPromptDeliveryDAG(FakeProvider()).execute(CONTENT, request())
 
         self.assertEqual("BLOCKED", result.terminal_status)
@@ -279,9 +284,11 @@ class PromptDeliveryDAGTests(unittest.TestCase):
             ["BLOCKED", "NOT_RUN", "NOT_RUN", "NOT_RUN", "NOT_RUN", "NOT_RUN"],
             [node.status for node in result.nodes],
         )
-        self.assertEqual("internal_ValueError", result.nodes[0].code)
+        self.assertEqual("internal_MemoryError", result.nodes[0].code)
         receipt = result.durable_receipt()
-        self.assertEqual(hashlib.sha256(CONTENT).hexdigest(), receipt["frozen_prompt"]["sha256"])
+        self.assertEqual(expected.expected_sha256, receipt["frozen_prompt"]["sha256"])
+        self.assertFalse(receipt["frozen_prompt"]["observed"])
+        self.assertIsNone(receipt["frozen_prompt"]["text_format"]["utf8"])
         self.assertIsNone(receipt["artifact"])
 
     def test_final_renderer_has_only_byte_free_inputs_and_cannot_emit_canary(self) -> None:
@@ -397,6 +404,31 @@ class PromptDeliveryDAGTests(unittest.TestCase):
             self.assertEqual(1, exit_code)
             self.assertEqual("BLOCKED", json.loads(receipt.read_text(encoding="utf-8"))["terminal_status"])
             self.assertIn("acting_identity_mismatch", stderr.getvalue())
+
+    def test_cli_hashing_failure_writes_blocked_receipt_instead_of_empty_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prompt = root / "prompt.md"
+            receipt = root / "receipt.json"
+            prompt.write_bytes(CONTENT)
+            stderr = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {"TEST_DROPBOX_TOKEN": "not-retained"}),
+                mock.patch(
+                    "enforcement.prompt_delivery_dag.dropbox_content_hash",
+                    side_effect=MemoryError("must not escape"),
+                ),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main(self._cli_args(prompt, receipt))
+
+            self.assertEqual(1, exit_code)
+            durable = json.loads(receipt.read_text(encoding="utf-8"))
+            self.assertEqual("BLOCKED", durable["terminal_status"])
+            self.assertFalse(durable["frozen_prompt"]["observed"])
+            self.assertEqual("internal_MemoryError", durable["node_results"][0]["code"])
+            self.assertIn("internal_MemoryError", stderr.getvalue())
 
     @staticmethod
     def _cli_args(prompt: Path, receipt: Path) -> list[str]:
