@@ -11,6 +11,19 @@ implements selected, checkable portions of that doctrine mechanically.
 
 ## Current Tools
 
+Run the bounded fixed-DAG pilot for one issue-owned Codex prompt:
+
+```sh
+python3 -m enforcement.prompt_delivery_dag --help
+```
+
+The six-node path freezes and validates exact bytes, performs one strict
+absent Dropbox upload, verifies stored identity and integrity, creates at most
+one temporary receiver link, and renders a byte-blind compact handoff. It has
+no retries, inline fallback, dynamic graph, or general workflow machinery.
+See `docs/prompt-delivery-dag.md` for the input contract, transient-link
+boundary, receipt shape, and operator runbook.
+
 Run an unscheduled, explicitly human-invoked integrity check against one
 manifest-bound Dropbox artifact scope:
 

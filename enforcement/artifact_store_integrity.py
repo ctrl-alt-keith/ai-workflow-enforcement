@@ -64,7 +64,7 @@ class Listing:
 
 
 class DropboxClient:
-    """Narrow Dropbox API client exposing only read operations used by the audit."""
+    """Narrow Dropbox API client shared by bounded enforcement tools."""
 
     def __init__(self, access_token: str, namespace_id: str, *, timeout: int = 60) -> None:
         if not access_token:
@@ -108,6 +108,46 @@ class DropboxClient:
 
     def get_metadata(self, path: str) -> dict[str, object]:
         return self._rpc("get_metadata", {"path": path, "include_deleted": True})
+
+    def get_current_account(self) -> dict[str, object]:
+        req = request.Request(
+            "https://api.dropboxapi.com/2/users/get_current_account",
+            data=b"null",
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._access_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        return self._json_request(req, "Dropbox account identity unavailable")
+
+    def upload_absent(self, path: str, content: bytes) -> dict[str, object]:
+        """Create one file and fail if any object already occupies the path."""
+        api_arg = json.dumps(
+            {
+                "path": path,
+                "mode": "add",
+                "autorename": False,
+                "mute": False,
+                "strict_conflict": True,
+            },
+            separators=(",", ":"),
+        )
+        req = request.Request(
+            f"{CONTENT_ROOT}/upload",
+            data=content,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._access_token}",
+                "Content-Type": "application/octet-stream",
+                "Dropbox-API-Arg": api_arg,
+                "Dropbox-API-Path-Root": self._path_root_header(),
+            },
+        )
+        return self._json_request(req, "Dropbox upload unavailable")
+
+    def get_temporary_link(self, path: str) -> dict[str, object]:
+        return self._rpc("get_temporary_link", {"path": path})
 
     def download(self, path: str, *, max_bytes: int) -> tuple[dict[str, object], bytes]:
         api_arg = json.dumps({"path": path}, separators=(",", ":"))
@@ -176,13 +216,16 @@ class DropboxClient:
                 "Dropbox-API-Path-Root": self._path_root_header(),
             },
         )
+        return self._json_request(req, "Dropbox metadata unavailable")
+
+    def _json_request(self, req: request.Request, unavailable: str) -> dict[str, object]:
         try:
             with request.urlopen(req, timeout=self._timeout) as response:
                 result = json.load(response)
         except error.HTTPError as exc:
             raise _http_provider_error(exc) from exc
         except (error.URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ProviderError("unverifiable", f"Dropbox metadata unavailable: {type(exc).__name__}") from exc
+            raise ProviderError("unverifiable", f"{unavailable}: {type(exc).__name__}") from exc
         if not isinstance(result, dict):
             raise ProviderError("unverifiable", "Dropbox returned a non-object response")
         return result
@@ -626,6 +669,8 @@ def _http_provider_error(exc: error.HTTPError) -> ProviderError:
         return ProviderError("inaccessible", f"Dropbox access denied (HTTP {exc.code})")
     if exc.code == 409 and ("not_found" in body or "path/not_found" in body):
         return ProviderError("missing", "Dropbox path was not found")
+    if exc.code == 409 and ("path/conflict" in body or "conflict" in body):
+        return ProviderError("collision", "Dropbox destination already exists")
     return ProviderError("unverifiable", f"Dropbox request failed (HTTP {exc.code})")
 
 
