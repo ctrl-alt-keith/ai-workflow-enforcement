@@ -14,7 +14,6 @@ GOVERNING_RULE_REFERENCE = (
     "ctrl-alt-keith/ai-workflow-playbook/docs/start-here.md"
 )
 ALLOWED_CHANGED_PATH = "AGENTS.md"
-RESERVED_HEADING = "## Shared Workflow Entry Point"
 APPROVED_BLOCK = (
     "\n\n## Shared Workflow Entry Point\n\n"
     "Start with `ai-workflow-playbook/docs/start-here.md` before repository or "
