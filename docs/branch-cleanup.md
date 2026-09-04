@@ -108,6 +108,7 @@ The provider contract relies on GitHub's official
 [full organization details endpoint](https://docs.github.com/en/rest/orgs/orgs#get-an-organization),
 [membership endpoint](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user),
 and [pagination guidance](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api).
+This provider contract was verified against those sources on 2026-08-14.
 
 Explicit exclusions reconcile after provider discovery by positive numeric
 GitHub repository ID. Each retains its recorded `organization/repository`
@@ -141,7 +142,9 @@ locators after a rename or transfer, but that redirect is not accepted as
 current local configuration; operators must update the remote explicitly.
 See GitHub's official
 [repository response](https://docs.github.com/en/rest/repos/repos#get-a-repository)
-and [remote URL guidance](https://docs.github.com/en/get-started/git-basics/managing-remote-repositories).
+[remote URL guidance](https://docs.github.com/en/get-started/git-basics/managing-remote-repositories),
+and [repository rename guidance](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository).
+This identity seam was verified against those sources on 2026-08-14.
 
 For local branches checked out in linked worktrees, normal cleanup is allowed
 only when Git proves the branch is an ancestor of the remote default branch and

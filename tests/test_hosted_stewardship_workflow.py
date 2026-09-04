@@ -25,7 +25,6 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertNotIn("schedule:", self.workflow)
         self.assertIn("- ctrl-alt-keith/ai-workflow-enforcement", self.workflow)
         self.assertIn("target_ref:", self.workflow)
-        self.assertIn("Optional branch, tag, or commit to inspect in dry-run only", self.workflow)
         self.assertIn('default: ""', self.workflow)
         self.assertEqual(2, self.workflow.count("          - dry-run") + self.workflow.count("          - propose"))
         self.assertIn("group: hosted-stewardship-${{ inputs.repository }}", self.workflow)

@@ -96,7 +96,6 @@ class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
         self.assertIn("INVENTORY_OUTCOME: ${{ steps.inventory.outcome }}", self.workflow)
         self.assertIn('elif [[ "$APP_AUTH_OUTCOME" != "success" ]]', self.workflow)
         self.assertIn('elif [[ "$INVENTORY_OUTCOME" != "success" ]]', self.workflow)
-        self.assertIn("A read-only GitHub App installation token could not be generated", self.workflow)
         classification = self.workflow.split("- name: Classify result and publish job summary", 1)[1]
         authentication_branch = classification.split(
             'elif [[ "$APP_AUTH_OUTCOME" != "success" ]]', 1

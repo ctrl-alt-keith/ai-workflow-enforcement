@@ -20,7 +20,3 @@ established by reinforcement and contracts:
 - no orchestration runtime, scheduler, state machine, persistence layer, GitHub
   integration, CI integration, marketplace, discovery system, or agent
   coordination behavior is introduced
-
-The package references the existing task envelope, result attestation,
-examples, validators, scanner, and review-packet renderer. It does not replace
-those contracts or duplicate their schema rules.
