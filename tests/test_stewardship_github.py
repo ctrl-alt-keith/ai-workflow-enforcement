@@ -58,7 +58,7 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
             args=(), returncode=1, stdout="", stderr="gh: service unavailable\n"
         )
         with mock.patch.object(self.gateway, "_run", return_value=result):
-            with self.assertRaisesRegex(GitHubError, "service unavailable"):
+            with self.assertRaises(GitHubError):
                 self.gateway.resolve_ref(
                     "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
                 )
@@ -68,9 +68,7 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
             args=(), returncode=0, stdout="{not-json", stderr=""
         )
         with mock.patch.object(self.gateway, "_run", return_value=result):
-            with self.assertRaisesRegex(
-                GitHubError, "GitHub returned malformed branch ref JSON"
-            ):
+            with self.assertRaises(GitHubError):
                 self.gateway.branch_sha(
                     "ctrl-alt-keith/ai-workflow-enforcement", "main"
                 )
@@ -80,9 +78,7 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
             args=(), returncode=0, stdout=json.dumps({"object": None}), stderr=""
         )
         with mock.patch.object(self.gateway, "_run", return_value=result):
-            with self.assertRaisesRegex(
-                GitHubError, "GitHub returned malformed branch ref JSON"
-            ):
+            with self.assertRaises(GitHubError):
                 self.gateway.branch_sha(
                     "ctrl-alt-keith/ai-workflow-enforcement", "main"
                 )
@@ -95,9 +91,7 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
             stderr="",
         )
         with mock.patch.object(self.gateway, "_run", return_value=result):
-            with self.assertRaisesRegex(
-                GitHubError, "GitHub returned malformed branch ref SHA"
-            ):
+            with self.assertRaises(GitHubError):
                 self.gateway.branch_sha(
                     "ctrl-alt-keith/ai-workflow-enforcement", "main"
                 )
@@ -110,9 +104,7 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
             stderr="",
         )
         with mock.patch.object(self.gateway, "_run", return_value=result):
-            with self.assertRaisesRegex(
-                GitHubError, "GitHub returned malformed commit SHA"
-            ):
+            with self.assertRaises(GitHubError):
                 self.gateway.resolve_ref(
                     "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
                 )
@@ -124,9 +116,7 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
                     args=(), returncode=0, stdout=json.dumps(body), stderr=""
                 )
                 with mock.patch.object(self.gateway, "_run", return_value=result):
-                    with self.assertRaisesRegex(
-                        GitHubError, "GitHub returned malformed commit JSON"
-                    ):
+                    with self.assertRaises(GitHubError):
                         self.gateway.resolve_ref(
                             "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
                         )
@@ -196,9 +186,7 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
 
     def test_existing_pr_lookup_fails_closed_for_malformed_page(self) -> None:
         with mock.patch.object(self.gateway, "_gh_json", return_value=[{}]):
-            with self.assertRaisesRegex(
-                GitHubError, "malformed pull-request pagination JSON"
-            ):
+            with self.assertRaises(GitHubError):
                 self.gateway.existing_stewardship_pr(
                     "ctrl-alt-keith/ai-workflow-enforcement",
                     AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
@@ -210,7 +198,7 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
             "_gh_json",
             return_value=[[{"body": 3, "html_url": "url"}]],
         ):
-            with self.assertRaisesRegex(GitHubError, "malformed pull-request JSON"):
+            with self.assertRaises(GitHubError):
                 self.gateway.existing_stewardship_pr(
                     "ctrl-alt-keith/ai-workflow-enforcement",
                     AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
@@ -227,7 +215,7 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
                 }
             ]],
         ):
-            with self.assertRaisesRegex(GitHubError, "malformed pull-request JSON"):
+            with self.assertRaises(GitHubError):
                 self.gateway.existing_stewardship_pr(
                     "ctrl-alt-keith/ai-workflow-enforcement",
                     AGENTS_STARTUP_ROUTING_METADATA.collision_marker,

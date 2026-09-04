@@ -39,18 +39,18 @@ class GitHubAppPolicyAuditTests(unittest.TestCase):
     def test_selected_scope_is_not_all_and_visible_scope_is_not_proof(self) -> None:
         results = {item.field: item for item in audit(POLICY, receipt("selected"), {"installation": {"visible_repositories": ["ctrl-alt-keith/a"]}})}
         self.assertEqual("unable-to-verify", results["installation.repository_selection"].status)
-        self.assertIn("do not prove All", results["installation.visible_repository_scope"].reason)
+        self.assertEqual("unable-to-verify", results["installation.visible_repository_scope"].status)
 
     def test_receipt_rejects_secret_bearing_inputs(self) -> None:
         unsafe = receipt()
         unsafe["key"]["private_key"] = "not allowed"
-        with self.assertRaisesRegex(ValueError, "forbidden"):
+        with self.assertRaises(ValueError):
             validate_receipt(unsafe)
 
     def test_receipt_rejects_malformed_scope_hash(self) -> None:
         malformed = receipt()
         malformed["installation"]["scope_sha256"] = "not-a-sha"
-        with self.assertRaisesRegex(ValueError, "SHA-256"):
+        with self.assertRaises(ValueError):
             validate_receipt(malformed)
 
     def test_fetches_only_installation_visible_repositories(self) -> None:

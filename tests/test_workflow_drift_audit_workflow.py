@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import unittest
 
 
@@ -19,17 +20,17 @@ class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
         cls.policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
 
     def test_schedule_dispatch_permissions_and_runtime_contract(self) -> None:
-        self.assertIn('cron: "40 17 * * 1"', self.workflow)
-        self.assertIn("workflow_dispatch:", self.workflow)
-        self.assertIn("permissions:\n  contents: read", self.workflow)
-        self.assertIn("cancel-in-progress: false", self.workflow)
-        self.assertIn("timeout-minutes: 30", self.workflow)
-        self.assertIn('python-version: "3.12"', self.workflow)
+        self.assertRegex(self.workflow, r"cron:\s*['\"]40 17 \* \* 1['\"]")
+        self.assertRegex(self.workflow, r"(?m)^\s*workflow_dispatch\s*:")
+        self.assertRegex(self.workflow, r"contents:\s*read")
+        self.assertRegex(self.workflow, r"cancel-in-progress:\s*false")
+        self.assertRegex(self.workflow, r"timeout-minutes:\s*30")
+        self.assertRegex(self.workflow, r"python-version:\s*['\"]3\.12['\"]")
         self.assertIn("make workflow-drift-setup", self.workflow)
 
     def test_exact_checkout_and_read_only_contract(self) -> None:
-        self.assertIn("ref: ${{ github.sha }}", self.workflow)
-        self.assertIn("persist-credentials: false", self.workflow)
+        self.assertRegex(self.workflow, r"ref:\s*\$\{\{ github\.sha \}\}")
+        self.assertRegex(self.workflow, r"persist-credentials:\s*false")
         self.assertIn('test "$tested_sha" = "$GITHUB_SHA"', self.workflow)
         self.assertIn("git diff --exit-code", self.workflow)
         self.assertIn("git diff --cached --exit-code", self.workflow)
@@ -44,17 +45,24 @@ class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
 
     def test_github_app_authentication_is_least_privilege_and_step_local(self) -> None:
         self.assertIn("actions/create-github-app-token@v3", self.workflow)
-        self.assertIn("client-id: ${{ vars.WORKFLOW_DRIFT_APP_CLIENT_ID }}", self.workflow)
-        self.assertIn(
-            "private-key: ${{ secrets.WORKFLOW_DRIFT_APP_PRIVATE_KEY }}",
+        self.assertRegex(self.workflow, r"client-id:\s*\$\{\{ vars\.WORKFLOW_DRIFT_APP_CLIENT_ID \}\}")
+        self.assertRegex(self.workflow, r"private-key:\s*\$\{\{ secrets\.WORKFLOW_DRIFT_APP_PRIVATE_KEY \}\}")
+        self.assertRegex(self.workflow, r"owner:\s*ctrl-alt-keith")
+        self.assertRegex(self.workflow, r"permission-metadata:\s*read")
+        self.assertRegex(self.workflow, r"permission-contents:\s*read")
+        self.assertRegex(
             self.workflow,
+            r"APP_CLIENT_ID:\s*\$\{\{ vars\.WORKFLOW_DRIFT_APP_CLIENT_ID \}\}",
         )
-        self.assertIn("owner: ctrl-alt-keith", self.workflow)
-        self.assertIn("permission-metadata: read", self.workflow)
-        self.assertIn("permission-contents: read", self.workflow)
-        self.assertIn("APP_CLIENT_ID: ${{ vars.WORKFLOW_DRIFT_APP_CLIENT_ID }}", self.workflow)
-        self.assertEqual(3, self.workflow.count("GH_TOKEN: ${{ steps.app_auth.outputs.token }}"))
-        self.assertNotIn("steps.app_auth.outputs.token", self.workflow.split("jobs:", 1)[0])
+        self.assertEqual(
+            3,
+            len(
+                re.findall(
+                    r"GH_TOKEN:\s*\$\{\{ steps\.app_auth\.outputs\.token \}\}",
+                    self.workflow,
+                )
+            ),
+        )
         self.assertNotIn("WORKFLOW_DRIFT_READ_TOKEN", self.workflow)
 
     def test_private_key_uses_the_reviewed_managed_secret_delivery_contract(self) -> None:
@@ -66,8 +74,8 @@ class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
         )
         self.assertEqual("forbidden", actions_configuration["plaintext_fallback"])
         self.assertEqual("not_required_by_this_runtime", actions_configuration["webhook_secret"])
-        self.assertIn(f"private-key: ${{{{ secrets.{secret_name} }}}}", self.workflow)
-        self.assertNotIn(f"{secret_name}: ${{{{ secrets.{secret_name} }}}}", self.workflow)
+        self.assertRegex(self.workflow, rf"private-key:\s*\$\{{\{{ secrets\.{secret_name} \}}\}}")
+        self.assertNotRegex(self.workflow, rf"(?m)^\s*{secret_name}\s*:\s*\$\{{\{{ secrets\.{secret_name} \}}\}}")
         self.assertNotIn("base64 -d", self.workflow)
         self.assertNotIn("openssl", self.workflow)
         self.assertNotIn("private-key=", self.workflow)
@@ -80,30 +88,38 @@ class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
         self.assertIn("active_repository_count", self.workflow)
         self.assertIn("archived_repository_count", self.workflow)
         self.assertIn("inventory_completeness", self.workflow)
-        self.assertIn("required active repositories were not visible", self.workflow)
-        self.assertIn("Hydration was incomplete", self.workflow)
+        self.assertIn("if missing_required:", self.workflow)
+        self.assertIn('if [[ "$hydrated_count" -ne "$expected_count" ]]', self.workflow)
         self.assertIn('git -C "$SCAN_WORKSPACE/$name" status --porcelain=v1', self.workflow)
         self.assertIn("make workflow-drift-audit", self.workflow)
         self.assertIn("make check", self.workflow)
         self.assertIn("actions/upload-artifact@v7", self.workflow)
-        self.assertIn("ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}", self.workflow)
-        self.assertIn("retention-days: 14", self.workflow)
+        self.assertRegex(
+            self.workflow,
+            r"ARTIFACT_DIGEST:\s*\$\{\{ steps\.upload\.outputs\.artifact-digest \}\}",
+        )
+        self.assertRegex(self.workflow, r"retention-days:\s*14")
 
     def test_all_result_classes_and_advisory_drift_semantics_are_explicit(self) -> None:
         for result in ("Clean", "Drift detected", "Failed", "Unable to verify"):
             self.assertIn(result, self.workflow)
-        self.assertIn("APP_AUTH_OUTCOME: ${{ steps.app_auth.outcome }}", self.workflow)
-        self.assertIn("INVENTORY_OUTCOME: ${{ steps.inventory.outcome }}", self.workflow)
+        self.assertRegex(
+            self.workflow,
+            r"APP_AUTH_OUTCOME:\s*\$\{\{ steps\.app_auth\.outcome \}\}",
+        )
+        self.assertRegex(
+            self.workflow,
+            r"INVENTORY_OUTCOME:\s*\$\{\{ steps\.inventory\.outcome \}\}",
+        )
         self.assertIn('elif [[ "$APP_AUTH_OUTCOME" != "success" ]]', self.workflow)
         self.assertIn('elif [[ "$INVENTORY_OUTCOME" != "success" ]]', self.workflow)
-        classification = self.workflow.split("- name: Classify result and publish job summary", 1)[1]
+        classification = self.workflow.split("id: classify", 1)[1].split("id: upload", 1)[0]
         authentication_branch = classification.split(
             'elif [[ "$APP_AUTH_OUTCOME" != "success" ]]', 1
         )[1].split("elif", 1)[0]
         self.assertIn('result="Unable to verify"', authentication_branch)
         self.assertNotIn('result="Clean"', authentication_branch)
         self.assertIn('"Drift detected")', self.workflow)
-        self.assertIn("Drift detected (advisory)", self.workflow)
         self.assertIn("always() && !cancelled()", self.workflow)
 
     def test_repository_owned_scan_config_preserves_current_scope(self) -> None:

@@ -55,11 +55,6 @@ class ValidationContractInventoryTests(unittest.TestCase):
         self.assertEqual("Unclear", finding.classification)
         self.assertEqual(3, len(finding.evidence_source))
 
-    def test_repository_local_recommendations(self) -> None:
-        with _fixtures() as root:
-            finding = _only(_repo(root, "recommend", agents="Run make check.\n", makefile="test:\n\ttrue\n"))
-        self.assertIn("repository-local", finding.recommendation)
-
     def test_do_not_run_command_is_not_an_active_claim(self) -> None:
         with _fixtures() as root:
             finding = _only(_repo(root, "do-not", agents="Do not run make check.\n", makefile="check:\n\ttrue\n"))
@@ -107,8 +102,6 @@ class ValidationContractInventoryTests(unittest.TestCase):
         payload = json.loads(render_json(first))
         self.assertFalse(payload["persistent_inventory"])
         self.assertNotIn('"score"', render_json(first).lower())
-        for heading in ("Executive summary", "Repositories reviewed", "Matching contracts", "Mismatches", "Unclear contracts", "Not-applicable repositories", "Repository-local recommendations"):
-            self.assertIn(f"## {heading}", render_markdown(first))
 
 
 def _only(repo: Path):

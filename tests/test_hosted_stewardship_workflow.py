@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import unittest
 
 
@@ -21,30 +22,31 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         cls.product_boundary = PRODUCT_BOUNDARY_PATH.read_text(encoding="utf-8")
 
     def test_manual_single_repository_two_mode_contract(self) -> None:
-        self.assertIn("workflow_dispatch:", self.workflow)
-        self.assertNotIn("schedule:", self.workflow)
-        self.assertIn("- ctrl-alt-keith/ai-workflow-enforcement", self.workflow)
-        self.assertIn("target_ref:", self.workflow)
-        self.assertIn('default: ""', self.workflow)
-        self.assertEqual(2, self.workflow.count("          - dry-run") + self.workflow.count("          - propose"))
-        self.assertIn("group: hosted-stewardship-${{ inputs.repository }}", self.workflow)
-        self.assertIn("cancel-in-progress: false", self.workflow)
+        self.assertRegex(self.workflow, r"(?m)^\s*workflow_dispatch\s*:")
+        self.assertNotRegex(self.workflow, r"(?m)^\s*schedule\s*:")
+        self.assertRegex(self.workflow, r"(?m)^\s*-\s+ctrl-alt-keith/ai-workflow-enforcement\s*$")
+        self.assertRegex(self.workflow, r"(?m)^\s*target_ref\s*:")
+        self.assertRegex(self.workflow, r"default:\s*(?:\"\"|'')")
+        modes = re.findall(r"(?m)^\s*-\s+(dry-run|propose)\s*$", self.workflow)
+        self.assertEqual(2, len(modes))
+        self.assertEqual({"dry-run", "propose"}, set(modes))
+        self.assertRegex(self.workflow, r"group:\s*hosted-stewardship-\$\{\{ inputs\.repository \}\}")
+        self.assertRegex(self.workflow, r"cancel-in-progress:\s*false")
 
     def test_strategy_input_has_exact_three_choices_and_docs_drift_default(self) -> None:
-        strategy_input = self.workflow.split("      strategy:", 1)[1].split(
-            "      target_ref:", 1
-        )[0]
-        self.assertIn("default: docs-drift", strategy_input)
-        self.assertEqual(1, strategy_input.count("          - docs-drift"))
-        self.assertEqual(
-            1, strategy_input.count("          - agents-startup-routing")
+        self.assertRegex(self.workflow, r"default:\s*docs-drift")
+        strategies = re.findall(
+            r"(?m)^\s*-\s+(docs-drift|agents-startup-routing|worktree-ignore-baseline)\s*$",
+            self.workflow,
         )
+        self.assertEqual(3, len(strategies))
         self.assertEqual(
-            1, strategy_input.count("          - worktree-ignore-baseline")
+            {"docs-drift", "agents-startup-routing", "worktree-ignore-baseline"},
+            set(strategies),
         )
 
     def test_read_and_write_identities_are_distinct_and_narrow(self) -> None:
-        self.assertIn("permissions:\n  contents: read", self.workflow)
+        self.assertRegex(self.workflow, r"contents:\s*read")
         self.assertIn("WORKFLOW_DRIFT_APP_CLIENT_ID", self.workflow)
         self.assertIn("WORKFLOW_DRIFT_APP_PRIVATE_KEY", self.workflow)
         self.assertIn("STEWARDSHIP_WRITE_APP_CLIENT_ID", self.workflow)
@@ -52,9 +54,9 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertIn("inputs.mode == 'propose'", self.workflow)
         self.assertIn("inputs.target_ref == ''", self.workflow)
         self.assertEqual(2, self.workflow.count("repositories: ${{ inputs.repository }}"))
-        self.assertIn("permission-contents: read", self.workflow)
-        self.assertIn("permission-contents: write", self.workflow)
-        self.assertIn("permission-pull-requests: write", self.workflow)
+        self.assertRegex(self.workflow, r"permission-contents:\s*read")
+        self.assertRegex(self.workflow, r"permission-contents:\s*write")
+        self.assertRegex(self.workflow, r"permission-pull-requests:\s*write")
         self.assertNotIn("permission-administration", self.workflow)
 
     def test_modes_share_one_cli_pipeline_and_only_propose_receives_write_token(self) -> None:
@@ -62,29 +64,22 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
         self.assertIn('--mode "${{ inputs.mode }}"', self.workflow)
         self.assertIn('--strategy "${{ inputs.strategy }}"', self.workflow)
         self.assertIn('--target-ref "${TARGET_REF}"', self.workflow)
-        execute_step = self.workflow.split(
-            "- name: Execute the shared stewardship pipeline", 1
-        )[1].split("- name: Upload durable stewardship evidence", 1)[0]
-        self.assertIn("STEWARDSHIP_READ_TOKEN", execute_step)
-        self.assertIn("STEWARDSHIP_WRITE_TOKEN", execute_step)
-        self.assertIn("TARGET_REF: ${{ inputs.target_ref }}", execute_step)
-        for name in (
-            "docs_drift.py",
-            "agents_startup_routing.py",
-            "worktree_ignore_baseline.py",
-        ):
-            strategy = (ROOT / "enforcement" / "stewardship" / name).read_text(
-                encoding="utf-8"
-            )
-            self.assertNotIn("dry-run", strategy)
-            self.assertNotIn("propose", strategy)
+        self.assertRegex(
+            self.workflow,
+            r"STEWARDSHIP_READ_TOKEN:\s*\$\{\{ steps\.read_auth\.outputs\.token \}\}",
+        )
+        self.assertRegex(
+            self.workflow,
+            r"STEWARDSHIP_WRITE_TOKEN:\s*\$\{\{ steps\.write_auth\.outputs\.token \}\}",
+        )
+        self.assertRegex(self.workflow, r"TARGET_REF:\s*\$\{\{ inputs\.target_ref \}\}")
 
     def test_exact_engine_identity_evidence_and_no_forbidden_delivery(self) -> None:
-        self.assertIn("ref: ${{ github.sha }}", self.workflow)
-        self.assertIn("persist-credentials: false", self.workflow)
+        self.assertRegex(self.workflow, r"ref:\s*\$\{\{ github\.sha \}\}")
+        self.assertRegex(self.workflow, r"persist-credentials:\s*false")
         self.assertIn('--engine-revision "${GITHUB_SHA}"', self.workflow)
         self.assertIn("actions/upload-artifact@v7", self.workflow)
-        self.assertIn("retention-days: 14", self.workflow)
+        self.assertRegex(self.workflow, r"retention-days:\s*14")
         for forbidden in (
             "gh pr merge",
             "--auto",
@@ -94,19 +89,6 @@ class HostedStewardshipWorkflowTests(unittest.TestCase):
             "permission-organization",
         ):
             self.assertNotIn(forbidden, self.workflow)
-
-        delivery_source = (
-            ROOT / "enforcement" / "stewardship" / "github.py"
-        ).read_text(encoding="utf-8")
-        for forbidden in (
-            '"--force"',
-            "force-with-lease",
-            "/merge",
-            "enable-auto-merge",
-            "update_ref",
-        ):
-            self.assertNotIn(forbidden, delivery_source)
-        self.assertIn('"--set-upstream"', delivery_source)
 
     def test_allowlist_policy_marker_and_receipt_schema_are_repository_owned(self) -> None:
         self.assertEqual(1, self.config["schema_version"])

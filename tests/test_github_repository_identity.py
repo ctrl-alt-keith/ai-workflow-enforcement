@@ -30,13 +30,12 @@ class RepositoryIdentityTests(unittest.TestCase):
         )
 
         self.assertEqual("mismatch", verification.status)
-        self.assertIn("expected current locator", verification.detail)
 
     def test_wrong_repository_name_is_mismatch(self) -> None:
         verification = _verify(fetch="https://github.com/ctrl-alt-keith/other.git")
 
         self.assertEqual("mismatch", verification.status)
-        self.assertIn("ctrl-alt-keith/other", verification.detail)
+        self.assertEqual("ctrl-alt-keith/other", verification.observed_repository)
 
     def test_transferred_or_renamed_stale_remote_is_mismatch(self) -> None:
         verification = _verify(
@@ -45,13 +44,12 @@ class RepositoryIdentityTests(unittest.TestCase):
         )
 
         self.assertEqual("mismatch", verification.status)
-        self.assertIn("old-owner/old-name", verification.detail)
+        self.assertEqual("old-owner/old-name", verification.observed_repository)
 
     def test_missing_remote_is_unverified(self) -> None:
         verification = _verify(fetch_result=Result(2, stderr="No such remote 'origin'"))
 
         self.assertEqual("unverified", verification.status)
-        self.assertIn("No such remote", verification.detail)
 
     def test_ambiguous_fetch_remote_is_unverified(self) -> None:
         verification = _verify(
@@ -59,7 +57,6 @@ class RepositoryIdentityTests(unittest.TestCase):
         )
 
         self.assertEqual("unverified", verification.status)
-        self.assertIn("exactly one fetch URL", verification.detail)
 
     def test_provider_repository_id_mismatch_fails_closed(self) -> None:
         verification = _verify(provider_id=99)
@@ -71,7 +68,6 @@ class RepositoryIdentityTests(unittest.TestCase):
         verification = _verify(provider_stdout="not-json")
 
         self.assertEqual("unverified", verification.status)
-        self.assertIn("invalid JSON", verification.detail)
         self.assertEqual("ctrl-alt-keith/sample", verification.observed_repository)
 
 

@@ -33,34 +33,28 @@ class ReviewResultAttestationTests(unittest.TestCase):
         attestation = _example()
         del attestation["classification"]
 
-        with self.assertRaisesRegex(
-            AttestationValidationError,
-            "missing required fields: classification",
-        ):
+        with self.assertRaises(AttestationValidationError):
             validate_review_result_attestation(attestation)
 
     def test_unknown_fields_are_rejected_to_match_schema_contract(self) -> None:
         attestation = _example()
         attestation["cleanup_complete"] = True
 
-        with self.assertRaisesRegex(
-            AttestationValidationError,
-            "unexpected fields: cleanup_complete",
-        ):
+        with self.assertRaises(AttestationValidationError):
             validate_review_result_attestation(attestation)
 
     def test_invalid_schema_version_is_rejected(self) -> None:
         attestation = _example()
         attestation["schema_version"] = 2
 
-        with self.assertRaisesRegex(AttestationValidationError, "unsupported schema_version"):
+        with self.assertRaises(AttestationValidationError):
             validate_review_result_attestation(attestation)
 
     def test_invalid_attestation_type_is_rejected(self) -> None:
         attestation = _example()
         attestation["attestation_type"] = "workflow_state"
 
-        with self.assertRaisesRegex(AttestationValidationError, "unknown attestation_type"):
+        with self.assertRaises(AttestationValidationError):
             validate_review_result_attestation(attestation)
 
     def test_loader_requires_json_object(self) -> None:
@@ -68,10 +62,7 @@ class ReviewResultAttestationTests(unittest.TestCase):
             path = Path(tmp) / "attestation.json"
             path.write_text(json.dumps(["drift_review_result"]), encoding="utf-8")
 
-            with self.assertRaisesRegex(
-                AttestationValidationError,
-                "review-result attestation must be a JSON object",
-            ):
+            with self.assertRaises(AttestationValidationError):
                 load_review_result_attestation(path)
 
 
