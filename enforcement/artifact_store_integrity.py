@@ -475,10 +475,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    token = os.environ.get(args.access_token_env, "")
     try:
         manifest = load_manifest(args.manifest)
         scope = _scope_from_args(args)
-        token = os.environ.get(args.access_token_env, "")
         if not token:
             raise ManifestError(f"access token environment variable is unset: {args.access_token_env}")
         store = manifest["store"]
@@ -490,10 +490,16 @@ def main(argv: list[str] | None = None) -> int:
             max_bytes=args.max_bytes,
         )
     except (ManifestError, ValueError) as exc:
-        print(f"artifact-store-integrity: {exc}", file=sys.stderr)
+        detail = str(exc).replace(token, "[REDACTED]") if token else str(exc)
+        print(f"artifact-store-integrity: {detail}", file=sys.stderr)
         return 2
-    print(json.dumps(report, indent=2, sort_keys=True))
-    print(render_summary(report), file=sys.stderr)
+    serialized = json.dumps(report, indent=2, sort_keys=True)
+    summary = render_summary(report)
+    if token:
+        serialized = serialized.replace(token, "[REDACTED]")
+        summary = summary.replace(token, "[REDACTED]")
+    print(serialized)
+    print(summary, file=sys.stderr)
     return 0 if report["result"] == "pass" else 1
 
 

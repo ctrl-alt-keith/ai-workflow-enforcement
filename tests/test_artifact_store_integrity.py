@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
+import io
+import json
+from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -11,6 +16,7 @@ from enforcement.artifact_store_integrity import (
     ProviderError,
     Scope,
     dropbox_content_hash,
+    main,
     validate_manifest,
     verify,
 )
@@ -253,6 +259,30 @@ class ArtifactStoreIntegrityTests(unittest.TestCase):
         self.assertEqual("unverifiable", report["objects"][0]["status"])
         self.assertEqual(5, report["observation"]["downloaded_bytes"])
 
+    def test_dropbox_client_rejects_a_truncated_download(self) -> None:
+        class Response:
+            headers = {"Dropbox-API-Result": json.dumps(metadata(size=20))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self, size: int) -> bytes:
+                if not hasattr(self, "done"):
+                    self.done = True
+                    return b"short"
+                return b""
+
+        client = DropboxClient("secret", "14962822355")
+        with mock.patch("enforcement.artifact_store_integrity.request.urlopen", return_value=Response()):
+            with self.assertRaises(ProviderError) as raised:
+                client.download("/issues/CAK-144/package/file.bin", max_bytes=100)
+
+        self.assertEqual("unverifiable", raised.exception.kind)
+        self.assertEqual(5, raised.exception.bytes_read)
+
     def test_duplicate_casefolded_listing_paths_fail_closed(self) -> None:
         duplicate = metadata(path_display="/issues/cak-144/package/FILE.bin", rev="other")
         listing = Listing((metadata(), duplicate), 1)
@@ -280,6 +310,32 @@ class ArtifactStoreIntegrityTests(unittest.TestCase):
         malformed_id = manifest(file_id="not-a-dropbox-id")
         with self.assertRaises(ManifestError):
             validate_manifest(malformed_id)
+
+    def test_cli_redacts_access_token_from_non_pass_output(self) -> None:
+        secret = "DROPBOX-TOKEN-CANARY-225"
+        client = FakeClient(
+            download_error=ProviderError("unverifiable", f"provider failure exposed {secret}")
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "manifest.json"
+            path.write_text(json.dumps(manifest()), encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                mock.patch.dict("os.environ", {"TEST_DROPBOX_TOKEN": secret}),
+                mock.patch("enforcement.artifact_store_integrity.DropboxClient", return_value=client),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main([
+                    "--manifest", str(path),
+                    "--path", "CAK-144/package/file.bin",
+                    "--access-token-env", "TEST_DROPBOX_TOKEN",
+                ])
+
+        self.assertEqual(1, exit_code)
+        self.assertEqual("non-pass", json.loads(stdout.getvalue())["result"])
+        self.assertNotIn(secret, stdout.getvalue() + stderr.getvalue())
 
 if __name__ == "__main__":
     unittest.main()
