@@ -94,68 +94,21 @@ credential must provide all of this evidence:
   removed from branch-cleanup candidates, exactly match `public_repos`,
   `total_private_repos`, and their sum
 
-GitHub documents `repo` as the classic OAuth/PAT scope for public and private
-repository access, `read:org` as read-only organization membership access, and
-`admin:org` as the parent organization scope. GitHub also documents GitHub CLI
-as a privileged GitHub-owned OAuth app and documents `repo`, `read:org`, and
-`gist` as the CLI's minimum scope set. An ordinary stored GitHub CLI login is
-therefore an eligible credential profile when it actually returns every item
-of evidence above; `admin:org` remains accepted but is not mandatory.
+Scope labels are prerequisites, not completeness proof. The same credential
+must return the actor, unrestricted active-owner membership, complete parsed
+pagination, full organization counts, and exact public/private/total agreement.
+Any missing, malformed, restricted, mismatched, or unsupported evidence leaves
+scope `unknown`. Read-only runs preserve partial evidence; apply exits before
+cleanup. Internal-visibility repositories also remain partial evidence because
+GitHub does not define which organization total includes them.
 
-Scope labels are prerequisites and diagnostics, not the completeness proof.
-In particular, declaring `repo` plus `read:org` does not by itself establish
-full organization visibility. The independently returned repository totals
-are the positive population attestation; the enumerated list does not attest
-to its own completeness. GitHub's REST responses do not expose a stable OAuth
-client identity that this implementation can use to prove the GitHub CLI app,
-so the contract is deliberately capability-verified: the same acting
-credential must successfully return full organization details, matching scope
-headers, unrestricted active-owner membership, fully parsed pagination, and
-exact public/private/total count agreement. This does not assert that every
-arbitrary token carrying `repo` and `read:org` has full organization visibility.
-
-A missing scope header, missing `repo`, missing both `read:org` and `admin:org`,
-an inaccessible or malformed full-organization response, a fine-grained
-personal access token, a selected-repository GitHub App installation, a missing
-or malformed count, a count mismatch, an SSO restriction, actor disagreement,
-or non-owner membership remains `unknown`. Organization OAuth restrictions and
-personal-access-token policy can also deny required evidence; provider failure
-remains fail-closed. The implementation preserves valid visible repositories
-in incomplete cases but does not authorize mutation.
-
-GitHub documents internal visibility for Enterprise Cloud repositories, but
-the full-organization-details reference does not define whether internal
-repositories contribute to `public_repos` or `total_private_repos`. The current
-model therefore preserves any visible internal repository as partial evidence
-and fails count attestation closed instead of assigning it to either total.
-
-This provider contract was verified on 2026-08-14 against GitHub's official
-[GitHub CLI login reference](https://cli.github.com/manual/gh_auth_login),
-[GitHub CLI authentication-status reference](https://cli.github.com/manual/gh_auth_status),
-[GitHub CLI environment precedence](https://cli.github.com/manual/gh_help_environment),
-[privileged OAuth app reference](https://docs.github.com/en/apps/oauth-apps/using-oauth-apps/privileged-oauth-apps),
-[OAuth app access-restriction reference](https://docs.github.com/en/organizations/managing-oauth-access-to-your-organizations-data/about-oauth-app-access-restrictions),
-[organization personal-access-token policy reference](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/setting-a-personal-access-token-policy-for-your-organization),
+The provider contract relies on GitHub's official
+[OAuth scope reference](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps),
 [organization repository endpoint](https://docs.github.com/en/rest/repos/repos#list-organization-repositories),
 [full organization details endpoint](https://docs.github.com/en/rest/orgs/orgs#get-an-organization),
-[authenticated membership endpoint](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user),
-[OAuth scope reference](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps),
-[repository visibility reference](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/setting-repository-visibility),
-[organization repository-role reference](https://docs.github.com/en/organizations/managing-user-access-to-your-organizations-repositories/managing-repository-roles/repository-roles-for-an-organization),
-[fine-grained personal access token reference](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens),
-[GitHub App installation repository reference](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation),
-and [REST pagination guidance](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api).
-
-Reports expose `repository_count_attestation` with its status and detail plus
-attested public/private and enumerated public/private/total counts. For example,
-a complete one-public/two-private population (including one archived private
-member) reports attested `1`/`2` and enumerated `1`/`2`/`3`; only the two active
-members become cleanup candidates.
-
-Read-only runs preserve valid partial provider evidence, resolved targets, and
-errors without describing the result as complete. An `--apply` run with
-`unknown` provider scope exits nonzero before entering repository cleanup, so
-no branch, ref, or worktree mutation can occur.
+[membership endpoint](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user),
+and [pagination guidance](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api).
+This provider contract was verified against those sources on 2026-08-14.
 
 Explicit exclusions reconcile after provider discovery by positive numeric
 GitHub repository ID. Each retains its recorded `organization/repository`
@@ -187,10 +140,11 @@ existing Git target before entering repository cleanup, so no target is
 mutation-capable when any checked target fails. GitHub may redirect old remote
 locators after a rename or transfer, but that redirect is not accepted as
 current local configuration; operators must update the remote explicitly.
-The identity seam was verified on 2026-08-14 against GitHub's official
-[get-a-repository response](https://docs.github.com/en/rest/repos/repos#get-a-repository),
+See GitHub's official
+[repository response](https://docs.github.com/en/rest/repos/repos#get-a-repository)
 [remote URL guidance](https://docs.github.com/en/get-started/git-basics/managing-remote-repositories),
 and [repository rename guidance](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository).
+This identity seam was verified against those sources on 2026-08-14.
 
 For local branches checked out in linked worktrees, normal cleanup is allowed
 only when Git proves the branch is an ancestor of the remote default branch and
@@ -251,30 +205,11 @@ were pruned. Pruning stale metadata never authorizes deletion of a live
 filesystem checkout or its branch. Locked missing-path entries remain
 preserved.
 
-Every repository report includes every discovered worktree, including the
-primary worktree and entries removed or pruned during that pass. Each worktree
-record contains:
-
-- repository, path, primary flag, branch or detached commit, and HEAD
-- path, Git administrative consistency, porcelain cleanliness, and exact
-  porcelain entries
-- operation, lock, and prunable state with available reasons
-- related branch-cleanup classification, outcome, and reason
-- worktree cleanup classification, attempted action, result, and blocker
-- cleanup authority (`apply_policy_authorized`, `preserve_policy`, or
-  `human_approval_required`)
-- stale-metadata prune status, final verification state, and residual manual
-  action
-
-Human-readable reports include aggregate discovered, removed, stale-metadata,
-preservation-reason, failed-removal, verification-failure, human-review, and
-residual-manual-inspection counts plus per-worktree details. JSON reports expose
-the same stable fields under each repository's `worktrees` list and provide a
-top-level `worktree_summary`. The CLI cannot observe prompting by an external
-runner, so it does not emit an `unexpected_confirmation_requests` counter. A
-runner that observes a prompt must treat it as a tool defect instead of
-supplying input. The JSON schema version is `5`; the schema-2 `removed` and
-`preserved_by_reason` summary aliases remain available.
+Reports include every discovered worktree, its branch and repository identity,
+safety observations, related cleanup disposition, action result, authority,
+final verification, and any residual manual action. JSON schema version `5`
+provides the same evidence plus a top-level `worktree_summary`; the schema-2
+`removed` and `preserved_by_reason` summary aliases remain available.
 
 `cleanup_authority` comes from the policy decision that authorized a safe
 worktree removal or metadata prune, not from the later attempted-action field.
@@ -302,13 +237,6 @@ or when `--max-apply-passes` is reached. The default pass cap is 3. Retry mode
 applies only `normal_cleanup` actions; `stale_cleanup` actions are reported but
 preserved during the sequence. Use a single-pass `--apply` run without
 `--retry-normal-cleanup` for stale cleanup.
-
-Codex command enforcement for this workflow should allow the direct Git argv
-forms needed for safe cleanup: `git worktree list --porcelain -z --expire now`,
-`git status --porcelain=v1 -z --untracked-files=all`, `git worktree remove
-<path>`, `git worktree prune --expire now`, the branch deletion forms such as
-`git branch -d -- <branch>`, and `git worktree add <path> <branch>` only for
-verified restoration after an unexpected branch-deletion failure.
 
 Normal cleanup stays separate from stale cleanup. Normal cleanup uses Git
 ancestor proof. Stale cleanup deletes a ref when live GitHub evidence proves a

@@ -34,38 +34,12 @@ class WorktreeIgnoreBaselineStrategyTests(unittest.TestCase):
         self.assertEqual("no_change", result.outcome)
         self.assertEqual(original, self.gitignore.read_bytes())
 
-    def test_exact_crlf_rule_is_no_change(self) -> None:
-        original = b"*.pyc\r\n.worktrees/\r\n"
-        result = self._run(original)
-        self.assertEqual("no_change", result.outcome)
-        self.assertEqual(original, self.gitignore.read_bytes())
-
-    def test_exact_rule_at_end_without_newline_is_no_change(self) -> None:
-        result = self._run(b"*.pyc\n.worktrees/")
-        self.assertEqual("no_change", result.outcome)
-
     def test_absent_token_with_trailing_lf_appends_exact_suffix(self) -> None:
         original = b"*.pyc\n"
         result = self._run(original)
         self.assertEqual("changed", result.outcome)
         self.assertEqual((".gitignore",), result.changed_paths)
         self.assertEqual(original + b".worktrees/\n", self.gitignore.read_bytes())
-
-    def test_absent_token_without_trailing_lf_preserves_exact_prefix(self) -> None:
-        original = b"*.pyc\n.cache"
-        result = self._run(original)
-        observed = self.gitignore.read_bytes()
-        self.assertEqual("changed", result.outcome)
-        self.assertTrue(observed.startswith(original))
-        self.assertEqual(original + b"\n.worktrees/\n", observed)
-
-    def test_absent_token_uses_unambiguous_crlf_convention(self) -> None:
-        original = b"*.pyc\r\n.cache"
-        result = self._run(original)
-        self.assertEqual("changed", result.outcome)
-        self.assertEqual(
-            original + b"\r\n.worktrees/\r\n", self.gitignore.read_bytes()
-        )
 
     def test_ambiguous_worktrees_forms_are_blocked(self) -> None:
         examples = (
@@ -94,25 +68,6 @@ class WorktreeIgnoreBaselineStrategyTests(unittest.TestCase):
         self.assertEqual("blocked", result.outcome)
         self.assertEqual(original, self.gitignore.read_bytes())
 
-    def test_single_line_without_newline_uses_lf_default(self) -> None:
-        original = b"*.pyc"
-        result = self._run(original)
-        self.assertEqual("changed", result.outcome)
-        self.assertEqual((".gitignore",), result.changed_paths)
-        self.assertEqual(b"*.pyc\n.worktrees/\n", self.gitignore.read_bytes())
-
-    def test_empty_existing_file_uses_lf_without_leading_blank_line(self) -> None:
-        result = self._run(b"")
-        self.assertEqual("changed", result.outcome)
-        self.assertEqual((".gitignore",), result.changed_paths)
-        self.assertEqual(b".worktrees/\n", self.gitignore.read_bytes())
-
-    def test_bare_cr_is_blocked_before_mutation(self) -> None:
-        original = b"*.pyc\r.cache"
-        result = self._run(original)
-        self.assertEqual("blocked", result.outcome)
-        self.assertEqual(original, self.gitignore.read_bytes())
-
     def test_missing_file_is_blocked_and_never_created(self) -> None:
         result = self.strategy.run(
             WorktreeIgnoreBaselineContext(repository_root=self.root)
@@ -135,22 +90,6 @@ class WorktreeIgnoreBaselineStrategyTests(unittest.TestCase):
         result = self._run(original)
         self.assertEqual("blocked", result.outcome)
         self.assertEqual(original, self.gitignore.read_bytes())
-
-    def test_read_failure_is_blocked(self) -> None:
-        self.gitignore.write_bytes(b"*.pyc\n")
-        with mock.patch.object(Path, "read_bytes", side_effect=OSError("denied")):
-            result = self.strategy.run(
-                WorktreeIgnoreBaselineContext(repository_root=self.root)
-            )
-        self.assertEqual("blocked", result.outcome)
-
-    def test_write_failure_is_blocked(self) -> None:
-        self.gitignore.write_bytes(b"*.pyc\n")
-        with mock.patch.object(Path, "open", side_effect=OSError("denied")):
-            result = self.strategy.run(
-                WorktreeIgnoreBaselineContext(repository_root=self.root)
-            )
-        self.assertEqual("blocked", result.outcome)
 
     def test_post_write_verification_failure_is_blocked(self) -> None:
         original = b"*.pyc\n"

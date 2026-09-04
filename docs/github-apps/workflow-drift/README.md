@@ -16,6 +16,8 @@ python3 -m enforcement.github_app_policy_audit --receipt receipt.json --live-sta
 records the installation-visible repository-set hash. That read can verify a
 scope snapshot, but cannot prove the organization chose **All repositories**;
 the same visible set can result from a selected-repository installation.
+For complete organization coverage, operators must install the App on the
+`ctrl-alt-keith` organization with **All repositories** selected.
 
 The audit reports every field as `match`, `drift`, or `unable-to-verify`.
 App registration fields (URLs and webhook settings), App identity, installation

@@ -1,17 +1,14 @@
 # Hosted Stewardship Engine
 
-The Hosted Stewardship Engine is a manually dispatched, single-repository MVP
-that constructs a validated local repository proposal and either stops with
-durable evidence or creates one review-ready pull request. It is not the former
-`docs-drift-sweep` automation and does not implement discovery, scheduling, or
-dynamic strategy loading. The engine supports exactly three fixed strategies:
+The Hosted Stewardship Engine is manually dispatched for one allowlisted
+repository. It constructs and validates a proposal, then either stops with
+evidence or creates one review-ready pull request. It supports exactly three
+fixed strategies:
 `docs-drift` revision `1`, `agents-startup-routing` revision `1`, and
-`worktree-ignore-baseline` revision `1`. It has no plugin framework, runtime
-registry, entry points, hooks, generalized strategy abstraction, shared append
-framework, or dynamic discovery.
+`worktree-ignore-baseline` revision `1`.
 
 The workflow is `.github/workflows/hosted-stewardship.yml`. Its only eligible
-MVP target is `ctrl-alt-keith/ai-workflow-enforcement`, declared in
+target is `ctrl-alt-keith/ai-workflow-enforcement`, declared in
 `config/hosted-stewardship.json`.
 
 ## Modes And Shared Pipeline
@@ -88,9 +85,8 @@ An unallowlisted, archived, or non-permitting repository is `ineligible`.
 Unavailable access, instructions, policy, or validation is `blocked`. Strategy
 execution starts only after an `eligible` decision.
 
-This mechanism deliberately avoids organization discovery, opt-in inference,
-a policy service, and a policy DSL. Adding another target requires a reviewed
-configuration and target-policy change.
+Adding another target requires a reviewed configuration and target-policy
+change.
 
 ## Docs Drift Strategy
 
@@ -101,8 +97,7 @@ command is already present, it returns `no_change`. A missing configured
 documentation file is `blocked`.
 
 The strategy reports outcome, rationale, changed paths, evidence, and
-validation requirements. It does not clone, authenticate, select branches,
-commit, push, create PRs, inspect mode, handle collisions, or store evidence.
+validation requirements. The engine owns repository and delivery operations.
 
 ## AGENTS Startup Routing Strategy
 
@@ -155,8 +150,7 @@ blocks the strategy, including commented, negated, rooted, recursive, globbed,
 escaped, whitespace-altered, or mixed exact-and-alternate forms. Missing,
 unreadable, non-UTF-8, or symlinked `.gitignore` files block, as do ambiguous
 newline conventions and append or verification failures. This is a fixed
-strategy, not a generalized append strategy or reusable append subsystem. The
-shared engine independently verifies the one-file scope and runs
+strategy. The shared engine independently verifies the one-file scope and runs
 repository-native validation. Human merge remains the acceptance boundary.
 
 ## Authentication And Authority
@@ -165,7 +159,7 @@ Read and delivery identities are distinct:
 
 - Read and hydration reuse the existing dedicated read-only workflow-drift App
   with `Metadata: read` and `Contents: read`.
-- Propose delivery uses a separate stewardship App. For this MVP, install it
+- Propose delivery uses a separate stewardship App. Install it
   only on `ctrl-alt-keith/ai-workflow-enforcement` and grant exactly
   `Metadata: read`, `Contents: write`, and `Pull requests: write`.
 
@@ -202,8 +196,8 @@ must not be granted administration, settings, organization, workflow, issue,
 or ruleset-bypass authority, and the default branch must retain its normal PR
 protection with the App absent from bypass lists. The engine has no merge or
 auto-merge code path and tests prohibit those workflow surfaces. This provider
-permission granularity remains a residual control dependency; the MVP must not
-be described as having a provider-enforced branch-write-without-merge scope.
+permission granularity remains a residual control dependency; the engine must
+not be described as having a provider-enforced branch-write-without-merge scope.
 
 ## Collision And Delivery Boundary
 
@@ -238,7 +232,7 @@ The delivery input includes repository, base branch and SHA, branch, commit
 message, PR title and body, changed paths, exact patch and digest, validation,
 and collision evidence. Delivery verifies that the working-tree and staged
 patch still match that input before pushing. A partial failure is recorded; the
-MVP does not retry, update, or clean up a remote branch.
+engine does not retry, update, or clean up a remote branch.
 
 ## Receipts And Evidence
 
@@ -250,8 +244,8 @@ strategy revisions, eligibility, strategy result, changed paths, diff digest,
 validation, proposed delivery metadata, collision result, `would_create_pr`,
 remote mutations, final terminal state, failure stage, and a bounded redacted
 error. Schema version `1` accepts exactly the `docs-drift`/`1`,
-`agents-startup-routing`/`1`, and `worktree-ignore-baseline`/`1` identity pairs,
-so historical receipts remain valid. The selected fixed metadata also supplies
+`agents-startup-routing`/`1`, and `worktree-ignore-baseline`/`1` identity pairs.
+The selected fixed metadata also supplies
 the commit message, PR title, collision marker, and deterministic branch
 namespace.
 
@@ -275,12 +269,3 @@ promise that a later propose run will still succeed.
 Terminal states distinguish no change, dry-run completion, validation failure,
 eligibility and strategy blocks, strategy failure, existing PR, branch
 collision, changed base, delivery failure, and delivery success.
-
-## Deferred Scope
-
-The MVP intentionally defers fleet discovery and scheduling, fan-out, queues,
-concurrency control beyond one target, budgets, any strategy beyond the three
-fixed choices, plugins, dynamic discovery or loading, provider abstraction,
-retries, rebasing, PR updates, force-pushes, branch cleanup, generalized policy
-and validation layers, dashboards, notifications, comments, labels,
-auto-merge, merge, settings changes, and marketplace packaging.

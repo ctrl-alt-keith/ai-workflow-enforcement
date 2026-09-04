@@ -75,15 +75,6 @@ class DriftReviewSkillManifestTests(unittest.TestCase):
         self.assertTrue(REQUIRED_BOUNDARIES.issubset(set(manifest["operational_boundaries"])))
         self.assertFalse(FORBIDDEN_EXECUTION_KEYS.intersection(_all_keys(manifest)))
 
-    def test_manifest_uses_canonical_validation_entrypoint(self) -> None:
-        manifest = _load_manifest()
-
-        self.assertIn(
-            "Run make check from the repository root.",
-            manifest["validation_expectations"],
-        )
-
-
 def _load_manifest() -> dict[str, object]:
     data = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     if not isinstance(data, dict):

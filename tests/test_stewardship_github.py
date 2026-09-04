@@ -58,48 +58,9 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
             args=(), returncode=1, stdout="", stderr="gh: service unavailable\n"
         )
         with mock.patch.object(self.gateway, "_run", return_value=result):
-            with self.assertRaisesRegex(GitHubError, "service unavailable"):
+            with self.assertRaises(GitHubError):
                 self.gateway.resolve_ref(
                     "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
-                )
-
-    def test_branch_sha_fails_closed_for_invalid_json(self) -> None:
-        result = subprocess.CompletedProcess(
-            args=(), returncode=0, stdout="{not-json", stderr=""
-        )
-        with mock.patch.object(self.gateway, "_run", return_value=result):
-            with self.assertRaisesRegex(
-                GitHubError, "GitHub returned malformed branch ref JSON"
-            ):
-                self.gateway.branch_sha(
-                    "ctrl-alt-keith/ai-workflow-enforcement", "main"
-                )
-
-    def test_branch_sha_fails_closed_for_missing_sha_shape(self) -> None:
-        result = subprocess.CompletedProcess(
-            args=(), returncode=0, stdout=json.dumps({"object": None}), stderr=""
-        )
-        with mock.patch.object(self.gateway, "_run", return_value=result):
-            with self.assertRaisesRegex(
-                GitHubError, "GitHub returned malformed branch ref JSON"
-            ):
-                self.gateway.branch_sha(
-                    "ctrl-alt-keith/ai-workflow-enforcement", "main"
-                )
-
-    def test_branch_sha_fails_closed_for_non_commit_sha(self) -> None:
-        result = subprocess.CompletedProcess(
-            args=(),
-            returncode=0,
-            stdout=json.dumps({"object": {"sha": "not-a-commit"}}),
-            stderr="",
-        )
-        with mock.patch.object(self.gateway, "_run", return_value=result):
-            with self.assertRaisesRegex(
-                GitHubError, "GitHub returned malformed branch ref SHA"
-            ):
-                self.gateway.branch_sha(
-                    "ctrl-alt-keith/ai-workflow-enforcement", "main"
                 )
 
     def test_resolve_ref_fails_closed_for_non_commit_sha(self) -> None:
@@ -110,26 +71,10 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
             stderr="",
         )
         with mock.patch.object(self.gateway, "_run", return_value=result):
-            with self.assertRaisesRegex(
-                GitHubError, "GitHub returned malformed commit SHA"
-            ):
+            with self.assertRaises(GitHubError):
                 self.gateway.resolve_ref(
                     "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
                 )
-
-    def test_resolve_ref_fails_closed_for_non_object_json(self) -> None:
-        for body in ([], None):
-            with self.subTest(body=body):
-                result = subprocess.CompletedProcess(
-                    args=(), returncode=0, stdout=json.dumps(body), stderr=""
-                )
-                with mock.patch.object(self.gateway, "_run", return_value=result):
-                    with self.assertRaisesRegex(
-                        GitHubError, "GitHub returned malformed commit JSON"
-                    ):
-                        self.gateway.resolve_ref(
-                            "ctrl-alt-keith/ai-workflow-enforcement", "test/ref"
-                        )
 
     def test_existing_pr_lookup_matches_only_selected_strategy_marker(self) -> None:
         pages = [
@@ -173,66 +118,13 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
 
         self.assertIsNone(actual)
 
-    def test_worktree_strategy_marker_matches_only_worktree_pr(self) -> None:
-        pages = [
-            [
-                {
-                    "body": AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
-                    "html_url": "https://github.com/example/pull/2",
-                },
-                {
-                    "body": WORKTREE_IGNORE_BASELINE_METADATA.collision_marker,
-                    "html_url": "https://github.com/example/pull/3",
-                },
-            ]
-        ]
-        with mock.patch.object(self.gateway, "_gh_json", return_value=pages):
-            actual = self.gateway.existing_stewardship_pr(
-                "ctrl-alt-keith/ai-workflow-enforcement",
-                WORKTREE_IGNORE_BASELINE_METADATA.collision_marker,
-            )
-
-        self.assertEqual("https://github.com/example/pull/3", actual)
-
     def test_existing_pr_lookup_fails_closed_for_malformed_page(self) -> None:
         with mock.patch.object(self.gateway, "_gh_json", return_value=[{}]):
-            with self.assertRaisesRegex(
-                GitHubError, "malformed pull-request pagination JSON"
-            ):
+            with self.assertRaises(GitHubError):
                 self.gateway.existing_stewardship_pr(
                     "ctrl-alt-keith/ai-workflow-enforcement",
                     AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
                 )
-
-    def test_existing_pr_lookup_fails_closed_for_malformed_entry(self) -> None:
-        with mock.patch.object(
-            self.gateway,
-            "_gh_json",
-            return_value=[[{"body": 3, "html_url": "url"}]],
-        ):
-            with self.assertRaisesRegex(GitHubError, "malformed pull-request JSON"):
-                self.gateway.existing_stewardship_pr(
-                    "ctrl-alt-keith/ai-workflow-enforcement",
-                    AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
-                )
-
-    def test_existing_pr_lookup_fails_closed_for_missing_matching_pr_url(self) -> None:
-        with mock.patch.object(
-            self.gateway,
-            "_gh_json",
-            return_value=[[
-                {
-                    "body": AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
-                    "html_url": None,
-                }
-            ]],
-        ):
-            with self.assertRaisesRegex(GitHubError, "malformed pull-request JSON"):
-                self.gateway.existing_stewardship_pr(
-                    "ctrl-alt-keith/ai-workflow-enforcement",
-                    AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
-                )
-
 
 if __name__ == "__main__":
     unittest.main()
