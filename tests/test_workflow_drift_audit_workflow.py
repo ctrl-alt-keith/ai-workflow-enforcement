@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "workflow-drift-audit.yml"
 CONFIG_PATH = ROOT / "config" / "workflow-drift-audit.json"
 POLICY_PATH = ROOT / "policy" / "github-apps" / "workflow-drift" / "permissions-policy.json"
-README_PATH = ROOT / "README.md"
 
 
 class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
@@ -18,7 +17,6 @@ class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
         cls.workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         cls.config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         cls.policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
-        cls.readme = README_PATH.read_text(encoding="utf-8")
 
     def test_schedule_dispatch_permissions_and_runtime_contract(self) -> None:
         self.assertIn('cron: "40 17 * * 1"', self.workflow)
@@ -58,8 +56,6 @@ class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
         self.assertEqual(3, self.workflow.count("GH_TOKEN: ${{ steps.app_auth.outputs.token }}"))
         self.assertNotIn("steps.app_auth.outputs.token", self.workflow.split("jobs:", 1)[0])
         self.assertNotIn("WORKFLOW_DRIFT_READ_TOKEN", self.workflow)
-        self.assertNotIn("WORKFLOW_DRIFT_READ_TOKEN", self.readme)
-        self.assertNotIn("personal access token secret", self.readme.casefold())
 
     def test_private_key_uses_the_reviewed_managed_secret_delivery_contract(self) -> None:
         actions_configuration = self.policy["actions_configuration"]

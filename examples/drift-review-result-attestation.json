@@ -5,5 +5,5 @@
   "classification": "acceptable duplication / false positive",
   "cleanup_required": false,
   "reviewer_type": "human",
-  "evidence_summary": "The completed Phase 1 drift-review loop found the remaining candidate acceptable: the overlap reflected benign duplication and did not require notes/playbook cleanup."
+  "evidence_summary": "The reviewed overlap was acceptable duplication and did not require notes/playbook cleanup."
 }

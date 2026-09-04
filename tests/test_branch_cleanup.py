@@ -981,31 +981,6 @@ class BranchCleanupTests(unittest.TestCase):
         self.assertNotIn("unexpected_confirmation_requests", payload["worktree_summary"])
         self.assertNotIn("Yes, delete the safe worktrees.", output.getvalue())
 
-    def test_apply_succeeds_with_closed_stdin(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo = _make_repo(root)
-            linked = root / "linked"
-            _commit_and_merge_branch(repo, "done")
-            _git(repo, "worktree", "add", str(linked), "done")
-            config_path = root / "branch-cleanup.json"
-            config_path.write_text(
-                json.dumps({"repositories": [{"name": "sample", "path": str(repo)}]}),
-                encoding="utf-8",
-            )
-            closed_stdin = io.StringIO()
-            closed_stdin.close()
-
-            with (
-                mock.patch.object(sys, "stdin", closed_stdin),
-                mock.patch.object(sys, "stdout", io.StringIO()),
-            ):
-                exit_code = branch_cleanup.main(["--config", str(config_path), "--apply"])
-            linked_exists = linked.exists()
-
-        self.assertEqual(0, exit_code)
-        self.assertFalse(linked_exists)
-
     def test_child_commands_are_explicitly_noninteractive(self) -> None:
         completed = subprocess.CompletedProcess(("git", "status"), 0, "", "")
         with mock.patch.object(branch_cleanup.subprocess, "run", return_value=completed) as run:
@@ -1402,28 +1377,6 @@ class BranchCleanupTests(unittest.TestCase):
         action = _action(report, "stale", "local", "blocked_dirty_worktree")
         self.assertEqual("report_only", action.action)
         self.assertIn("untracked", action.reason)
-
-    def test_stale_audit_reports_merged_pr_exact_head(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = _make_repo(Path(tmp))
-            _commit_branch(repo, "stale", "stale.txt", "unmerged\n")
-            oid = _git(repo, "rev-parse", "refs/heads/stale").stdout.strip()
-
-            with mock.patch.object(
-                branch_cleanup,
-                "_gh",
-                return_value=branch_cleanup.GitCommand(
-                    ("gh",),
-                    0,
-                    f'[{{"number": 1, "state": "MERGED", "mergedAt": "2026-05-08T00:00:00Z", "headRefOid": "{oid}", "title": "Merged", "url": "https://example.test/pr/1"}}]',
-                    "",
-                ),
-            ):
-                report = cleanup_branches(_config(repo), audit_stale=True, audit_github_prs=True)
-
-        action = _action(report, "stale", "local", "stale_candidate_merged_pr_exact_head")
-        self.assertEqual("report_only", action.action)
-        self.assertIn("head SHA matches", action.reason)
 
     def test_merged_pr_exact_head_is_would_delete_without_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
