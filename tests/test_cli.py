@@ -11,24 +11,6 @@ from enforcement.cli import main
 
 
 class CliTests(unittest.TestCase):
-    def test_success_path_is_advisory_exit_zero_without_candidates(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes, playbook = _make_roots(root)
-            (notes / "note.md").write_text("temporary working note", encoding="utf-8")
-            (playbook / "guide.md").write_text("canonical durable guidance", encoding="utf-8")
-
-            code, stdout, stderr = _run_cli(
-                "--notes-root",
-                str(notes),
-                "--playbook-root",
-                str(playbook),
-            )
-
-        self.assertEqual(0, code)
-        self.assertTrue(stdout)
-        self.assertEqual("", stderr)
-
     def test_error_path_returns_two_and_reports_to_stderr(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

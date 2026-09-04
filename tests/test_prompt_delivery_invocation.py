@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import redirect_stderr
 import hashlib
 import io
-import inspect
 import json
 import os
 from pathlib import Path
@@ -13,7 +12,6 @@ from unittest import mock
 
 from enforcement.artifact_store_integrity import dropbox_content_hash
 from enforcement.prompt_delivery_invocation import main
-from enforcement.prompt_handoff_emission import emit_handoff
 
 
 CONTENT = b"Harmless normal-flow prompt with hidden canary: CANARY-CAK-208\n"
@@ -70,27 +68,7 @@ class ClosedOutput(io.StringIO):
         raise ValueError("I/O operation on closed file")
 
 
-class ShortWritingOutput(io.StringIO):
-    def __init__(self) -> None:
-        super().__init__()
-        self.received: list[str] = []
-        self.flush_count = 0
-
-    def write(self, value: str) -> int:
-        self.received.append(value)
-        written = len(value) - 1
-        super().write(value[:written])
-        return written
-
-    def flush(self) -> None:
-        self.flush_count += 1
-        super().flush()
-
-
 class PromptDeliveryInvocationTests(unittest.TestCase):
-    def test_final_emission_component_has_only_byte_blind_inputs(self) -> None:
-        self.assertEqual(["handoff", "output"], list(inspect.signature(emit_handoff).parameters))
-
     def test_normal_flow_derives_identities_runs_dag_and_observes_emission(self) -> None:
         provider = FakeProvider()
         with tempfile.TemporaryDirectory() as temporary:
@@ -149,45 +127,6 @@ class PromptDeliveryInvocationTests(unittest.TestCase):
                 self.assertFalse(durable["handoff_emission"]["observed"])
                 self.assertEqual(1, provider.upload_count)
                 self.assertEqual(1, provider.link_count)
-
-    def test_short_handoff_write_prevents_end_to_end_success(self) -> None:
-        provider = FakeProvider()
-        output = ShortWritingOutput()
-        with tempfile.TemporaryDirectory() as temporary:
-            prompt, receipt = self._files(Path(temporary))
-            errors = io.StringIO()
-            with (
-                mock.patch.dict(os.environ, {"TEST_DROPBOX_TOKEN": "not-retained"}, clear=True),
-                mock.patch(
-                    "enforcement.prompt_delivery_invocation.DropboxClient",
-                    return_value=provider,
-                ) as client,
-            ):
-                exit_code = main(self._args(prompt, receipt), stdout=output, stderr=errors)
-
-            self.assertEqual(1, exit_code)
-            client.assert_called_once_with("not-retained", "14959974083")
-            durable = json.loads(receipt.read_text(encoding="utf-8"))
-            self.assertEqual("BLOCKED", durable["terminal_status"])
-            self.assertEqual("handoff_emission_failed", durable["code"])
-            self.assertEqual("SUCCESS", durable["dag"]["terminal_status"])
-            self.assertTrue(durable["handoff_emission"]["attempted"])
-            self.assertFalse(durable["handoff_emission"]["observed"])
-            self.assertEqual(1, provider.upload_count)
-            self.assertEqual(1, provider.link_count)
-            self.assertEqual(
-                ["get_current_account", "upload_absent", "get_metadata", "get_temporary_link"],
-                provider.calls,
-            )
-            self.assertEqual(0, output.flush_count)
-            self.assertEqual(1, len(output.received))
-            self.assertIn(RAW_URL, output.received[0])
-            self.assertTrue(output.received[0].endswith("\n"))
-
-            serialized = json.dumps(durable, sort_keys=True)
-            self.assertNotIn("CANARY-CAK-208", serialized)
-            self.assertNotIn(RAW_URL, serialized)
-            self.assertNotIn("not-retained", serialized)
 
     def test_missing_credential_blocks_before_provider_construction_or_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

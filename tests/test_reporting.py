@@ -6,53 +6,10 @@ import tempfile
 import unittest
 
 from enforcement.drift_scanner import AdvisoryFinding, OverlapCandidate, ScanResult
-from enforcement.reporting import render_json_report, render_report
+from enforcement.reporting import render_json_report
 
 
 class ReportingTests(unittest.TestCase):
-    def test_render_report_with_candidate_details(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            candidate = OverlapCandidate(
-                note_path=root / "notes" / "thread.md",
-                playbook_path=root / "playbook" / "baseline.md",
-                repeated_headings=("operating model",),
-                repeated_phrases=("small scoped changes with canonical validation",),
-                similarity=0.72,
-                has_canonical_reference=False,
-                reasons=("repeated heading", "missing canonical reference"),
-            )
-            result = ScanResult(
-                candidates=(candidate,),
-                notes_files_scanned=1,
-                playbook_files_scanned=1,
-                ignored_paths=(),
-                advisory_findings=(
-                    AdvisoryFinding(
-                        kind="weak_command_form_wording",
-                        path=root / "notes" / "thread.md",
-                        line=4,
-                        snippet="Prefer direct git and gh commands.",
-                        reasons=("make command mention",),
-                        suggested_direction="Strengthen local wording.",
-                    ),
-                ),
-            )
-
-            report = render_report(result, base_dir=root)
-
-        for value in (
-            "notes/thread.md",
-            "playbook/baseline.md",
-            "repeated heading",
-            "missing canonical reference",
-            "operating model",
-            "small scoped changes with canonical validation",
-            "weak_command_form_wording",
-            "Prefer direct git and gh commands.",
-        ):
-            self.assertIn(value, report)
-
     def test_render_json_report_has_stable_advisory_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

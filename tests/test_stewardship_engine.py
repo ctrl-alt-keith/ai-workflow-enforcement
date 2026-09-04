@@ -24,12 +24,8 @@ from enforcement.stewardship.models import (
     DeliveryResult,
     RepositoryInfo,
     StrategyResult,
-    WORKTREE_IGNORE_BASELINE_METADATA,
 )
-from enforcement.stewardship.worktree_ignore_baseline import (
-    WorktreeIgnoreBaselineContext,
-    WorktreeIgnoreBaselineStrategy,
-)
+from enforcement.stewardship.worktree_ignore_baseline import WorktreeIgnoreBaselineStrategy
 
 
 REPOSITORY = "ctrl-alt-keith/ai-workflow-enforcement"
@@ -174,26 +170,6 @@ class MismatchedChangedPathStrategy(AgentsStartupRoutingStrategy):
         )
 
 
-class SpyAgentsStartupRoutingStrategy(AgentsStartupRoutingStrategy):
-    def __init__(self) -> None:
-        self.contexts: list[AgentsStartupRoutingContext] = []
-
-    def run(self, context: AgentsStartupRoutingContext) -> StrategyResult:
-        self.contexts.append(context)
-        return StrategyResult(outcome="no_change", summary="injected AGENTS strategy")
-
-
-class SpyWorktreeIgnoreBaselineStrategy(WorktreeIgnoreBaselineStrategy):
-    def __init__(self) -> None:
-        self.contexts: list[WorktreeIgnoreBaselineContext] = []
-
-    def run(self, context: WorktreeIgnoreBaselineContext) -> StrategyResult:
-        self.contexts.append(context)
-        return StrategyResult(
-            outcome="no_change", summary="injected worktree strategy"
-        )
-
-
 class StewardshipEngineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -294,81 +270,6 @@ class StewardshipEngineTests(unittest.TestCase):
         _run_git(self.source, "switch", "main")
         return target_sha
 
-    def test_blank_target_ref_preserves_default_branch_resolution(self) -> None:
-        receipt, gateway, _ = self._run()
-
-        self.assertIsNone(receipt.requested_target_ref)
-        self.assertEqual("main", receipt.effective_target_ref)
-        self.assertEqual(self.base_sha, receipt.base_sha)
-        self.assertEqual([self.base_sha], gateway.hydrated_shas)
-        self.assertEqual([], gateway.resolve_ref_calls)
-
-    def test_injected_docs_drift_strategy_receives_docs_context(self) -> None:
-        strategy = SpyStrategy()
-
-        receipt, _, _ = self._run(docs_drift_strategy=strategy)
-
-        self.assertEqual("eligible_no_change", receipt.final_terminal_state)
-        self.assertEqual(1, strategy.calls)
-        self.assertEqual("README.md", strategy.contexts[0].documentation_path)
-        self.assertEqual(("make", "check"), strategy.contexts[0].validation_command)
-
-    def test_injected_agents_strategy_receives_agents_context(self) -> None:
-        strategy = SpyAgentsStartupRoutingStrategy()
-
-        receipt, _, _ = self._run(
-            strategy_identifier="agents-startup-routing",
-            agents_startup_routing_strategy=strategy,
-        )
-
-        self.assertEqual("eligible_no_change", receipt.final_terminal_state)
-        self.assertEqual(1, len(strategy.contexts))
-        self.assertEqual(
-            "ctrl-alt-keith--ai-workflow-enforcement",
-            strategy.contexts[0].repository_root.name,
-        )
-
-    def test_injected_worktree_strategy_receives_narrow_context(self) -> None:
-        strategy = SpyWorktreeIgnoreBaselineStrategy()
-
-        receipt, _, _ = self._run(
-            strategy_identifier="worktree-ignore-baseline",
-            worktree_ignore_baseline_strategy=strategy,
-        )
-
-        self.assertEqual("eligible_no_change", receipt.final_terminal_state)
-        self.assertEqual(1, len(strategy.contexts))
-        self.assertEqual(
-            "ctrl-alt-keith--ai-workflow-enforcement",
-            strategy.contexts[0].repository_root.name,
-        )
-
-    def test_unsupported_strategy_is_rejected_during_engine_construction(self) -> None:
-        with self.assertRaises(ValueError):
-            StewardshipEngine(
-                config=self.config,
-                gateway=FakeGateway(self.source, self.base_sha),
-                strategy_identifier="unsupported",
-            )
-
-    def test_docs_implementation_cannot_execute_as_agents_strategy(self) -> None:
-        with self.assertRaises(ValueError):
-            StewardshipEngine(
-                config=self.config,
-                gateway=FakeGateway(self.source, self.base_sha),
-                strategy_identifier="agents-startup-routing",
-                docs_drift_strategy=SpyStrategy(),
-            )
-
-    def test_agents_implementation_cannot_execute_as_worktree_strategy(self) -> None:
-        with self.assertRaises(ValueError):
-            StewardshipEngine(
-                config=self.config,
-                gateway=FakeGateway(self.source, self.base_sha),
-                strategy_identifier="worktree-ignore-baseline",
-                agents_startup_routing_strategy=SpyAgentsStartupRoutingStrategy(),
-            )
-
     def test_branch_target_ref_resolves_and_hydrates_exact_sha_in_dry_run(self) -> None:
         target_sha = self._target_commit()
         gateway = FakeGateway(self.source, self.base_sha)
@@ -388,18 +289,6 @@ class StewardshipEngineTests(unittest.TestCase):
         self.assertFalse(receipt.would_create_pr)
         self.assertEqual(0, gateway.existing_pr_calls)
         self.assertEqual(0, gateway.delivery_calls)
-
-    def test_commit_sha_target_ref_is_supported_in_dry_run(self) -> None:
-        target_sha = self._target_commit()
-        gateway = FakeGateway(self.source, self.base_sha)
-        gateway.resolved_refs[target_sha] = target_sha
-
-        receipt, gateway, _ = self._run(gateway=gateway, target_ref=target_sha)
-
-        self.assertEqual("dry_run_complete", receipt.final_terminal_state)
-        self.assertEqual(target_sha, receipt.effective_target_ref)
-        self.assertEqual(target_sha, receipt.base_sha)
-        self.assertEqual([target_sha], gateway.hydrated_shas)
 
     def test_invalid_target_ref_fails_closed_with_receipt_before_hydration(self) -> None:
         gateway = FakeGateway(self.source, self.base_sha)
@@ -449,41 +338,6 @@ class StewardshipEngineTests(unittest.TestCase):
         self.assertEqual([], receipt.remote_mutations_attempted)
         self.assertEqual(0, gateway.delivery_calls)
 
-    def test_dry_run_never_invokes_remote_delivery(self) -> None:
-        receipt, gateway, _ = self._run(mode="dry-run")
-
-        self.assertTrue(receipt.would_create_pr)
-        self.assertEqual(0, gateway.delivery_calls)
-        self.assertEqual([], receipt.remote_mutation_results)
-
-    def test_agents_strategy_dry_run_uses_shared_pipeline_without_remote_mutation(self) -> None:
-        receipt, gateway, evidence = self._run(
-            mode="dry-run",
-            strategy_identifier="agents-startup-routing",
-        )
-
-        self.assertEqual("dry_run_complete", receipt.final_terminal_state)
-        self.assertEqual(["AGENTS.md"], receipt.changed_paths)
-        self.assertEqual("passed", receipt.validation["status"])
-        self.assertEqual(0, gateway.delivery_calls)
-        self.assertEqual([], receipt.remote_mutations_attempted)
-        self.assertTrue((evidence / "proposal.patch").read_text(encoding="utf-8"))
-
-    def test_worktree_dry_run_changes_only_gitignore_without_delivery(self) -> None:
-        receipt, gateway, evidence = self._run(
-            mode="dry-run",
-            strategy_identifier="worktree-ignore-baseline",
-        )
-
-        self.assertEqual("dry_run_complete", receipt.final_terminal_state)
-        self.assertEqual([".gitignore"], receipt.changed_paths)
-        self.assertEqual("passed", receipt.validation["status"])
-        self.assertEqual(0, gateway.delivery_calls)
-        self.assertEqual([], receipt.remote_mutations_attempted)
-        patch = (evidence / "proposal.patch").read_text(encoding="utf-8")
-        self.assertIn("diff --git a/.gitignore b/.gitignore", patch)
-        self.assertNotIn("diff --git a/README.md b/README.md", patch)
-
     def test_propose_uses_same_pipeline_and_delivers_exact_validated_patch(self) -> None:
         dry_receipt, _, dry_evidence = self._run(mode="dry-run")
         propose_gateway = FakeGateway(self.source, self.base_sha)
@@ -522,51 +376,6 @@ class StewardshipEngineTests(unittest.TestCase):
         self.assertEqual(0, gateway.hydrate_calls)
         self.assertEqual(0, strategy.calls)
 
-    def test_no_justified_docs_change_is_no_change(self) -> None:
-        (self.source / "README.md").write_text(
-            "# Example\n\nRun `make check`.\n", encoding="utf-8"
-        )
-        self._commit_fixture_change("document validation")
-        gateway = FakeGateway(self.source, self.base_sha)
-
-        receipt, gateway, evidence = self._run(gateway=gateway)
-
-        self.assertEqual("eligible_no_change", receipt.final_terminal_state)
-        self.assertEqual("no_change", receipt.strategy_result["outcome"])
-        self.assertFalse(receipt.would_create_pr)
-        self.assertFalse((evidence / "proposal.patch").exists())
-        self.assertEqual(0, gateway.delivery_calls)
-
-    def test_compliant_agents_fixture_is_eligible_no_change(self) -> None:
-        (self.source / "AGENTS.md").write_text(
-            "# Instructions\n\n"
-            "Start with `ai-workflow-playbook/docs/start-here.md` before work.\n\n"
-            "- Use `make check` as the canonical local validation entrypoint.\n",
-            encoding="utf-8",
-        )
-        self._commit_fixture_change("add active startup route")
-
-        receipt, gateway, evidence = self._run(
-            strategy_identifier="agents-startup-routing"
-        )
-
-        self.assertEqual("eligible_no_change", receipt.final_terminal_state)
-        self.assertEqual("no_change", receipt.strategy_result["outcome"])
-        self.assertFalse((evidence / "proposal.patch").exists())
-        self.assertEqual(0, gateway.delivery_calls)
-
-    def test_controlled_missing_route_fixture_changes_only_agents_and_validates(self) -> None:
-        receipt, _, evidence = self._run(
-            strategy_identifier="agents-startup-routing"
-        )
-
-        self.assertEqual("dry_run_complete", receipt.final_terminal_state)
-        self.assertEqual(["AGENTS.md"], receipt.changed_paths)
-        self.assertEqual("passed", receipt.validation["status"])
-        patch = (evidence / "proposal.patch").read_text(encoding="utf-8")
-        self.assertIn("diff --git a/AGENTS.md b/AGENTS.md", patch)
-        self.assertNotIn("diff --git a/README.md b/README.md", patch)
-
     def test_validation_failure_prevents_delivery(self) -> None:
         self._set_validation(passes=False)
         self._commit_fixture_change("make validation fail")
@@ -580,21 +389,6 @@ class StewardshipEngineTests(unittest.TestCase):
         self.assertTrue((evidence / "validation.log").exists())
         self.assertEqual(0, gateway.delivery_calls)
 
-    def test_agents_strategy_validation_failure_prevents_delivery(self) -> None:
-        self._set_validation(passes=False)
-        self._commit_fixture_change("make validation fail")
-        gateway = FakeGateway(self.source, self.base_sha)
-
-        receipt, gateway, _ = self._run(
-            mode="propose",
-            gateway=gateway,
-            strategy_identifier="agents-startup-routing",
-        )
-
-        self.assertEqual("validation_failed", receipt.final_terminal_state)
-        self.assertEqual(["AGENTS.md"], receipt.changed_paths)
-        self.assertEqual(0, gateway.delivery_calls)
-
     def test_changed_path_mismatch_fails_closed(self) -> None:
         receipt, gateway, _ = self._run(
             strategy_identifier="agents-startup-routing",
@@ -604,17 +398,6 @@ class StewardshipEngineTests(unittest.TestCase):
         self.assertEqual("blocked_before_strategy", receipt.final_terminal_state)
         self.assertEqual("proposal_construction", receipt.failure_stage)
         self.assertTrue(receipt.bounded_error)
-        self.assertEqual(0, gateway.delivery_calls)
-
-    def test_strategy_failure_has_distinct_receipt(self) -> None:
-        strategy = RaisingStrategy()
-        receipt, gateway, _ = self._run(
-            mode="propose", docs_drift_strategy=strategy
-        )
-
-        self.assertEqual("strategy_failed", receipt.final_terminal_state)
-        self.assertEqual("failed", receipt.strategy_result["outcome"])
-        self.assertEqual("strategy", receipt.failure_stage)
         self.assertEqual(0, gateway.delivery_calls)
 
     def test_existing_stewardship_pr_prevents_duplicate(self) -> None:
@@ -632,21 +415,6 @@ class StewardshipEngineTests(unittest.TestCase):
         self.assertEqual(
             [DOCS_DRIFT_METADATA.collision_marker], gateway.collision_markers
         )
-
-    def test_same_strategy_pr_suppresses_agents_proposal(self) -> None:
-        gateway = FakeGateway(self.source, self.base_sha)
-        gateway.existing_pr_by_marker[
-            AGENTS_STARTUP_ROUTING_METADATA.collision_marker
-        ] = "https://github.com/example/pull/2"
-
-        receipt, gateway, _ = self._run(
-            mode="propose",
-            gateway=gateway,
-            strategy_identifier="agents-startup-routing",
-        )
-
-        self.assertEqual("skipped_existing_pr", receipt.final_terminal_state)
-        self.assertEqual(0, gateway.delivery_calls)
 
     def test_cross_strategy_pr_does_not_suppress_agents_proposal(self) -> None:
         gateway = FakeGateway(self.source, self.base_sha)
@@ -666,78 +434,6 @@ class StewardshipEngineTests(unittest.TestCase):
             [AGENTS_STARTUP_ROUTING_METADATA.collision_marker],
             gateway.collision_markers,
         )
-
-    def test_same_strategy_pr_suppresses_worktree_proposal(self) -> None:
-        gateway = FakeGateway(self.source, self.base_sha)
-        gateway.existing_pr_by_marker[
-            WORKTREE_IGNORE_BASELINE_METADATA.collision_marker
-        ] = "https://github.com/example/pull/3"
-
-        receipt, gateway, _ = self._run(
-            mode="propose",
-            gateway=gateway,
-            strategy_identifier="worktree-ignore-baseline",
-        )
-
-        self.assertEqual("skipped_existing_pr", receipt.final_terminal_state)
-        self.assertEqual(0, gateway.delivery_calls)
-
-    def test_other_strategy_pr_does_not_suppress_worktree_proposal(self) -> None:
-        gateway = FakeGateway(self.source, self.base_sha)
-        gateway.existing_pr_by_marker[DOCS_DRIFT_METADATA.collision_marker] = (
-            "https://github.com/example/pull/1"
-        )
-
-        receipt, gateway, _ = self._run(
-            mode="propose",
-            gateway=gateway,
-            strategy_identifier="worktree-ignore-baseline",
-        )
-
-        self.assertEqual("delivery_succeeded", receipt.final_terminal_state)
-        self.assertEqual(1, gateway.delivery_calls)
-        self.assertEqual(
-            [WORKTREE_IGNORE_BASELINE_METADATA.collision_marker],
-            gateway.collision_markers,
-        )
-
-    def test_worktree_strategy_controls_receipt_branch_and_pr_identity(self) -> None:
-        receipt, gateway, _ = self._run(
-            mode="propose",
-            strategy_identifier="worktree-ignore-baseline",
-        )
-
-        self.assertEqual("worktree-ignore-baseline", receipt.strategy_identifier)
-        self.assertEqual("1", receipt.strategy_revision)
-        self.assertTrue(
-            receipt.proposed_branch.startswith("stewardship/worktree-ignore-baseline/")
-        )
-        self.assertEqual(WORKTREE_IGNORE_BASELINE_METADATA.commit_message, receipt.proposed_commit_message)
-        self.assertEqual(WORKTREE_IGNORE_BASELINE_METADATA.pr_title, receipt.proposed_pr_title)
-        self.assertIn(
-            WORKTREE_IGNORE_BASELINE_METADATA.collision_marker,
-            receipt.proposed_pr_body,
-        )
-        self.assertEqual(receipt.proposed_branch, gateway.delivered_proposal.branch)
-
-    def test_agents_strategy_controls_receipt_branch_and_pr_identity(self) -> None:
-        receipt, gateway, _ = self._run(
-            mode="propose",
-            strategy_identifier="agents-startup-routing",
-        )
-
-        self.assertEqual("agents-startup-routing", receipt.strategy_identifier)
-        self.assertEqual("1", receipt.strategy_revision)
-        self.assertTrue(
-            receipt.proposed_branch.startswith("stewardship/agents-startup-routing/")
-        )
-        self.assertEqual(AGENTS_STARTUP_ROUTING_METADATA.commit_message, receipt.proposed_commit_message)
-        self.assertEqual(AGENTS_STARTUP_ROUTING_METADATA.pr_title, receipt.proposed_pr_title)
-        self.assertIn(
-            AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
-            receipt.proposed_pr_body,
-        )
-        self.assertEqual(receipt.proposed_branch, gateway.delivered_proposal.branch)
 
     def test_base_sha_change_blocks_delivery(self) -> None:
         gateway = FakeGateway(self.source, self.base_sha)

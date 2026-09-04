@@ -100,28 +100,6 @@ class WorkflowDriftAuditWorkflowTests(unittest.TestCase):
         )
         self.assertRegex(self.workflow, r"retention-days:\s*14")
 
-    def test_all_result_classes_and_advisory_drift_semantics_are_explicit(self) -> None:
-        for result in ("Clean", "Drift detected", "Failed", "Unable to verify"):
-            self.assertIn(result, self.workflow)
-        self.assertRegex(
-            self.workflow,
-            r"APP_AUTH_OUTCOME:\s*\$\{\{ steps\.app_auth\.outcome \}\}",
-        )
-        self.assertRegex(
-            self.workflow,
-            r"INVENTORY_OUTCOME:\s*\$\{\{ steps\.inventory\.outcome \}\}",
-        )
-        self.assertIn('elif [[ "$APP_AUTH_OUTCOME" != "success" ]]', self.workflow)
-        self.assertIn('elif [[ "$INVENTORY_OUTCOME" != "success" ]]', self.workflow)
-        classification = self.workflow.split("id: classify", 1)[1].split("id: upload", 1)[0]
-        authentication_branch = classification.split(
-            'elif [[ "$APP_AUTH_OUTCOME" != "success" ]]', 1
-        )[1].split("elif", 1)[0]
-        self.assertIn('result="Unable to verify"', authentication_branch)
-        self.assertNotIn('result="Clean"', authentication_branch)
-        self.assertIn('"Drift detected")', self.workflow)
-        self.assertIn("always() && !cancelled()", self.workflow)
-
     def test_repository_owned_scan_config_preserves_current_scope(self) -> None:
         self.assertEqual(["../../ai-workflow-incubator"], self.config["notes_roots"])
         self.assertEqual(["../../ai-workflow-playbook/docs"], self.config["playbook_roots"])

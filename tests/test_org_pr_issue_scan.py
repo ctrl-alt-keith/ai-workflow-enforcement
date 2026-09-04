@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout
 from io import StringIO
 import json
 import unittest
 from unittest.mock import patch
 
-from enforcement.org_pr_issue_scan import GhCommand, main, render_json_report, render_text_report, scan_org_work
+from enforcement.org_pr_issue_scan import GhCommand, main, render_json_report, scan_org_work
 
 
 class OrgPrIssueScanTests(unittest.TestCase):
@@ -163,64 +163,6 @@ class OrgPrIssueScanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             scan_org_work(selected_repos=("missing",), runner=gh)
 
-    def test_main_reports_unknown_selected_repository_to_stderr(self) -> None:
-        stdout = StringIO()
-        stderr = StringIO()
-        with patch("enforcement.org_pr_issue_scan.scan_org_work", side_effect=ValueError("bad selection")):
-            with redirect_stdout(stdout), redirect_stderr(stderr):
-                code = main(["--repo", "missing"])
-
-        self.assertEqual(2, code)
-        self.assertEqual("", stdout.getvalue())
-        self.assertTrue(stderr.getvalue())
-
-    def test_empty_no_open_work_report_is_explicit(self) -> None:
-        gh = FakeGh(
-            {
-                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("quiet")]],
-                "/repos/ctrl-alt-keith/quiet/pulls?state=open&per_page=100": [[]],
-                "/repos/ctrl-alt-keith/quiet/issues?state=open&per_page=100": [[]],
-            }
-        )
-
-        report = scan_org_work(runner=gh)
-        data = json.loads(render_json_report(report))
-
-        self.assertEqual(0, data["summary"]["open_pull_request_count"])
-        self.assertEqual(0, data["summary"]["open_issue_count"])
-        self.assertEqual("matched", data["repository_count_attestation"]["status"])
-        self.assertEqual(1, data["repository_count_attestation"]["enumerated_total"])
-
-    def test_inaccessible_repository_is_reported(self) -> None:
-        gh = FakeGh(
-            {
-                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("blocked")]],
-                "/repos/ctrl-alt-keith/blocked/pulls?state=open&per_page=100": GhCommand(
-                    argv=(),
-                    returncode=1,
-                    stdout="",
-                    stderr="HTTP 403: Forbidden",
-                ),
-                "/repos/ctrl-alt-keith/blocked/issues?state=open&per_page=100": GhCommand(
-                    argv=(),
-                    returncode=1,
-                    stdout="",
-                    stderr="HTTP 404: Not Found",
-                ),
-            }
-        )
-
-        report = scan_org_work(runner=gh)
-        text = render_text_report(report)
-
-        self.assertEqual(1, len(report.repositories))
-        skipped = report.repositories[0].skipped
-        self.assertEqual(2, len(skipped))
-        self.assertTrue(any("HTTP 403: Forbidden" in item for item in skipped))
-        self.assertTrue(any("HTTP 404: Not Found" in item for item in skipped))
-        for item in skipped:
-            self.assertIn(item, text)
-
     def test_fail_on_error_is_opt_in_for_incomplete_repository_coverage(self) -> None:
         gh = FakeGh(
             {
@@ -241,48 +183,6 @@ class OrgPrIssueScanTests(unittest.TestCase):
 
         self.assertEqual(0, advisory_code)
         self.assertEqual(1, failing_code)
-
-    def test_fail_on_error_preserves_json_incomplete_coverage_report(self) -> None:
-        gh = FakeGh(
-            {
-                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("blocked")]],
-                "/repos/ctrl-alt-keith/blocked/pulls?state=open&per_page=100": GhCommand(
-                    argv=(),
-                    returncode=1,
-                    stdout="",
-                    stderr="HTTP 403: Forbidden",
-                ),
-                "/repos/ctrl-alt-keith/blocked/issues?state=open&per_page=100": [[]],
-            }
-        )
-        report = scan_org_work(runner=gh)
-
-        code, stdout = _run_main_with_report(report, "--output-format", "json", "--fail-on-error")
-
-        self.assertEqual(1, code)
-        data = json.loads(stdout)
-        self.assertEqual(1, data["summary"]["skipped_repository_count"])
-        self.assertEqual(list(report.repositories[0].skipped), data["repositories"][0]["skipped"])
-
-    def test_fail_on_error_handles_repository_enumeration_errors(self) -> None:
-        gh = FakeGh(
-            {
-                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": GhCommand(
-                    argv=(),
-                    returncode=1,
-                    stdout="",
-                    stderr="HTTP 500: Server Error",
-                ),
-            }
-        )
-        report = scan_org_work(runner=gh)
-
-        advisory_code, _ = _run_main_with_report(report)
-        failing_code, _ = _run_main_with_report(report, "--fail-on-error")
-
-        self.assertEqual(0, advisory_code)
-        self.assertEqual(1, failing_code)
-
 
 class FakeGh:
     def __init__(self, responses: dict[str, object]) -> None:

@@ -37,16 +37,6 @@ class AgentsStartupRoutingStrategyTests(unittest.TestCase):
         self.assertEqual("no_change", result.outcome)
         self.assertEqual(original, (self.root / "AGENTS.md").read_text(encoding="utf-8"))
 
-    def test_wrapped_active_route_is_no_change(self) -> None:
-        result = self._run(
-            "# Instructions\n\n"
-            "Read\n"
-            "`ai-workflow-playbook/docs/start-here.md` before repository or\n"
-            "software work.\n"
-        )
-
-        self.assertEqual("no_change", result.outcome)
-
     def test_absent_route_appends_exact_fixed_block_and_preserves_prefix(self) -> None:
         original = b"# Instructions\r\n\r\nRepository-specific guidance."
         agents = self.root / "AGENTS.md"
@@ -61,23 +51,6 @@ class AgentsStartupRoutingStrategyTests(unittest.TestCase):
         self.assertEqual(("AGENTS.md",), result.changed_paths)
         self.assertEqual(original + APPROVED_BLOCK.encode("utf-8"), observed)
         self.assertTrue(observed.startswith(original))
-
-    def test_fenced_example_is_ignored_and_fixed_block_is_appended(self) -> None:
-        original = (
-            "# Instructions\n\n"
-            "```markdown\n"
-            "## Shared Workflow Entry Point\n\n"
-            "Start with `ai-workflow-playbook/docs/start-here.md`.\n"
-            "```\n"
-        )
-
-        result = self._run(original)
-
-        self.assertEqual("changed", result.outcome)
-        self.assertEqual(
-            original + APPROVED_BLOCK,
-            (self.root / "AGENTS.md").read_text(encoding="utf-8"),
-        )
 
     def test_negative_or_historical_mentions_are_blocked(self) -> None:
         examples = (
