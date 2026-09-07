@@ -61,6 +61,16 @@ class TaskEnvelopeTests(unittest.TestCase):
             with self.assertRaises(EnvelopeValidationError):
                 load_task_envelope(path)
 
+    def test_loader_rejects_invalid_utf8(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "envelope.json"
+            path.write_bytes(b"{\xff")
+
+            with self.assertRaisesRegex(
+                EnvelopeValidationError, "invalid task envelope UTF-8 encoding"
+            ):
+                load_task_envelope(path)
+
 def _example() -> dict[str, object]:
     return copy.deepcopy(load_task_envelope(EXAMPLE_ENVELOPE))
 

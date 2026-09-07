@@ -31,7 +31,9 @@ def load_review_result_attestation(path: Path) -> dict[str, Any]:
     """Load a review-result attestation JSON object from disk."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        if isinstance(exc, UnicodeDecodeError):
+            raise AttestationValidationError("invalid review-result attestation UTF-8 encoding") from exc
         raise AttestationValidationError(f"invalid review-result attestation JSON: {exc.msg}") from exc
 
     if not isinstance(data, dict):

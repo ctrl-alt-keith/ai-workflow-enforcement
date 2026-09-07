@@ -35,7 +35,9 @@ def load_task_envelope(path: Path) -> dict[str, Any]:
     """Load a task envelope JSON object from disk."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        if isinstance(exc, UnicodeDecodeError):
+            raise EnvelopeValidationError("invalid task envelope UTF-8 encoding") from exc
         raise EnvelopeValidationError(f"invalid task envelope JSON: {exc.msg}") from exc
 
     if not isinstance(data, dict):
