@@ -65,6 +65,17 @@ class ReviewResultAttestationTests(unittest.TestCase):
             with self.assertRaises(AttestationValidationError):
                 load_review_result_attestation(path)
 
+    def test_loader_rejects_invalid_utf8(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "attestation.json"
+            path.write_bytes(b"{\xff")
+
+            with self.assertRaisesRegex(
+                AttestationValidationError,
+                "invalid review-result attestation UTF-8 encoding",
+            ):
+                load_review_result_attestation(path)
+
 
 def _example() -> dict[str, object]:
     return copy.deepcopy(load_review_result_attestation(EXAMPLE_ATTESTATION))
