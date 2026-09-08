@@ -47,11 +47,52 @@ class RepositoryIdentityTests(unittest.TestCase):
 
         self.assertEqual("unverified", verification.status)
 
+    def test_unavailable_remote_blocks_provider_lookup(self) -> None:
+        provider_calls: list[tuple[str, ...]] = []
+
+        def git_runner(_path: Path, _argv: tuple[str, ...]) -> Result:
+            return Result(1, stderr="remote origin unavailable")
+
+        def provider_runner(argv: tuple[str, ...]) -> Result:
+            provider_calls.append(argv)
+            return Result(0, json.dumps({"id": 7, "full_name": "ctrl-alt-keith/sample"}))
+
+        verification = verify_local_repository_identity(
+            Path("/not-inspected"),
+            "origin",
+            "ctrl-alt-keith/sample",
+            7,
+            git_runner=git_runner,
+            provider_runner=provider_runner,
+        )
+
+        self.assertEqual("unverified", verification.status)
+        self.assertIn("configured remote is unavailable", verification.detail)
+        self.assertEqual([], provider_calls)
+
     def test_provider_repository_id_mismatch_fails_closed(self) -> None:
         verification = _verify(provider_id=99)
 
         self.assertEqual("mismatch", verification.status)
         self.assertEqual(99, verification.observed_repository_id)
+
+    def test_malformed_provider_identity_response_fails_closed(self) -> None:
+        verification = _verify(provider_stdout="not-json")
+
+        self.assertEqual("unverified", verification.status)
+        self.assertIn("invalid JSON", verification.detail)
+
+    def test_incomplete_or_non_numeric_provider_identity_fails_closed(self) -> None:
+        for payload in (
+            {"id": True, "full_name": "ctrl-alt-keith/sample"},
+            {"id": 7},
+            {"id": 7, "full_name": None},
+        ):
+            with self.subTest(payload=payload):
+                verification = _verify(provider_stdout=json.dumps(payload))
+
+                self.assertEqual("unverified", verification.status)
+                self.assertIn("omitted numeric id or current full_name", verification.detail)
 
 
 def _verify(
