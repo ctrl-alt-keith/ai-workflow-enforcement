@@ -4,11 +4,11 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
-COPILOT_SOURCE_PATH = WORKFLOW_DIR / "hosted-dead-surface-pilot.md"
-COPILOT_LOCK_PATH = WORKFLOW_DIR / "hosted-dead-surface-pilot.lock.yml"
-OPENAI_SOURCE_PATH = WORKFLOW_DIR / "hosted-dead-surface-openai-pilot.md"
-OPENAI_LOCK_PATH = WORKFLOW_DIR / "hosted-dead-surface-openai-pilot.lock.yml"
-DOC_PATH = ROOT / "docs" / "hosted-agentic-workflows-pilot.md"
+COPILOT_SOURCE_PATH = WORKFLOW_DIR / "hosted-dead-surface-copilot.md"
+COPILOT_LOCK_PATH = WORKFLOW_DIR / "hosted-dead-surface-copilot.lock.yml"
+OPENAI_SOURCE_PATH = WORKFLOW_DIR / "hosted-dead-surface-openai.md"
+OPENAI_LOCK_PATH = WORKFLOW_DIR / "hosted-dead-surface-openai.lock.yml"
+DOC_PATH = ROOT / "docs" / "hosted-agentic-workflows-bakeoff.md"
 FIXTURE_ROOT = ROOT / "examples" / "qualification" / "dead-surface-bakeoff"
 
 
@@ -110,7 +110,7 @@ class HostedDeadSurfaceBakeoffContractTests(unittest.TestCase):
     def test_exact_base_and_duplicate_guards_are_equal(self) -> None:
         for source in (self.copilot_source, self.openai_source):
             self.assertIn(
-                'is:pr is:open "cak-283-hosted-dead-surface-pilot" in:body',
+                'is:pr is:open "cak-283-hosted-dead-surface-bakeoff" in:body',
                 source,
             )
             self.assertIn('git rev-parse HEAD)" = "$EXPECTED_BASE_SHA"', source)

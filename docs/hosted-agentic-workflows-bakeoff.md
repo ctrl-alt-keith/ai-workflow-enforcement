@@ -5,9 +5,9 @@ GitHub-hosted execution without inheriting unobserved local state or expanding
 write authority. The first implementation is a controlled bake-off between two
 manual GitHub Agentic Workflows:
 
-- `.github/workflows/hosted-dead-surface-pilot.md` runs Codex with
+- `.github/workflows/hosted-dead-surface-copilot.md` runs Codex with
   `copilot/gpt-5.3-codex`, billed through GitHub Copilot.
-- `.github/workflows/hosted-dead-surface-openai-pilot.md` runs Codex with
+- `.github/workflows/hosted-dead-surface-openai.md` runs Codex with
   `gpt-5.3-codex`, billed directly through a dedicated OpenAI automation key.
 
 No winner has been selected. Both workflows remain manually dispatched and
@@ -17,6 +17,9 @@ real draft pull request is a separate human-reviewed decision.
 
 The existing fixed-strategy Hosted Stewardship Engine is unchanged. It remains
 the deterministic owner of its three fixed strategies.
+
+For clone-to-preflight instructions, see
+[Hosted Codex bake-off setup](hosted-agentic-workflows-setup.md).
 
 ## Active local fleet classification
 
@@ -102,13 +105,13 @@ current `origin/main` SHA, then dispatch both lock workflows with identical
 inputs. The first live billable dispatch remains separately human-gated.
 
 ```text
-gh workflow run hosted-dead-surface-pilot.lock.yml --ref main \
+gh workflow run hosted-dead-surface-copilot.lock.yml --ref main \
   -f qualification_acknowledgement=CAK-283 \
   -f bakeoff_pair_id=[pair-id] \
   -f bakeoff_scenario=[scenario] \
   -f expected_base_sha=[exact-main-sha]
 
-gh workflow run hosted-dead-surface-openai-pilot.lock.yml --ref main \
+gh workflow run hosted-dead-surface-openai.lock.yml --ref main \
   -f qualification_acknowledgement=CAK-283 \
   -f bakeoff_pair_id=[same-pair-id] \
   -f bakeoff_scenario=[same-scenario] \
@@ -125,7 +128,7 @@ gh-aw v0.88.7 generates a compact `usage` artifact for both workflows. It
 contains run/model metadata, agent and detection usage summaries, and raw
 normalized token-usage records where the engine exposes them. Retrieve the two
 run artifacts with
-`gh aw logs hosted-dead-surface-pilot hosted-dead-surface-openai-pilot --last [count] --artifacts usage --json --output [attempt-local-directory]`
+`gh aw logs hosted-dead-surface-copilot hosted-dead-surface-openai --last [count] --artifacts usage --json --output [attempt-local-directory]`
 or the normal GitHub Actions artifact surface. Keep the raw artifact attached
 to its run; record only the compact comparison in CAK-283.
 
