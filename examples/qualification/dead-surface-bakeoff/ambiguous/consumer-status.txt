@@ -1,0 +1,2 @@
+External consumer status: unresolved.
+Removal requires a separate compatibility decision that this fixture does not provide.

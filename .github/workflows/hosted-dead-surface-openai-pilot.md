@@ -1,6 +1,6 @@
 ---
-name: Hosted Dead Surface Pilot - Copilot
-description: Manually qualify the Copilot-backed half of the CAK-283 dead-surface bake-off.
+name: Hosted Dead Surface Pilot - OpenAI
+description: Manually qualify the direct-OpenAI half of the CAK-283 dead-surface bake-off.
 intent: Compare hosted inference paths without widening merge authority, credential scope, or operator attention.
 on:
   workflow_dispatch:
@@ -31,11 +31,14 @@ on:
 permissions:
   contents: read
   pull-requests: read
-  copilot-requests: write
 if: github.event.inputs.qualification_acknowledgement == 'CAK-283' && github.event.inputs.bakeoff_pair_id != '' && github.event.inputs.expected_base_sha != ''
 strict: true
-engine: codex
-model: copilot/gpt-5.3-codex
+engine:
+  id: codex
+  model: gpt-5.3-codex
+  env:
+    CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 max-turns: 24
 max-ai-credits: 500
 timeout-minutes: 30
@@ -57,6 +60,10 @@ tools:
     mode: gh-proxy
     toolsets: [repos, pull_requests]
 steps:
+  - name: Require dedicated OpenAI automation credential
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    run: test -n "$OPENAI_API_KEY"
   - name: Capture exact tested base
     id: tested-base
     env:
@@ -67,7 +74,7 @@ steps:
       test "$(git rev-parse HEAD)" = "$EXPECTED_BASE_SHA"
       git rev-parse HEAD > /tmp/gh-aw/agent/tested-base.txt
       echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      printf 'variant=copilot\npair_id=%s\nscenario=%s\nexpected_base_sha=%s\nstarted_at=%s\n' \
+      printf 'variant=openai\npair_id=%s\nscenario=%s\nexpected_base_sha=%s\nstarted_at=%s\n' \
         "$BAKEOFF_PAIR_ID" "$BAKEOFF_SCENARIO" "$EXPECTED_BASE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         > /tmp/gh-aw/agent/bakeoff-context.txt
   - name: Hydrate exact playbook source
@@ -101,8 +108,11 @@ safe-outputs:
   threat-detection:
     max-ai-credits: 200
     engine:
-      id: copilot
-      model: copilot/gpt-5.3-codex
+      id: codex
+      model: gpt-5.3-codex
+      env:
+        CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   create-pull-request:
     title-prefix: "[CAK-283 pilot] "
     branch-prefix: "agentic/dead-surface-"
