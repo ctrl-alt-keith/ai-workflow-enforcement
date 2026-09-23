@@ -17,6 +17,8 @@ DEFAULT_IGNORE_PATTERNS = (
     "**/__pycache__/**",
     ".venv/**",
     "**/.venv/**",
+    "pytest-of-root/**",
+    "**/pytest-of-root/**",
 )
 
 

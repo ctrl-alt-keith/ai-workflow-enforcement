@@ -16,27 +16,11 @@ from .heuristics import (
     normalized_headings,
     normalized_phrases,
     normalized_words,
-    normalize_text,
     token_similarity,
 )
 
 
 SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".rst"}
-AUTHORITY_SEGMENT_SPLIT_RE = re.compile(r"[.;:!?]|\b(?:but|however|though|although|while)\b", re.IGNORECASE)
-AUTHORITY_CLAIM_PATTERNS = tuple(
-    re.compile(pattern)
-    for pattern in (
-        r"\b(?:this|the|current|runtime)\s+(?:runtime\s+)?(?:document|prompt|file|note|artifact|surface|playbook)\s+"
-        r"(?:is|are|becomes?|remains?|serves as|acts as)\s+(?:the\s+)?(?:canonical|authoritative|definitive)\b",
-        r"\b(?:this|the|current|runtime)\s+(?:document|prompt|file|note|artifact|surface)\s+governs\b",
-        r"\b(?:this|the|current|runtime)\s+(?:runtime\s+)?(?:document|prompt|file|note|artifact|surface|playbook)\s+"
-        r"(?:is|becomes?|serves as|acts as)\s+(?:the\s+)?source\s+of\s+truth\b",
-        r"\b(?:treat|use)\s+this(?:\s+(?:document|prompt|file|note|artifact|surface))?\s+as\s+"
-        r"(?:the\s+)?source\s+of\s+truth\b",
-        r"\b(?:treat|use|retain|present)\s+this\b.{0,80}\bas\s+(?:the\s+)?canonical\s+"
-        r"(?:workflow(?:\s+reference)?|source|reference|guidance)\b",
-    )
-)
 WRAPPER_EXAMPLE_RE = re.compile(
     r"(?<![\w.-])(?:/(?:usr/)?bin/)?(?:(?:zsh|bash)\s+-lc|sh\s+-c)\s+"
     r"(?:--\s+)?(?P<quote>[`'\"])(?P<command>.*?)(?P=quote)",
@@ -49,26 +33,6 @@ SHELL_SYNTAX_RE = re.compile(
     re.IGNORECASE,
 )
 ENV_ASSIGNMENT_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+(?:\s+|$))+")
-WRITABLE_ROOTS_RE = re.compile(r"\bwritable(?:_|\s+)roots\b", re.IGNORECASE)
-EXHAUSTIVE_SCOPE_RE = re.compile(r"\b(?:all|complete|exhaustive|only|sole|solely|entire)\b", re.IGNORECASE)
-NEGATED_EXHAUSTIVE_SCOPE_RE = re.compile(
-    r"\b(?:not|never|do\s+not|does\s+not|must\s+not|should\s+not)\b"
-    r".{0,120}\b(?:all|complete|exhaustive|only|sole|solely|entire)\b",
-    re.IGNORECASE,
-)
-
-RUNTIME_SURFACE_PARTS = {
-    "generated",
-    "runtime",
-    "runtime-artifacts",
-    "snapshots",
-    "snapshot",
-    "staging",
-    "staged",
-    "custom-instructions",
-    "copied-custom-instructions",
-}
-
 @dataclass(frozen=True)
 class Document:
     root: Path
@@ -167,7 +131,7 @@ def scan(config: ScannerConfig) -> ScanResult:
             )
 
     candidates.sort(key=_candidate_sort_key)
-    advisory_findings = _scan_advisory_findings(config, notes.documents, playbook.documents, workspace)
+    advisory_findings = _scan_advisory_findings(notes.documents, playbook.documents, workspace)
     return ScanResult(
         candidates=tuple(candidates[: config.max_candidates]),
         notes_files_scanned=len(notes.documents),
@@ -543,7 +507,6 @@ def _candidate_sort_key(candidate: OverlapCandidate) -> tuple[float, int, int, s
 
 
 def _scan_advisory_findings(
-    config: ScannerConfig,
     notes: tuple[Document, ...],
     playbook: tuple[Document, ...],
     workspace: _WorkspaceLoad,
@@ -555,9 +518,6 @@ def _scan_advisory_findings(
         findings.extend(_scan_agents_alignment(document, playbook))
 
     for document in scanned_documents:
-        findings.extend(_scan_sandbox_writable_roots_claims(document))
-        if _is_noncanonical_surface(document, config):
-            findings.extend(_scan_authority_language(document))
         findings.extend(_scan_shell_wrapper_examples(document))
 
     findings.sort(key=lambda finding: (finding.path.as_posix(), finding.line, finding.kind))
@@ -619,55 +579,6 @@ def _playbook_phrase_set(playbook: tuple[Document, ...]) -> set[str]:
     return phrases
 
 
-def _scan_authority_language(document: Document) -> list[AdvisoryFinding]:
-    findings: list[AdvisoryFinding] = []
-    for line_number, line in _iter_lines(document.text):
-        normalized_line = normalize_text(line)
-        if not _is_direct_authority_claim(line, normalized_line):
-            continue
-        findings.append(
-            AdvisoryFinding(
-                kind="noncanonical_authority_language",
-                path=document.path,
-                line=line_number,
-                snippet=line.strip(),
-                reasons=("noncanonical surface uses authority-language wording",),
-                suggested_direction="Replace authority language with a playbook reference or label the surface as noncanonical evidence.",
-            )
-        )
-    return findings
-
-
-def _is_direct_authority_claim(line: str, normalized_line: str) -> bool:
-    segments = _authority_segments(line)
-    return any(_segment_has_authority_claim(segment) for segment in segments)
-
-
-def _authority_segments(line: str) -> tuple[str, ...]:
-    segments = tuple(
-        normalize_text(segment)
-        for segment in AUTHORITY_SEGMENT_SPLIT_RE.split(line)
-        if normalize_text(segment)
-    )
-    return segments or (normalize_text(line),)
-
-
-def _segment_has_authority_claim(normalized_segment: str) -> bool:
-    if _negates_authority_claim(normalized_segment):
-        return False
-    return any(pattern.search(normalized_segment) for pattern in AUTHORITY_CLAIM_PATTERNS)
-
-
-def _negates_authority_claim(normalized_segment: str) -> bool:
-    return bool(
-        re.search(
-            r"\b(?:not|noncanonical|non canonical|never|do not|does not|must not|should not)\b"
-            r".{0,80}\b(?:canonical|authoritative|definitive|source of truth)\b",
-            normalized_segment,
-        )
-    )
-
-
 def _scan_shell_wrapper_examples(document: Document) -> list[AdvisoryFinding]:
     findings: list[AdvisoryFinding] = []
     for line_number, line in _iter_lines(document.text):
@@ -690,45 +601,9 @@ def _scan_shell_wrapper_examples(document: Document) -> list[AdvisoryFinding]:
     return findings
 
 
-def _scan_sandbox_writable_roots_claims(document: Document) -> list[AdvisoryFinding]:
-    findings: list[AdvisoryFinding] = []
-    for line_number, line in _iter_lines(document.text):
-        if not _is_writable_roots_exhaustive_claim(line):
-            continue
-        findings.append(
-            AdvisoryFinding(
-                kind="sandbox_writable_roots_exhaustive_claim",
-                path=document.path,
-                line=line_number,
-                snippet=line.strip(),
-                reasons=("Codex effective writable roots can include implicit project and temp roots",),
-                suggested_direction=(
-                    "Describe `writable_roots` as explicit config roots and mention effective-policy inspection plus implicit root exclusions."
-                ),
-            )
-        )
-    return findings
-
-
-def _is_writable_roots_exhaustive_claim(line: str) -> bool:
-    for segment in _authority_segments(line):
-        if not WRITABLE_ROOTS_RE.search(segment) or not EXHAUSTIVE_SCOPE_RE.search(segment):
-            continue
-        if not NEGATED_EXHAUSTIVE_SCOPE_RE.search(segment):
-            return True
-    return False
-
-
 def _requires_shell_syntax(command: str) -> bool:
     stripped = command.strip()
     return bool(ENV_ASSIGNMENT_RE.search(stripped) or SHELL_SYNTAX_RE.search(stripped))
-
-
-def _is_noncanonical_surface(document: Document, config: ScannerConfig) -> bool:
-    if any(_is_within(document.path, root.resolve()) for root in config.notes_roots):
-        return True
-    parts = {part.lower() for part in document.path.parts}
-    return bool(parts & RUNTIME_SURFACE_PARTS)
 
 
 def _finding(

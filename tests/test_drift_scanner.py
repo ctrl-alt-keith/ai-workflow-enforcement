@@ -116,6 +116,32 @@ class DriftScannerTests(unittest.TestCase):
         self.assertEqual(0, len(result.candidates))
         self.assertEqual(1, len(result.ignored_paths))
 
+    def test_default_ignores_transient_pytest_tree_but_scans_adjacent_owned_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            transient = notes / "pytest-of-root" / "pytest-0"
+            transient.mkdir(parents=True)
+            playbook.mkdir()
+            (transient / "notes.txt").write_text(
+                "# Shared Guidance\n\nUse the canonical workflow boundary.\n",
+                encoding="utf-8",
+            )
+            (transient / "binary.txt").write_bytes(b"\xff\xfe\x00")
+            (notes / "owned.md").write_text("Owned repository note.\n", encoding="utf-8")
+            (playbook / "guide.md").write_text(
+                "# Shared Guidance\n\nUse the canonical workflow boundary.\n",
+                encoding="utf-8",
+            )
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertEqual(1, result.notes_files_scanned)
+        self.assertEqual((transient.parent.resolve(),), result.ignored_paths)
+        self.assertEqual((), result.skipped_paths)
+        self.assertEqual((), result.candidates)
+
     def test_non_utf8_documents_are_reported_as_skips_without_aborting_scan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -292,6 +318,38 @@ class DriftScannerTests(unittest.TestCase):
         kinds = {finding.kind for finding in result.advisory_findings}
         self.assertEqual({"agents_missing_canonical_playbook_reference"}, kinds)
 
+    def test_canonical_routing_does_not_create_advisory_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            playbook = workspace / "ai-workflow-playbook" / "docs"
+            repo = workspace / "demo"
+            notes = root / "notes"
+            playbook.mkdir(parents=True)
+            repo.mkdir()
+            notes.mkdir()
+            (playbook / "start-here.md").write_text("Shared startup guidance.\n", encoding="utf-8")
+            (repo / "AGENTS.md").write_text(
+                "Use ai-workflow-playbook/docs/start-here.md for reusable workflow rules.\n",
+                encoding="utf-8",
+            )
+            (notes / "CLAUDE.md").write_text(
+                "This file routes sessions to ai-workflow-playbook/docs/start-here.md.\n"
+                "The named source owns reusable guidance.\n",
+                encoding="utf-8",
+            )
+
+            result = scan(
+                ScannerConfig(
+                    notes_roots=(notes,),
+                    playbook_roots=(playbook,),
+                    workspace_root=workspace,
+                    organization_repositories=("ctrl-alt-keith/demo",),
+                )
+            )
+
+        self.assertEqual((), result.advisory_findings)
+
     def test_agents_alignment_flags_large_canonical_duplication(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -331,174 +389,6 @@ class DriftScannerTests(unittest.TestCase):
 
         kinds = {finding.kind for finding in result.advisory_findings}
         self.assertIn("agents_large_canonical_duplication", kinds)
-
-    def test_noncanonical_authority_claim_is_advisory_finding(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "runtime.md").write_text(
-                "This runtime artifact is the source of truth.\n"
-                "The document is otherwise descriptive.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        kinds = [finding.kind for finding in result.advisory_findings]
-        self.assertIn("noncanonical_authority_language", kinds)
-
-    def test_sandbox_writable_roots_exhaustive_claim_is_advisory_finding(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "codex.md").write_text(
-                "The sandbox_workspace_write.writable_roots list is the only writable root set.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
-        ]
-        self.assertEqual(1, len(findings))
-        self.assertEqual(1, findings[0].line)
-
-    def test_sandbox_writable_roots_corrective_wording_is_not_advisory_finding(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "codex.md").write_text(
-                "`writable_roots` is not the full effective writable root set.\n"
-                "Effective writable roots may also include implicit temp roots.\n"
-                "Effective writable roots can also include the current project root.\n"
-                "Do not assume `writable_roots` is exhaustive.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
-        ]
-        self.assertEqual(0, len(findings))
-
-    def test_sandbox_writable_roots_claim_is_not_suppressed_by_nearby_or_partial_negation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "codex.md").write_text(
-                "Do not assume `writable_roots` is exhaustive.\n"
-                "The `writable_roots` list is the only writable root set.\n"
-                "`writable_roots` is the only root, not just a hint.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
-        ]
-        self.assertEqual([2, 3], [finding.line for finding in findings])
-
-    def test_authority_language_skips_noncanonical_disclaimers_and_external_sources(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "staging.md").write_text(
-                "This is not a canonical source for reusable guidance.\n"
-                "Tracked examples here are not the authoritative source for live runtime state.\n"
-                "## Source of truth\n\n"
-                "GitHub issues and PRs remain authoritative for implementation work.\n"
-                "Public API behavior claims require authoritative official documentation.\n"
-                "A prompt can ask for canonical source use.\n"
-                "Runtime artifacts can appear authoritative when copied widely.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        authority_findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "noncanonical_authority_language"
-        ]
-        self.assertEqual(0, len(authority_findings))
-
-    def test_authority_language_flags_self_authority_claims(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            claims = (
-                "This prompt is the authoritative instruction source.",
-                "The runtime document serves as the definitive workflow reference.",
-                "Treat this artifact as the source of truth.",
-                "Retain this note as canonical guidance.",
-                "# This document is the source of truth",
-                "Is this canonical? This document is the canonical reference.",
-            )
-            (notes / "active-note.md").write_text(
-                "\n".join(claims) + "\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        authority_findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "noncanonical_authority_language"
-        ]
-        self.assertEqual(list(claims), [finding.snippet for finding in authority_findings])
-
-    def test_frozen_historical_material_remains_an_advisory_authority_finding(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "frozen-review.md").write_text(
-                "# Frozen Review Record\n\n"
-                "context: frozen historical evidence artifact\n"
-                "role: completed retrospective record\n\n"
-                "The preserved review quoted these prior findings:\n"
-                "- This artifact is the canonical workflow reference.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        self.assertIn(
-            "noncanonical_authority_language",
-            {finding.kind for finding in result.advisory_findings},
-        )
 
     def test_shell_wrapper_prompt_examples_flag_ordinary_repo_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
