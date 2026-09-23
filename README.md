@@ -46,11 +46,11 @@ python3 -m enforcement.cli --config examples/drift-scan.json
 ```
 
 The scanner reports repeated headings and phrases, token similarity, canonical
-reference presence, and focused workflow-policy findings. Its default exit is
-advisory; `--fail-on-candidates` enables the optional nonzero exit for overlap
-candidates. Config paths resolve relative to the config file. Ignore patterns
-are additive to built-in safety ignores and match paths relative to each
-configured root.
+reference presence, AGENTS overlap, and shell-wrapper command examples. Its
+default exit is advisory; `--fail-on-candidates` enables the optional nonzero
+exit for overlap candidates. Config paths resolve relative to the config file. Ignore patterns
+are additive to built-in safety ignores, including `pytest-of-root/` trees,
+and match paths relative to each configured root.
 
 Cross-repository scans require an explicit workspace root and an authoritative
 organization inventory, narrowed by explicit repository values or a

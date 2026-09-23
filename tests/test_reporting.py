@@ -5,8 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from enforcement.drift_scanner import AdvisoryFinding, OverlapCandidate, ScanResult
-from enforcement.reporting import render_json_report
+from enforcement.drift_scanner import AdvisoryFinding, OverlapCandidate, ScanResult, SkippedPath
+from enforcement.reporting import render_json_report, render_report
 
 
 class ReportingTests(unittest.TestCase):
@@ -53,9 +53,11 @@ class ReportingTests(unittest.TestCase):
                 "ignored_path_count": 1,
                 "notes_files_scanned": 1,
                 "playbook_files_scanned": 2,
+                "skipped_path_count": 0,
             },
             data["summary"],
         )
+        self.assertEqual([], data["skipped_paths"])
         self.assertEqual(
             {
                 "canonical_reference_present": True,
@@ -80,6 +82,22 @@ class ReportingTests(unittest.TestCase):
             },
             data["advisory_findings"][0],
         )
+
+    def test_render_report_includes_skipped_path_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = ScanResult(
+                candidates=(),
+                notes_files_scanned=0,
+                playbook_files_scanned=0,
+                ignored_paths=(),
+                skipped_paths=(SkippedPath(root / "notes" / "transient.md", "not valid UTF-8"),),
+            )
+
+            report = render_report(result, base_dir=root)
+
+        self.assertIn("Skipped path details:", report)
+        self.assertIn("- notes/transient.md: not valid UTF-8", report)
 
 
 if __name__ == "__main__":

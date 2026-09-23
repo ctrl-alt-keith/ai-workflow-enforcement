@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from .drift_scanner import AdvisoryFinding, OverlapCandidate, ScanResult
+from .drift_scanner import AdvisoryFinding, OverlapCandidate, ScanResult, SkippedPath
 
 
 def render_report(result: ScanResult, *, base_dir: Path | None = None) -> str:
@@ -17,8 +17,15 @@ def render_report(result: ScanResult, *, base_dir: Path | None = None) -> str:
         f"Notes files scanned: {result.notes_files_scanned}",
         f"Playbook files scanned: {result.playbook_files_scanned}",
         f"Ignored paths: {len(result.ignored_paths)}",
+        f"Skipped paths: {len(result.skipped_paths)}",
         "",
     ]
+
+    if result.skipped_paths:
+        lines.append("Skipped path details:")
+        for skipped in result.skipped_paths:
+            lines.append(f"- {_rel(skipped.path, base)}: {skipped.reason}")
+        lines.append("")
 
     if not result.candidates:
         lines.append("No overlap candidates found.")
@@ -80,11 +87,13 @@ def render_json_report(result: ScanResult, *, base_dir: Path | None = None) -> s
             "notes_files_scanned": result.notes_files_scanned,
             "playbook_files_scanned": result.playbook_files_scanned,
             "ignored_path_count": len(result.ignored_paths),
+            "skipped_path_count": len(result.skipped_paths),
             "candidate_count": len(result.candidates),
             "advisory_finding_count": len(result.advisory_findings),
         },
         "candidates": [_candidate_to_json(candidate, base) for candidate in result.candidates],
         "advisory_findings": [_finding_to_json(finding, base) for finding in result.advisory_findings],
+        "skipped_paths": [_skip_to_json(skipped, base) for skipped in result.skipped_paths],
     }
     return json.dumps(report, indent=2, sort_keys=True)
 
@@ -111,6 +120,10 @@ def _finding_to_json(finding: AdvisoryFinding, base: Path) -> dict[str, object]:
         "reasons": list(finding.reasons),
         "suggested_direction": finding.suggested_direction,
     }
+
+
+def _skip_to_json(skipped: SkippedPath, base: Path) -> dict[str, str]:
+    return {"path": _rel(skipped.path, base), "reason": skipped.reason}
 
 
 def _rel(path: Path, base: Path) -> str:

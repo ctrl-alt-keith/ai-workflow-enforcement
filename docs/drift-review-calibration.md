@@ -29,10 +29,9 @@ closeness signal, not a severity score. A canonical reference does not prove
 duplicated text is still useful.
 
 Frozen proposals and review records can remain overlap candidates because a
-historical label does not establish that duplication is intentional. Policy
-findings, however, distinguish executable guidance from command histories,
-negative examples, analysis, and stopped attempts.
+historical label does not establish that duplication is intentional. Review
+their context before treating overlap as actionable drift.
 
 Ignored-path counts represent unique excluded roots or files. Traversal stops
 at ignored roots such as `.git/`, `.worktrees/`, `.venv/`,
-`__pycache__/`, and configured archives.
+`__pycache__/`, `pytest-of-root/`, and configured archives.

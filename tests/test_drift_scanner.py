@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from enforcement.config import ScannerConfig
 from enforcement.drift_scanner import scan
+from enforcement.heuristics import has_canonical_reference
 
 
 class DriftScannerTests(unittest.TestCase):
@@ -46,7 +47,7 @@ class DriftScannerTests(unittest.TestCase):
         self.assertIn("workflow alignment", candidate.repeated_headings)
         self.assertTrue(candidate.reasons)
 
-    def test_frozen_historical_overlap_remains_visible_with_calibrated_direction(self) -> None:
+    def test_frozen_historical_overlap_uses_the_same_overlap_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             notes = root / "notes"
@@ -84,13 +85,10 @@ class DriftScannerTests(unittest.TestCase):
 
         candidates = {candidate.note_path.name: candidate for candidate in result.candidates}
         self.assertEqual({"active-guidance.md", "frozen-review.md"}, set(candidates))
-        self.assertNotEqual(
-            candidates["frozen-review.md"].reasons,
-            candidates["active-guidance.md"].reasons,
-        )
-        self.assertNotEqual(
+        self.assertEqual(("repeated normalized phrase",), candidates["frozen-review.md"].reasons)
+        self.assertEqual(
+            "Review staged note for stale duplicate wording; keep local evidence or context only.",
             candidates["frozen-review.md"].suggested_direction,
-            candidates["active-guidance.md"].suggested_direction,
         )
 
     def test_ignore_patterns_skip_matching_paths(self) -> None:
@@ -117,6 +115,130 @@ class DriftScannerTests(unittest.TestCase):
 
         self.assertEqual(0, len(result.candidates))
         self.assertEqual(1, len(result.ignored_paths))
+
+    def test_default_ignores_transient_pytest_tree_but_scans_adjacent_owned_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            transient = notes / "pytest-of-root" / "pytest-0"
+            transient.mkdir(parents=True)
+            playbook.mkdir()
+            (transient / "notes.txt").write_text(
+                "# Shared Guidance\n\nUse the canonical workflow boundary.\n",
+                encoding="utf-8",
+            )
+            (transient / "binary.txt").write_bytes(b"\xff\xfe\x00")
+            (notes / "owned.md").write_text("Owned repository note.\n", encoding="utf-8")
+            (playbook / "guide.md").write_text(
+                "# Shared Guidance\n\nUse the canonical workflow boundary.\n",
+                encoding="utf-8",
+            )
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertEqual(1, result.notes_files_scanned)
+        self.assertEqual((transient.parent.resolve(),), result.ignored_paths)
+        self.assertEqual((), result.skipped_paths)
+        self.assertEqual((), result.candidates)
+
+    def test_non_utf8_documents_are_reported_as_skips_without_aborting_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "transient.md").write_bytes(b"\xff\xfe\x00")
+            (notes / "readable.md").write_text("A readable note.\n", encoding="utf-8")
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertEqual(1, result.notes_files_scanned)
+        self.assertEqual(
+            [("transient.md", "not valid UTF-8")],
+            [(skipped.path.name, skipped.reason) for skipped in result.skipped_paths],
+        )
+
+    def test_unreadable_document_is_reported_as_a_skip_without_aborting_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            unreadable = notes / "transient.md"
+            notes.mkdir()
+            playbook.mkdir()
+            unreadable.write_text("transient note", encoding="utf-8")
+            (notes / "readable.md").write_text("A readable note.\n", encoding="utf-8")
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+            original_read_text = Path.read_text
+
+            def read_text(path: Path, *args: object, **kwargs: object) -> str:
+                if path.name == "transient.md":
+                    raise PermissionError(13, "Permission denied", str(path))
+                return original_read_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", new=read_text):
+                result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertEqual(1, result.notes_files_scanned)
+        self.assertEqual(
+            [("transient.md", "unreadable: Permission denied")],
+            [(skipped.path.name, skipped.reason) for skipped in result.skipped_paths],
+        )
+
+    def test_unreadable_directory_is_reported_as_a_skip_without_aborting_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            blocked = notes / "blocked"
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            def walk_with_error(*args: object, onerror: object = None, **kwargs: object):
+                error = PermissionError(13, "Permission denied", str(blocked))
+                assert callable(onerror)
+                onerror(error)
+                return iter(())
+
+            with patch("enforcement.drift_scanner.os.walk", side_effect=walk_with_error):
+                result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertEqual(
+            [("blocked", "unreadable: Permission denied")],
+            [(skipped.path.name, skipped.reason) for skipped in result.skipped_paths],
+        )
+
+    def test_non_utf8_workspace_agents_file_is_skipped_without_aborting_alignment_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            notes = root / "notes"
+            playbook = root / "playbook"
+            repo = workspace / "sample"
+            notes.mkdir()
+            playbook.mkdir()
+            repo.mkdir(parents=True)
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (playbook / "baseline.md").write_text("workflow guidance", encoding="utf-8")
+            (repo / "AGENTS.md").write_bytes(b"\xff\xfe\x00")
+
+            result = scan(
+                ScannerConfig(
+                    notes_roots=(notes,),
+                    playbook_roots=(playbook,),
+                    workspace_root=workspace,
+                    organization_repositories=("ctrl-alt-keith/sample",),
+                )
+            )
+
+        self.assertEqual(
+            [("AGENTS.md", "not valid UTF-8")],
+            [(skipped.path.name, skipped.reason) for skipped in result.skipped_paths],
+        )
 
     def test_similarity_threshold_controls_candidate_creation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -196,6 +318,38 @@ class DriftScannerTests(unittest.TestCase):
         kinds = {finding.kind for finding in result.advisory_findings}
         self.assertEqual({"agents_missing_canonical_playbook_reference"}, kinds)
 
+    def test_canonical_routing_does_not_create_advisory_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            playbook = workspace / "ai-workflow-playbook" / "docs"
+            repo = workspace / "demo"
+            notes = root / "notes"
+            playbook.mkdir(parents=True)
+            repo.mkdir()
+            notes.mkdir()
+            (playbook / "start-here.md").write_text("Shared startup guidance.\n", encoding="utf-8")
+            (repo / "AGENTS.md").write_text(
+                "Use ai-workflow-playbook/docs/start-here.md for reusable workflow rules.\n",
+                encoding="utf-8",
+            )
+            (notes / "CLAUDE.md").write_text(
+                "This file routes sessions to ai-workflow-playbook/docs/start-here.md.\n"
+                "The named source owns reusable guidance.\n",
+                encoding="utf-8",
+            )
+
+            result = scan(
+                ScannerConfig(
+                    notes_roots=(notes,),
+                    playbook_roots=(playbook,),
+                    workspace_root=workspace,
+                    organization_repositories=("ctrl-alt-keith/demo",),
+                )
+            )
+
+        self.assertEqual((), result.advisory_findings)
+
     def test_agents_alignment_flags_large_canonical_duplication(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -236,196 +390,6 @@ class DriftScannerTests(unittest.TestCase):
         kinds = {finding.kind for finding in result.advisory_findings}
         self.assertIn("agents_large_canonical_duplication", kinds)
 
-    def test_noncanonical_authority_and_stronger_rules_are_advisory_findings(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "runtime.md").write_text(
-                "This runtime artifact is the source of truth.\n"
-                "Agents must provide complete self-contained output.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        kinds = [finding.kind for finding in result.advisory_findings]
-        self.assertIn("noncanonical_authority_language", kinds)
-        self.assertIn("staged_rule_stronger_than_playbook", kinds)
-
-    def test_sandbox_writable_roots_exhaustive_claim_is_advisory_finding(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "codex.md").write_text(
-                "The sandbox_workspace_write.writable_roots list is the only writable root set.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
-        ]
-        self.assertEqual(1, len(findings))
-        self.assertEqual(1, findings[0].line)
-
-    def test_sandbox_writable_roots_corrective_wording_is_not_advisory_finding(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "codex.md").write_text(
-                "`writable_roots` is not the full effective writable root set.\n"
-                "Effective writable roots may also include implicit temp roots.\n"
-                "Effective writable roots can also include the current project root.\n"
-                "Do not assume `writable_roots` is exhaustive.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
-        ]
-        self.assertEqual(0, len(findings))
-
-    def test_authority_language_skips_noncanonical_disclaimers_and_external_sources(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "staging.md").write_text(
-                "This is not a canonical source for reusable guidance.\n"
-                "Tracked examples here are not the authoritative source for live runtime state.\n"
-                "## Source of truth\n\n"
-                "GitHub issues and PRs remain authoritative for implementation work.\n"
-                "Public API behavior claims require authoritative official documentation.\n"
-                "A prompt can ask for canonical source use.\n"
-                "Runtime artifacts can appear authoritative when copied widely.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        authority_findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "noncanonical_authority_language"
-        ]
-        self.assertEqual(0, len(authority_findings))
-
-    def test_incubator_confirmed_authority_false_positive_regression_corpus(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            false_positive_lines = (
-                "Do not turn generated rollups into source of truth for repository state.",
-                "Risk: shadow-canon emergence can become an informal canonical reference.",
-                "When the operator asserts authoritative state, record the verification target.",
-                "No inferred state is treated as canonical.",
-                "Autonomous agents help when the source of truth is verifiable.",
-                "The GitHub authoritative scan covered the visible repositories.",
-                "Repo guidance names make check as canonical local validation.",
-                "Authoritative-source and public-safety checks are rollout families.",
-                "Best candidates include authoritative-source checks.",
-                "Adopt the authoritative-source check for provider claim repositories.",
-                "Treat the receipt as a claim rather than as authoritative current state.",
-                "Provider work exposed collection lineage as canonical concepts.",
-                "Review the authoritative local source graph with read-only tools.",
-                "## Verified authoritative baseline",
-                "Repository proof remains authoritative for its content, but historical status does not override current state.",
-                "Promotion criteria: keep it explicitly non-authoritative.",
-                "Do not imply any generated view is source of truth.",
-                "Do not treat descriptor output as canonical docs.",
-                "Exact workspace scope must come from authoritative inventory.",
-                "Add truncation detection before calling the result authoritative.",
-            )
-            (notes / "confirmed-false-positives.md").write_text(
-                "\n".join(false_positive_lines) + "\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        self.assertNotIn(
-            "noncanonical_authority_language",
-            {finding.kind for finding in result.advisory_findings},
-        )
-
-    def test_incubator_confirmed_genuine_authority_drift_regression_corpus(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            genuine_drift_lines = (
-                "Synchronization: lane 2.A merges first because it was the canonical authority.",
-                "GitHub state was used as authoritative source via git metadata.",
-                "The proposal was verified against current authoritative sources.",
-                "List the authoritative sources inspected before trusting recommendations.",
-                "Retain this as the canonical worked example for this incubation concept.",
-                "GitHub is the authoritative source of truth for repository and review state.",
-            )
-            (notes / "active-note.md").write_text(
-                "\n".join(genuine_drift_lines) + "\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        authority_findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "noncanonical_authority_language"
-        ]
-        self.assertEqual(list(genuine_drift_lines), [finding.snippet for finding in authority_findings])
-
-    def test_incubator_genuine_authority_wording_is_suppressed_in_frozen_historical_evidence(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "frozen-review.md").write_text(
-                "# Frozen Review Record\n\n"
-                "context: frozen historical evidence artifact\n"
-                "role: completed retrospective record\n\n"
-                "The preserved review quoted these prior findings:\n"
-                "- Synchronization: lane 2.A merges first because it was the canonical authority.\n"
-                "- GitHub state was used as authoritative source via git metadata.\n"
-                "- GitHub is the authoritative source of truth for repository and review state.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        self.assertNotIn(
-            "noncanonical_authority_language",
-            {finding.kind for finding in result.advisory_findings},
-        )
-
     def test_shell_wrapper_prompt_examples_flag_ordinary_repo_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -449,26 +413,6 @@ class DriftScannerTests(unittest.TestCase):
         for command in ("git status", "make check"):
             self.assertTrue(any(command in finding.reasons[0] for finding in wrapper_findings))
 
-    def test_shell_wrapper_negative_example_is_not_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "guidance.md").write_text(
-                "Incorrect: `zsh -lc 'git status'`. Use `git status` instead.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        self.assertNotIn(
-            "ordinary_repo_command_shell_wrapper_example",
-            {finding.kind for finding in result.advisory_findings},
-        )
-
     def test_shell_wrapper_real_shell_syntax_is_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -490,7 +434,7 @@ class DriftScannerTests(unittest.TestCase):
             {finding.kind for finding in result.advisory_findings},
         )
 
-    def test_shell_wrapper_runtime_policy_evidence_is_not_flagged(self) -> None:
+    def test_shell_wrapper_flags_ordinary_commands_regardless_of_document_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             notes = root / "notes"
@@ -518,104 +462,19 @@ class DriftScannerTests(unittest.TestCase):
 
             result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
 
-        self.assertNotIn(
-            "ordinary_repo_command_shell_wrapper_example",
-            {finding.kind for finding in result.advisory_findings},
-        )
-
-    def test_shell_wrapper_runtime_behavior_guidance_is_flagged_outside_policy_evidence(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "prompt.md").write_text(
-                "Runtime behavior: run `bash -lc 'make check'` before review.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
         wrapper_findings = [
             finding for finding in result.advisory_findings
             if finding.kind == "ordinary_repo_command_shell_wrapper_example"
         ]
-        self.assertEqual(1, len(wrapper_findings))
-
-    def test_worktree_creation_without_inspection_signal_is_advisory_finding(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "prompt.md").write_text(
-                "For same-repo implementation work, create a new worktree under `.worktrees/` "
-                "and make the change there.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "worktree_creation_without_inspection_signal"
-        ]
-        self.assertEqual(1, len(findings))
-        self.assertIn("create a new worktree", findings[0].snippet)
-
-    def test_worktree_history_observations_and_stopped_attempts_are_not_guidance(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "history.md").write_text(
-                "Worktree creation also became a visible operational signal that a run had entered setup.\n"
-                "Record worktree creation as an observed signal, not a semantic requirement.\n"
-                "Worktree creation was an observed signal and remains repository policy.\n"
-                "The first Stage 2 dry launch stopped before branch/worktree creation and before evidence collection.\n"
-                "The second attempt then stopped before branch/worktree creation and before evidence collection.\n"
-                "The amendment passed integrity gates, then stopped before branch/worktree creation and before collection.\n"
-                "The history records that execution stopped before branch or worktree creation and before evidence collection.\n"
-                "The retrospective analyzes whether creating worktrees too early caused churn.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        self.assertNotIn(
-            "worktree_creation_without_inspection_signal",
-            {finding.kind for finding in result.advisory_findings},
+        self.assertEqual(
+            {("README.md", 3), ("README.md", 9), ("runtime-enforcement-matrix.md", 3)},
+            {(finding.path.name, finding.line) for finding in wrapper_findings},
         )
 
-    def test_branch_only_implementation_guidance_is_flagged_without_required_worktree(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "guidance.md").write_text(
-                "Use worktrees for parallel same-repo work. "
-                "Normal branches are fine for single-task sequential work when safe.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        findings = [
-            finding for finding in result.advisory_findings
-            if finding.kind == "implementation_work_without_required_worktree"
-        ]
-        self.assertEqual(1, len(findings))
-        self.assertIn("Normal branches are fine", findings[0].snippet)
+    def test_canonical_reference_requires_a_repository_or_document_identifier(self) -> None:
+        self.assertFalse(has_canonical_reference("Follow the workflow playbook guidance."))
+        self.assertTrue(has_canonical_reference("Use ai-workflow-playbook/docs/start-here.md."))
+        self.assertTrue(has_canonical_reference("See [the guide](https://github.com/ctrl-alt-keith/ai-workflow-playbook)."))
 
     def test_workspace_scope_uses_optional_manifest_and_organization_intersection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -708,6 +567,85 @@ class DriftScannerTests(unittest.TestCase):
         self.assertIn("AGENTS.md", finding_paths)
         self.assertNotIn("local-only", {finding.path.parent.name for finding in result.advisory_findings})
         self.assertNotIn("org-only", {finding.path.parent.name for finding in result.advisory_findings})
+
+    def test_workspace_scope_excludes_archived_organization_members(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            notes = root / "notes"
+            playbook = root / "playbook"
+            active = workspace / "active"
+            notes.mkdir()
+            playbook.mkdir()
+            active.mkdir(parents=True)
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (playbook / "baseline.md").write_text("workflow guidance", encoding="utf-8")
+            (active / "AGENTS.md").write_text("# AGENTS.md\n", encoding="utf-8")
+            completed = subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout=(
+                    '[{"nameWithOwner":"ctrl-alt-keith/active","isArchived":false},'
+                    '{"nameWithOwner":"ctrl-alt-keith/archived","isArchived":true}]'
+                ),
+                stderr="",
+            )
+
+            with patch("enforcement.drift_scanner.subprocess.run", return_value=completed):
+                result = scan(
+                    ScannerConfig(
+                        notes_roots=(notes,),
+                        playbook_roots=(playbook,),
+                        workspace_root=workspace,
+                        organization="ctrl-alt-keith",
+                    )
+                )
+
+        self.assertNotIn(
+            "ctrl-alt-keith/archived",
+            {finding.snippet for finding in result.advisory_findings},
+        )
+
+    def test_workspace_scope_identifies_explicit_archived_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            workspace.mkdir()
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (playbook / "baseline.md").write_text("workflow guidance", encoding="utf-8")
+            completed = subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout=(
+                    '[{"nameWithOwner":"ctrl-alt-keith/active","isArchived":false},'
+                    '{"nameWithOwner":"ctrl-alt-keith/archived","isArchived":true}]'
+                ),
+                stderr="",
+            )
+
+            with patch("enforcement.drift_scanner.subprocess.run", return_value=completed):
+                result = scan(
+                    ScannerConfig(
+                        notes_roots=(notes,),
+                        playbook_roots=(playbook,),
+                        workspace_root=workspace,
+                        organization="ctrl-alt-keith",
+                        organization_repositories=("ctrl-alt-keith/archived",),
+                    )
+                )
+
+        archived = [
+            finding for finding in result.advisory_findings if finding.kind == "workspace_scope_archived_repository"
+        ]
+        self.assertEqual(["ctrl-alt-keith/archived"], [finding.snippet for finding in archived])
+        self.assertNotIn(
+            "workspace_scope_inventory_mismatch",
+            {finding.kind for finding in result.advisory_findings},
+        )
 
     def test_workspace_scope_reports_unavailable_organization_inventory_without_filesystem_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
