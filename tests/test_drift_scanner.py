@@ -46,7 +46,7 @@ class DriftScannerTests(unittest.TestCase):
         self.assertIn("workflow alignment", candidate.repeated_headings)
         self.assertTrue(candidate.reasons)
 
-    def test_frozen_historical_overlap_remains_visible_with_calibrated_direction(self) -> None:
+    def test_frozen_historical_overlap_uses_the_same_overlap_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             notes = root / "notes"
@@ -84,14 +84,8 @@ class DriftScannerTests(unittest.TestCase):
 
         candidates = {candidate.note_path.name: candidate for candidate in result.candidates}
         self.assertEqual({"active-guidance.md", "frozen-review.md"}, set(candidates))
-        self.assertNotEqual(
-            candidates["frozen-review.md"].reasons,
-            candidates["active-guidance.md"].reasons,
-        )
-        self.assertNotEqual(
-            candidates["frozen-review.md"].suggested_direction,
-            candidates["active-guidance.md"].suggested_direction,
-        )
+        self.assertNotIn("frozen historical evidence context", candidates["frozen-review.md"].reasons)
+        self.assertNotIn("frozen", candidates["frozen-review.md"].suggested_direction.lower())
 
     def test_ignore_patterns_skip_matching_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -134,6 +128,57 @@ class DriftScannerTests(unittest.TestCase):
         self.assertEqual(1, result.notes_files_scanned)
         self.assertEqual(
             [("transient.md", "not valid UTF-8")],
+            [(skipped.path.name, skipped.reason) for skipped in result.skipped_paths],
+        )
+
+    def test_unreadable_document_is_reported_as_a_skip_without_aborting_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            unreadable = notes / "transient.md"
+            notes.mkdir()
+            playbook.mkdir()
+            unreadable.write_text("transient note", encoding="utf-8")
+            (notes / "readable.md").write_text("A readable note.\n", encoding="utf-8")
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+            original_read_text = Path.read_text
+
+            def read_text(path: Path, *args: object, **kwargs: object) -> str:
+                if path.name == "transient.md":
+                    raise PermissionError(13, "Permission denied", str(path))
+                return original_read_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", new=read_text):
+                result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertEqual(1, result.notes_files_scanned)
+        self.assertEqual(
+            [("transient.md", "unreadable: Permission denied")],
+            [(skipped.path.name, skipped.reason) for skipped in result.skipped_paths],
+        )
+
+    def test_unreadable_directory_is_reported_as_a_skip_without_aborting_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            blocked = notes / "blocked"
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            def walk_with_error(*args: object, onerror: object = None, **kwargs: object):
+                error = PermissionError(13, "Permission denied", str(blocked))
+                assert callable(onerror)
+                onerror(error)
+                return iter(())
+
+            with patch("enforcement.drift_scanner.os.walk", side_effect=walk_with_error):
+                result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        self.assertEqual(
+            [("blocked", "unreadable: Permission denied")],
             [(skipped.path.name, skipped.reason) for skipped in result.skipped_paths],
         )
 
@@ -402,7 +447,7 @@ class DriftScannerTests(unittest.TestCase):
         ]
         self.assertEqual(list(claims), [finding.snippet for finding in authority_findings])
 
-    def test_incubator_genuine_authority_wording_is_suppressed_in_frozen_historical_evidence(self) -> None:
+    def test_frozen_historical_material_remains_an_advisory_authority_finding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             notes = root / "notes"
@@ -421,7 +466,7 @@ class DriftScannerTests(unittest.TestCase):
 
             result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
 
-        self.assertNotIn(
+        self.assertIn(
             "noncanonical_authority_language",
             {finding.kind for finding in result.advisory_findings},
         )
@@ -449,26 +494,6 @@ class DriftScannerTests(unittest.TestCase):
         for command in ("git status", "make check"):
             self.assertTrue(any(command in finding.reasons[0] for finding in wrapper_findings))
 
-    def test_shell_wrapper_negative_example_is_not_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "guidance.md").write_text(
-                "Incorrect: `zsh -lc 'git status'`. Use `git status` instead.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
-        self.assertNotIn(
-            "ordinary_repo_command_shell_wrapper_example",
-            {finding.kind for finding in result.advisory_findings},
-        )
-
     def test_shell_wrapper_real_shell_syntax_is_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -490,7 +515,7 @@ class DriftScannerTests(unittest.TestCase):
             {finding.kind for finding in result.advisory_findings},
         )
 
-    def test_shell_wrapper_runtime_policy_evidence_is_not_flagged(self) -> None:
+    def test_shell_wrapper_flags_ordinary_commands_regardless_of_document_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             notes = root / "notes"
@@ -518,9 +543,12 @@ class DriftScannerTests(unittest.TestCase):
 
             result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
 
-        self.assertNotIn(
-            "ordinary_repo_command_shell_wrapper_example",
-            {finding.kind for finding in result.advisory_findings},
+        self.assertGreaterEqual(
+            sum(
+                finding.kind == "ordinary_repo_command_shell_wrapper_example"
+                for finding in result.advisory_findings
+            ),
+            1,
         )
 
     def test_shell_wrapper_runtime_behavior_guidance_is_flagged_outside_policy_evidence(self) -> None:
@@ -672,6 +700,47 @@ class DriftScannerTests(unittest.TestCase):
         self.assertNotIn(
             "ctrl-alt-keith/archived",
             {finding.snippet for finding in result.advisory_findings},
+        )
+
+    def test_workspace_scope_identifies_explicit_archived_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "workspace"
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            workspace.mkdir()
+            (notes / "note.md").write_text("temporary note", encoding="utf-8")
+            (playbook / "baseline.md").write_text("workflow guidance", encoding="utf-8")
+            completed = subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout=(
+                    '[{"nameWithOwner":"ctrl-alt-keith/active","isArchived":false},'
+                    '{"nameWithOwner":"ctrl-alt-keith/archived","isArchived":true}]'
+                ),
+                stderr="",
+            )
+
+            with patch("enforcement.drift_scanner.subprocess.run", return_value=completed):
+                result = scan(
+                    ScannerConfig(
+                        notes_roots=(notes,),
+                        playbook_roots=(playbook,),
+                        workspace_root=workspace,
+                        organization="ctrl-alt-keith",
+                        organization_repositories=("ctrl-alt-keith/archived",),
+                    )
+                )
+
+        archived = [
+            finding for finding in result.advisory_findings if finding.kind == "workspace_scope_archived_repository"
+        ]
+        self.assertEqual(["ctrl-alt-keith/archived"], [finding.snippet for finding in archived])
+        self.assertNotIn(
+            "workspace_scope_inventory_mismatch",
+            {finding.kind for finding in result.advisory_findings},
         )
 
     def test_workspace_scope_reports_unavailable_organization_inventory_without_filesystem_fallback(self) -> None:

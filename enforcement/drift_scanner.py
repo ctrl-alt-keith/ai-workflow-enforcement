@@ -104,11 +104,6 @@ class OverlapCandidate:
 
     @property
     def suggested_direction(self) -> str:
-        if "frozen historical evidence context" in self.reasons:
-            return (
-                "Keep the overlap visible; verify the canonical owner reference and frozen record context, "
-                "then preserve the historical application when it is intentional."
-            )
         if self.has_canonical_reference:
             return "Review staged note for stale duplicate wording; keep local evidence or context only."
         return "Consider replacing repeated guidance with a short canonical playbook reference."
@@ -151,8 +146,6 @@ def scan(config: ScannerConfig) -> ScanResult:
         note_headings = normalized_headings(note.text)
         note_phrases = normalized_phrases(note.text, config.min_phrase_words)
         note_has_reference = has_canonical_reference(note.text)
-        note_is_frozen_history = _is_frozen_historical_evidence(note.text)
-
         for target in playbook.documents:
             target_headings = normalized_headings(target.text)
             target_phrases = normalized_phrases(target.text, config.min_phrase_words)
@@ -165,7 +158,6 @@ def scan(config: ScannerConfig) -> ScanResult:
                 repeated_phrases,
                 similarity,
                 note_has_reference,
-                note_is_frozen_history,
                 config,
             )
             if not reasons:
@@ -217,8 +209,9 @@ def _load_documents(roots: tuple[Path, ...], ignore_patterns: tuple[str, ...]) -
     skipped_paths: list[SkippedPath] = []
     for configured_root in roots:
         root = configured_root.resolve()
-        files, ignored = _iter_files(root, ignore_patterns)
+        files, ignored, traversal_skips = _iter_files(root, ignore_patterns)
         ignored_paths.extend(ignored)
+        skipped_paths.extend(traversal_skips)
         for path in files:
             if path.suffix.lower() not in SUPPORTED_SUFFIXES:
                 continue
@@ -297,7 +290,9 @@ def _workspace_inventory(config: ScannerConfig) -> _WorkspaceInventory:
     findings: list[AdvisoryFinding] = []
 
     if config.organization:
-        organization_repositories, finding = _enumerate_organization_repositories(config.organization, config.workspace_root)
+        organization_repositories, archived_repositories, finding = _enumerate_organization_repositories(
+            config.organization, config.workspace_root
+        )
         if finding is not None:
             return _WorkspaceInventory((), (finding,))
         active_repositories = organization_repositories
@@ -308,6 +303,7 @@ def _workspace_inventory(config: ScannerConfig) -> _WorkspaceInventory:
                     path=config.workspace_root,
                     reason="explicit repository inventory is not visible in organization enumeration",
                     direction="Reconcile the scoped repository list with visible GitHub organization inventory.",
+                    archived_repositories=archived_repositories,
                 )
             )
             active_repositories = _intersect_repositories(active_repositories, explicit_repositories)
@@ -318,6 +314,7 @@ def _workspace_inventory(config: ScannerConfig) -> _WorkspaceInventory:
                     path=config.workspace_manifest or config.workspace_root,
                     reason="caller-owned manifest repository is not visible in organization enumeration",
                     direction="Reconcile the caller-owned manifest with visible GitHub organization inventory.",
+                    archived_repositories=archived_repositories,
                 )
             )
             active_repositories = _intersect_repositories(active_repositories, manifest_repositories)
@@ -360,7 +357,7 @@ def _workspace_inventory(config: ScannerConfig) -> _WorkspaceInventory:
 def _enumerate_organization_repositories(
     organization: str,
     workspace_root: Path,
-) -> tuple[tuple[str, ...], AdvisoryFinding | None]:
+) -> tuple[tuple[str, ...], tuple[str, ...], AdvisoryFinding | None]:
     try:
         completed = subprocess.run(
             ("gh", "repo", "list", organization, "--json", "nameWithOwner,isArchived", "--limit", "1000"),
@@ -369,25 +366,30 @@ def _enumerate_organization_repositories(
             text=True,
         )
     except OSError as exc:
-        return (), _inventory_unavailable_finding(organization, workspace_root, str(exc))
+        return (), (), _inventory_unavailable_finding(organization, workspace_root, str(exc))
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or f"gh exited {completed.returncode}"
-        return (), _inventory_unavailable_finding(organization, workspace_root, detail)
+        return (), (), _inventory_unavailable_finding(organization, workspace_root, detail)
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
-        return (), _inventory_unavailable_finding(organization, workspace_root, f"invalid gh JSON: {exc}")
+        return (), (), _inventory_unavailable_finding(organization, workspace_root, f"invalid gh JSON: {exc}")
     if not isinstance(payload, list):
-        return (), _inventory_unavailable_finding(organization, workspace_root, "gh JSON was not a repository list")
+        return (), (), _inventory_unavailable_finding(organization, workspace_root, "gh JSON was not a repository list")
 
     repositories: list[str] = []
+    archived_repositories: list[str] = []
     for item in payload:
         if not isinstance(item, dict):
             continue
         name = item.get("nameWithOwner")
-        if isinstance(name, str) and name.strip() and item.get("isArchived") is not True:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if item.get("isArchived") is True:
+            archived_repositories.append(name.strip())
+        else:
             repositories.append(name.strip())
-    return tuple(repositories), None
+    return tuple(repositories), tuple(archived_repositories), None
 
 
 def _inventory_unavailable_finding(organization: str, workspace_root: Path, detail: str) -> AdvisoryFinding:
@@ -410,18 +412,34 @@ def _inventory_mismatch_findings(
     path: Path,
     reason: str,
     direction: str,
+    archived_repositories: tuple[str, ...] = (),
 ) -> tuple[AdvisoryFinding, ...]:
-    return tuple(
-        AdvisoryFinding(
-            kind="workspace_scope_inventory_mismatch",
-            path=path,
-            line=1,
-            snippet=repo,
-            reasons=(reason,),
-            suggested_direction=direction,
+    archived_names = _normalized_repository_names(archived_repositories)
+    findings: list[AdvisoryFinding] = []
+    for repo in missing:
+        if _repo_name(repo) in archived_names:
+            findings.append(
+                AdvisoryFinding(
+                    kind="workspace_scope_archived_repository",
+                    path=path,
+                    line=1,
+                    snippet=repo,
+                    reasons=("repository is archived and outside active workspace scope",),
+                    suggested_direction="Remove it from active scope or keep it in a separately archived-record inventory.",
+                )
+            )
+            continue
+        findings.append(
+            AdvisoryFinding(
+                kind="workspace_scope_inventory_mismatch",
+                path=path,
+                line=1,
+                snippet=repo,
+                reasons=(reason,),
+                suggested_direction=direction,
+            )
         )
-        for repo in missing
-    )
+    return tuple(findings)
 
 
 def _repositories_not_in(repositories: tuple[str, ...], inventory: tuple[str, ...]) -> tuple[str, ...]:
@@ -452,15 +470,23 @@ def _repo_name(repository: str) -> str:
     return repository.rstrip("/").split("/")[-1]
 
 
-def _iter_files(root: Path, ignore_patterns: tuple[str, ...]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+def _iter_files(
+    root: Path, ignore_patterns: tuple[str, ...]
+) -> tuple[tuple[Path, ...], tuple[Path, ...], tuple[SkippedPath, ...]]:
     if root.is_file():
         resolved = root.resolve()
         if _is_ignored(resolved, resolved, ignore_patterns):
-            return (), (resolved,)
-        return (resolved,), ()
+            return (), (resolved,), ()
+        return (resolved,), (), ()
     files: list[Path] = []
     ignored_paths: list[Path] = []
-    for current, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
+    skipped_paths: list[SkippedPath] = []
+
+    def record_walk_error(error: OSError) -> None:
+        path = Path(error.filename) if error.filename else root
+        skipped_paths.append(SkippedPath(path, f"unreadable: {error.strerror or type(error).__name__}"))
+
+    for current, directory_names, file_names in os.walk(root, topdown=True, followlinks=False, onerror=record_walk_error):
         current_path = Path(current)
         retained_directories: list[str] = []
         for name in sorted(directory_names):
@@ -481,7 +507,7 @@ def _iter_files(root: Path, ignore_patterns: tuple[str, ...]) -> tuple[tuple[Pat
                 ignored_paths.append(path)
                 continue
             files.append(path)
-    return tuple(files), tuple(ignored_paths)
+    return tuple(files), tuple(ignored_paths), _unique_skips(tuple(skipped_paths))
 
 
 def _is_ignored_directory(path: Path, root: Path, ignore_patterns: tuple[str, ...]) -> bool:
@@ -502,7 +528,6 @@ def _candidate_reasons(
     repeated_phrases: tuple[str, ...],
     similarity: float,
     has_reference: bool,
-    is_frozen_history: bool,
     config: ScannerConfig,
 ) -> list[str]:
     reasons: list[str] = []
@@ -514,18 +539,7 @@ def _candidate_reasons(
         reasons.append("token similarity threshold")
     if reasons and not has_reference:
         reasons.append("missing canonical reference")
-    if reasons and is_frozen_history:
-        reasons.append("frozen historical evidence context")
     return reasons
-
-
-def _is_frozen_historical_evidence(text: str) -> bool:
-    normalized = normalize_text(text)
-    return (
-        "frozen" in normalized
-        and any(term in normalized for term in ("proposal", "review", "retrospective", "evidence", "artifact"))
-        and any(term in normalized for term in ("historical", "identity", "digest", "record", "boundary", "reviewed"))
-    )
 
 
 def _candidate_sort_key(candidate: OverlapCandidate) -> tuple[float, int, int, str]:
@@ -615,9 +629,6 @@ def _playbook_phrase_set(playbook: tuple[Document, ...]) -> set[str]:
 
 
 def _scan_authority_language(document: Document) -> list[AdvisoryFinding]:
-    if _is_frozen_historical_evidence(document.text):
-        return []
-
     findings: list[AdvisoryFinding] = []
     for line_number, line in _iter_lines(document.text):
         normalized_line = normalize_text(line)
@@ -672,19 +683,12 @@ def _negates_authority_claim(normalized_segment: str) -> bool:
 
 def _scan_shell_wrapper_examples(document: Document) -> list[AdvisoryFinding]:
     findings: list[AdvisoryFinding] = []
-    lines = _iter_lines(document.text)
-    for index, (line_number, line) in enumerate(lines):
+    for line_number, line in _iter_lines(document.text):
         for match in WRAPPER_EXAMPLE_RE.finditer(line):
             command = match.group("command").strip()
             if not ORDINARY_REPO_COMMAND_RE.search(command):
                 continue
             if _requires_shell_syntax(command):
-                continue
-            context = _nearby_context(lines, index, radius=2)
-            previous_line = lines[index - 1][1] if index else ""
-            if _is_negative_shell_wrapper_example(f"{previous_line} {line}"):
-                continue
-            if _is_explanatory_shell_wrapper_discussion(document, context):
                 continue
             findings.append(
                 AdvisoryFinding(
@@ -724,90 +728,12 @@ def _scan_sandbox_writable_roots_claims(document: Document) -> list[AdvisoryFind
 
 
 def _has_writable_roots_exhaustive_exception(context: str) -> bool:
-    normalized = normalize_text(context)
-    if "imply writable roots is the exhaustive" in normalized:
-        return True
-    return bool(WRITABLE_ROOTS_CORRECTIVE_RE.search(normalized))
-
-
-def _is_negative_shell_wrapper_example(line: str) -> bool:
-    normalized = normalize_text(line)
-    if re.search(r"\bnot\s+`?(?:/(?:usr/)?bin/)?(?:(?:zsh|bash)\s+-lc|sh\s+-c)\b", line, re.IGNORECASE):
-        return True
-    negative_markers = (
-        "bad example",
-        "do not",
-        "don't",
-        "incorrect",
-        "must not",
-        "never",
-        "not normal",
-        "not recommended",
-        "rather than",
-        "should not",
-        "wrong",
-        "avoid",
-    )
-    return any(marker in normalized for marker in negative_markers)
+    return bool(WRITABLE_ROOTS_CORRECTIVE_RE.search(normalize_text(context)))
 
 
 def _requires_shell_syntax(command: str) -> bool:
     stripped = command.strip()
     return bool(ENV_ASSIGNMENT_RE.search(stripped) or SHELL_SYNTAX_RE.search(stripped))
-
-
-def _is_explanatory_shell_wrapper_discussion(document: Document, context: str) -> bool:
-    normalized = normalize_text(context)
-    explanatory_context_markers = (
-        "evidence",
-        "observed failure",
-        "observed failures",
-        "observed example",
-        "discussion",
-        "explanatory",
-        "descriptive",
-        "source material",
-        "not guidance",
-        "not policy",
-        "not an instruction",
-    )
-    if any(marker in normalized for marker in explanatory_context_markers):
-        return True
-    parts = {part.lower() for part in document.path.parts}
-    local_policy_context_markers = (
-        "no rule layer allow",
-        "static rule matching",
-        "hook allow intent",
-        "hook payload command",
-        "static policy",
-        "runtime behavior",
-        "fact status",
-    )
-    if (
-        {"runtime-artifacts", "codex-local-policy"} <= parts
-        and any(marker in normalized for marker in local_policy_context_markers)
-    ):
-        return True
-    if (
-        {"runtime-artifacts", "codex-local-policy"} <= parts
-        and (
-            "codex execpolicy check" in normalized
-            or "hook" in normalized
-            or "matrix" in normalized
-            or "payload" in normalized
-            or "runtime" in normalized
-            or (
-                "git worktree remove" in normalized
-                and ("zsh lc" in normalized or "bash lc" in normalized)
-            )
-        )
-    ):
-        return True
-    return bool(
-        {"operational-evidence", "workflow-patterns"} & parts
-        and "wrapper" in normalized
-        and ("drift" in normalized or "failure pattern" in normalized)
-    )
 
 
 def _is_noncanonical_surface(document: Document, config: ScannerConfig) -> bool:

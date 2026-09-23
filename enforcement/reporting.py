@@ -21,6 +21,12 @@ def render_report(result: ScanResult, *, base_dir: Path | None = None) -> str:
         "",
     ]
 
+    if result.skipped_paths:
+        lines.append("Skipped path details:")
+        for skipped in result.skipped_paths:
+            lines.append(f"- {_rel(skipped.path, base)}: {skipped.reason}")
+        lines.append("")
+
     if not result.candidates:
         lines.append("No overlap candidates found.")
     else:
