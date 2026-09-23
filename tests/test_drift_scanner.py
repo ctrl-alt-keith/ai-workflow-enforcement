@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from enforcement.config import ScannerConfig
 from enforcement.drift_scanner import scan
+from enforcement.heuristics import has_canonical_reference
 
 
 class DriftScannerTests(unittest.TestCase):
@@ -84,8 +85,11 @@ class DriftScannerTests(unittest.TestCase):
 
         candidates = {candidate.note_path.name: candidate for candidate in result.candidates}
         self.assertEqual({"active-guidance.md", "frozen-review.md"}, set(candidates))
-        self.assertNotIn("frozen historical evidence context", candidates["frozen-review.md"].reasons)
-        self.assertNotIn("frozen", candidates["frozen-review.md"].suggested_direction.lower())
+        self.assertEqual(("repeated normalized phrase",), candidates["frozen-review.md"].reasons)
+        self.assertEqual(
+            "Review staged note for stale duplicate wording; keep local evidence or context only.",
+            candidates["frozen-review.md"].suggested_direction,
+        )
 
     def test_ignore_patterns_skip_matching_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -393,6 +397,29 @@ class DriftScannerTests(unittest.TestCase):
         ]
         self.assertEqual(0, len(findings))
 
+    def test_sandbox_writable_roots_claim_is_not_suppressed_by_nearby_or_partial_negation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            notes = root / "notes"
+            playbook = root / "playbook"
+            notes.mkdir()
+            playbook.mkdir()
+            (notes / "codex.md").write_text(
+                "Do not assume `writable_roots` is exhaustive.\n"
+                "The `writable_roots` list is the only writable root set.\n"
+                "`writable_roots` is the only root, not just a hint.\n",
+                encoding="utf-8",
+            )
+            (playbook / "baseline.md").write_text("Reusable workflow guidance lives here.\n", encoding="utf-8")
+
+            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
+
+        findings = [
+            finding for finding in result.advisory_findings
+            if finding.kind == "sandbox_writable_roots_exhaustive_claim"
+        ]
+        self.assertEqual([2, 3], [finding.line for finding in findings])
+
     def test_authority_language_skips_noncanonical_disclaimers_and_external_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -432,6 +459,8 @@ class DriftScannerTests(unittest.TestCase):
                 "The runtime document serves as the definitive workflow reference.",
                 "Treat this artifact as the source of truth.",
                 "Retain this note as canonical guidance.",
+                "# This document is the source of truth",
+                "Is this canonical? This document is the canonical reference.",
             )
             (notes / "active-note.md").write_text(
                 "\n".join(claims) + "\n",
@@ -543,34 +572,19 @@ class DriftScannerTests(unittest.TestCase):
 
             result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
 
-        self.assertGreaterEqual(
-            sum(
-                finding.kind == "ordinary_repo_command_shell_wrapper_example"
-                for finding in result.advisory_findings
-            ),
-            1,
-        )
-
-    def test_shell_wrapper_runtime_behavior_guidance_is_flagged_outside_policy_evidence(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            notes = root / "notes"
-            playbook = root / "playbook"
-            notes.mkdir()
-            playbook.mkdir()
-            (notes / "prompt.md").write_text(
-                "Runtime behavior: run `bash -lc 'make check'` before review.\n",
-                encoding="utf-8",
-            )
-            (playbook / "baseline.md").write_text("Use direct command form.\n", encoding="utf-8")
-
-            result = scan(ScannerConfig(notes_roots=(notes,), playbook_roots=(playbook,)))
-
         wrapper_findings = [
             finding for finding in result.advisory_findings
             if finding.kind == "ordinary_repo_command_shell_wrapper_example"
         ]
-        self.assertEqual(1, len(wrapper_findings))
+        self.assertEqual(
+            {("README.md", 3), ("README.md", 9), ("runtime-enforcement-matrix.md", 3)},
+            {(finding.path.name, finding.line) for finding in wrapper_findings},
+        )
+
+    def test_canonical_reference_requires_a_repository_or_document_identifier(self) -> None:
+        self.assertFalse(has_canonical_reference("Follow the workflow playbook guidance."))
+        self.assertTrue(has_canonical_reference("Use ai-workflow-playbook/docs/start-here.md."))
+        self.assertTrue(has_canonical_reference("See [the guide](https://github.com/ctrl-alt-keith/ai-workflow-playbook)."))
 
     def test_workspace_scope_uses_optional_manifest_and_organization_intersection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

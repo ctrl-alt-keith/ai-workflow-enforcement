@@ -88,15 +88,15 @@ def token_similarity(left: str, right: str) -> float:
 
 
 def has_canonical_reference(text: str) -> bool:
-    normalized = normalize_text(text)
-    reference_terms = (
-        "ai workflow playbook",
-        "workflow playbook",
-        "canonical playbook",
-        "playbook guidance",
-        "docs start here",
+    return bool(
+        re.search(
+            r"\b(?:ctrl-alt-keith/)?ai-workflow-playbook\b|"
+            r"\bdocs/start-here\.md\b|"
+            r"https://github\.com/ctrl-alt-keith/ai-workflow-playbook\b",
+            text,
+            re.IGNORECASE,
+        )
     )
-    return any(term in normalized for term in reference_terms)
 
 
 def _strip_markdown_syntax(text: str) -> str:
@@ -112,4 +112,3 @@ def _is_low_signal_phrase(tokens: list[str]) -> bool:
         return True
     content_tokens = unique_tokens - GENERIC_PHRASE_TOKENS
     return len(content_tokens) < 4
-

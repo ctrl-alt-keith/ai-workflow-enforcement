@@ -49,20 +49,11 @@ SHELL_SYNTAX_RE = re.compile(
     re.IGNORECASE,
 )
 ENV_ASSIGNMENT_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+(?:\s+|$))+")
-WRITABLE_ROOTS_EXHAUSTIVE_RE = re.compile(
-    r"\bwritable_roots\b[^.\n]{0,120}\b(?:all|complete|exhaustive|only|sole|solely|entire)\b"
-    r"|"
-    r"\b(?:all|complete|exhaustive|only|sole|solely|entire)\b[^.\n]{0,120}\bwritable_roots\b",
-    re.IGNORECASE,
-)
-WRITABLE_ROOTS_CORRECTIVE_RE = re.compile(
-    r"\bwritable\s+roots\b.{0,100}\b(?:not\s+exhaustive|not\s+solely|not\s+just|not\s+the\s+complete|not\s+the\s+full)\b"
-    r"|"
-    r"\bdo\s+not\s+assume\b.{0,80}\bwritable\s+roots\b"
-    r"|"
-    r"\bwritable\s+roots\b.{0,100}\b(?:may|can)\s+also\s+include\b"
-    r"|"
-    r"\beffective\s+writable\s+roots?\b.{0,80}\b(?:may|can)\s+also\s+include\b",
+WRITABLE_ROOTS_RE = re.compile(r"\bwritable(?:_|\s+)roots\b", re.IGNORECASE)
+EXHAUSTIVE_SCOPE_RE = re.compile(r"\b(?:all|complete|exhaustive|only|sole|solely|entire)\b", re.IGNORECASE)
+NEGATED_EXHAUSTIVE_SCOPE_RE = re.compile(
+    r"\b(?:not|never|do\s+not|does\s+not|must\s+not|should\s+not)\b"
+    r".{0,120}\b(?:all|complete|exhaustive|only|sole|solely|entire)\b",
     re.IGNORECASE,
 )
 
@@ -632,7 +623,7 @@ def _scan_authority_language(document: Document) -> list[AdvisoryFinding]:
     findings: list[AdvisoryFinding] = []
     for line_number, line in _iter_lines(document.text):
         normalized_line = normalize_text(line)
-        if not _is_direct_authority_claim(line, normalized_line, is_heading=line.lstrip().startswith("#")):
+        if not _is_direct_authority_claim(line, normalized_line):
             continue
         findings.append(
             AdvisoryFinding(
@@ -647,11 +638,7 @@ def _scan_authority_language(document: Document) -> list[AdvisoryFinding]:
     return findings
 
 
-def _is_direct_authority_claim(line: str, normalized_line: str, *, is_heading: bool) -> bool:
-    if "?" in line:
-        return False
-    if is_heading and "source of truth" in normalized_line:
-        return False
+def _is_direct_authority_claim(line: str, normalized_line: str) -> bool:
     segments = _authority_segments(line)
     return any(_segment_has_authority_claim(segment) for segment in segments)
 
@@ -705,12 +692,8 @@ def _scan_shell_wrapper_examples(document: Document) -> list[AdvisoryFinding]:
 
 def _scan_sandbox_writable_roots_claims(document: Document) -> list[AdvisoryFinding]:
     findings: list[AdvisoryFinding] = []
-    lines = _iter_lines(document.text)
-    for index, (line_number, line) in enumerate(lines):
-        if not WRITABLE_ROOTS_EXHAUSTIVE_RE.search(line):
-            continue
-        context = _nearby_context(lines, index, radius=2)
-        if _has_writable_roots_exhaustive_exception(context):
+    for line_number, line in _iter_lines(document.text):
+        if not _is_writable_roots_exhaustive_claim(line):
             continue
         findings.append(
             AdvisoryFinding(
@@ -727,8 +710,13 @@ def _scan_sandbox_writable_roots_claims(document: Document) -> list[AdvisoryFind
     return findings
 
 
-def _has_writable_roots_exhaustive_exception(context: str) -> bool:
-    return bool(WRITABLE_ROOTS_CORRECTIVE_RE.search(normalize_text(context)))
+def _is_writable_roots_exhaustive_claim(line: str) -> bool:
+    for segment in _authority_segments(line):
+        if not WRITABLE_ROOTS_RE.search(segment) or not EXHAUSTIVE_SCOPE_RE.search(segment):
+            continue
+        if not NEGATED_EXHAUSTIVE_SCOPE_RE.search(segment):
+            return True
+    return False
 
 
 def _requires_shell_syntax(command: str) -> bool:
@@ -762,12 +750,6 @@ def _finding(
 
 def _iter_lines(text: str) -> tuple[tuple[int, str], ...]:
     return tuple(enumerate(text.splitlines(), start=1))
-
-
-def _nearby_context(lines: tuple[tuple[int, str], ...], index: int, *, radius: int) -> str:
-    start = max(0, index - radius)
-    end = min(len(lines), index + radius + 1)
-    return "\n".join(line for _, line in lines[start:end])
 
 
 def _validate_config(config: ScannerConfig) -> None:
