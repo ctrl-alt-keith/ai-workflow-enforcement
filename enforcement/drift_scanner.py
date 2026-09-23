@@ -109,6 +109,9 @@ AUTHORITY_DISCUSSION_PHRASES = (
     "source of truth language",
     "source of truth wording",
     "treating ai workflow incubator as canonical",
+    "routes claude code sessions to the canonical instruction sources",
+    "those authoritative sources",
+    "requires an identifiable authoritative source",
     "sufficiently authoritative",
     "using canonical or source of truth language",
     "what would become canonical if promoted",
@@ -354,6 +357,13 @@ class ScanResult:
     playbook_files_scanned: int
     ignored_paths: tuple[Path, ...]
     advisory_findings: tuple[AdvisoryFinding, ...] = ()
+    skipped_paths: tuple["SkippedPath", ...] = ()
+
+
+@dataclass(frozen=True)
+class SkippedPath:
+    path: Path
+    reason: str
 
 
 def scan(config: ScannerConfig) -> ScanResult:
@@ -407,6 +417,7 @@ def scan(config: ScannerConfig) -> ScanResult:
         playbook_files_scanned=len(playbook.documents),
         ignored_paths=_unique_paths(notes.ignored_paths + playbook.ignored_paths + workspace.ignored_paths),
         advisory_findings=tuple(advisory_findings[: config.max_candidates]),
+        skipped_paths=_unique_skips(notes.skipped_paths + playbook.skipped_paths + workspace.skipped_paths),
     )
 
 
@@ -414,6 +425,7 @@ def scan(config: ScannerConfig) -> ScanResult:
 class _DocumentLoad:
     documents: tuple[Document, ...]
     ignored_paths: tuple[Path, ...]
+    skipped_paths: tuple[SkippedPath, ...]
 
 
 @dataclass(frozen=True)
@@ -422,11 +434,13 @@ class _WorkspaceLoad:
     agents_documents: tuple[Document, ...]
     ignored_paths: tuple[Path, ...]
     findings: tuple[AdvisoryFinding, ...]
+    skipped_paths: tuple[SkippedPath, ...]
 
 
 def _load_documents(roots: tuple[Path, ...], ignore_patterns: tuple[str, ...]) -> _DocumentLoad:
     documents: list[Document] = []
     ignored_paths: list[Path] = []
+    skipped_paths: list[SkippedPath] = []
     for configured_root in roots:
         root = configured_root.resolve()
         files, ignored = _iter_files(root, ignore_patterns)
@@ -434,20 +448,38 @@ def _load_documents(roots: tuple[Path, ...], ignore_patterns: tuple[str, ...]) -
         for path in files:
             if path.suffix.lower() not in SUPPORTED_SUFFIXES:
                 continue
-            documents.append(Document(root=root, path=path, text=path.read_text(encoding="utf-8")))
-    return _DocumentLoad(tuple(documents), _unique_paths(tuple(ignored_paths)))
+            document, skipped = _read_document(root, path)
+            if document is not None:
+                documents.append(document)
+            if skipped is not None:
+                skipped_paths.append(skipped)
+    return _DocumentLoad(
+        tuple(documents),
+        _unique_paths(tuple(ignored_paths)),
+        _unique_skips(tuple(skipped_paths)),
+    )
+
+
+def _read_document(root: Path, path: Path) -> tuple[Document | None, SkippedPath | None]:
+    try:
+        return Document(root=root, path=path, text=path.read_text(encoding="utf-8")), None
+    except UnicodeDecodeError:
+        return None, SkippedPath(path, "not valid UTF-8")
+    except OSError as exc:
+        return None, SkippedPath(path, f"unreadable: {exc.strerror or type(exc).__name__}")
 
 
 def _load_workspace_documents(config: ScannerConfig) -> _WorkspaceLoad:
     if config.workspace_root is None:
-        return _WorkspaceLoad((), (), (), ())
+        return _WorkspaceLoad((), (), (), (), ())
     inventory = _workspace_inventory(config)
     if inventory.findings and not inventory.repositories:
-        return _WorkspaceLoad((), (), (), inventory.findings)
+        return _WorkspaceLoad((), (), (), inventory.findings, ())
 
     documents: list[Document] = []
     agents_documents: list[Document] = []
     ignored_paths: list[Path] = []
+    skipped_paths: list[SkippedPath] = []
     findings: list[AdvisoryFinding] = list(inventory.findings)
 
     for repo in inventory.repositories:
@@ -467,11 +499,16 @@ def _load_workspace_documents(config: ScannerConfig) -> _WorkspaceLoad:
         loaded = _load_documents((repo_root,), config.ignore_patterns)
         documents.extend(loaded.documents)
         ignored_paths.extend(loaded.ignored_paths)
-        agents_path = repo_root / "AGENTS.md"
-        if agents_path.exists():
-            agents_documents.append(Document(root=repo_root, path=agents_path, text=agents_path.read_text(encoding="utf-8")))
+        skipped_paths.extend(loaded.skipped_paths)
+        agents_documents.extend(document for document in loaded.documents if document.path.name == "AGENTS.md")
 
-    return _WorkspaceLoad(tuple(documents), tuple(agents_documents), tuple(ignored_paths), tuple(findings))
+    return _WorkspaceLoad(
+        tuple(documents),
+        tuple(agents_documents),
+        tuple(ignored_paths),
+        tuple(findings),
+        _unique_skips(tuple(skipped_paths)),
+    )
 
 
 @dataclass(frozen=True)
@@ -552,7 +589,7 @@ def _enumerate_organization_repositories(
 ) -> tuple[tuple[str, ...], AdvisoryFinding | None]:
     try:
         completed = subprocess.run(
-            ("gh", "repo", "list", organization, "--json", "nameWithOwner", "--limit", "1000"),
+            ("gh", "repo", "list", organization, "--json", "nameWithOwner,isArchived", "--limit", "1000"),
             check=False,
             capture_output=True,
             text=True,
@@ -574,7 +611,7 @@ def _enumerate_organization_repositories(
         if not isinstance(item, dict):
             continue
         name = item.get("nameWithOwner")
-        if isinstance(name, str) and name.strip():
+        if isinstance(name, str) and name.strip() and item.get("isArchived") is not True:
             repositories.append(name.strip())
     return tuple(repositories), None
 
@@ -765,6 +802,10 @@ def _unique_documents(documents: tuple[Document, ...]) -> tuple[Document, ...]:
 
 def _unique_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(paths))
+
+
+def _unique_skips(skips: tuple[SkippedPath, ...]) -> tuple[SkippedPath, ...]:
+    return tuple(dict.fromkeys(skips))
 
 
 def _scan_agents_alignment(document: Document, playbook: tuple[Document, ...]) -> list[AdvisoryFinding]:
@@ -1113,6 +1154,8 @@ def _scan_worktree_creation_guidance(document: Document) -> list[AdvisoryFinding
     lines = _iter_lines(document.text)
     for index, (line_number, line) in enumerate(lines):
         context = _nearby_context(lines, index, radius=5)
+        if _is_conditional_worktree_recovery(context):
+            continue
         if BRANCH_ONLY_IMPLEMENTATION_RE.search(line) and not WORKTREE_SELECTION_SIGNAL_RE.search(context):
             findings.append(
                 AdvisoryFinding(
@@ -1147,6 +1190,15 @@ def _scan_worktree_creation_guidance(document: Document) -> list[AdvisoryFinding
             )
         )
     return findings
+
+
+def _is_conditional_worktree_recovery(context: str) -> bool:
+    normalized = normalize_text(context)
+    return (
+        "branch deletion" in normalized
+        and "after removing" in normalized
+        and "recreates that worktree" in normalized
+    )
 
 
 def _scan_sandbox_writable_roots_claims(document: Document) -> list[AdvisoryFinding]:

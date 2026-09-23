@@ -53,9 +53,11 @@ class ReportingTests(unittest.TestCase):
                 "ignored_path_count": 1,
                 "notes_files_scanned": 1,
                 "playbook_files_scanned": 2,
+                "skipped_path_count": 0,
             },
             data["summary"],
         )
+        self.assertEqual([], data["skipped_paths"])
         self.assertEqual(
             {
                 "canonical_reference_present": True,
