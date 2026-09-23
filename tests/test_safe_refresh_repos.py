@@ -78,6 +78,23 @@ class SafeRefreshReposTests(unittest.TestCase):
         self.assertEqual("blocked", result.status)
         self.assertTrue(result.details)
 
+    def test_nested_checkout_path_blocks_before_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            nested = repo / "nested"
+            nested.mkdir()
+            with mock.patch.object(
+                safe_refresh_module,
+                "_git",
+                wraps=safe_refresh_module._git,
+            ) as git:
+                report = safe_refresh_repos(SafeRefreshConfig((RepoTarget("sample", nested),)))
+
+        result = report.repositories[0]
+        self.assertEqual("blocked", result.status)
+        self.assertIn("not the Git worktree top level", result.details[0])
+        self.assertFalse(any(call.args[1][0] == "fetch" for call in git.call_args_list))
+
     def test_provider_identity_mismatch_blocks_before_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))

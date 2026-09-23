@@ -2,8 +2,9 @@
 
 `enforcement.safe_refresh_repos` safely refreshes resolved local Git checkouts
 before another deterministic tool depends on local repository state.
-It is intentionally narrow: it verifies that each checkout is clean, on the
-expected branch, tracking the expected upstream, then runs `git fetch` and
+It is intentionally narrow: it verifies that each configured path is the Git
+worktree top level and that the checkout is clean, on the expected branch,
+tracking the expected upstream, then runs `git fetch` and
 `git pull --ff-only`.
 
 Use an existing branch-cleanup JSON config as the scope contract:

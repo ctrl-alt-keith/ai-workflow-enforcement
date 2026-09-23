@@ -160,6 +160,13 @@ def safe_refresh_repo(target: RepoTarget) -> RepoRefreshResult:
     if git_dir.returncode != 0:
         result.details.append(f"path is not a Git repository: {_command_failure_detail(git_dir)}")
         return result
+    top_level = _git(target.path, "rev-parse", "--show-toplevel")
+    if top_level.returncode != 0:
+        result.details.append(f"cannot determine checkout top level: {_command_failure_detail(top_level)}")
+        return result
+    if Path(top_level.stdout.strip()).resolve() != target.path.resolve():
+        result.details.append("configured checkout path is not the Git worktree top level")
+        return result
     if target.expected_repository and target.expected_repository_id is not None:
         identity = verify_local_repository_identity(
             target.path,
