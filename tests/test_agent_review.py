@@ -61,7 +61,7 @@ class AgentReviewTests(unittest.TestCase):
         instruction.write_text("# Guide\nDo the good thing.\n", encoding="utf-8")
         enrollment = {"agents": [{"id": "other", "kind": "file-backed", "version": "fixture-1",
                                   "support": "unverified", "launch_context": "fixture", "root": str(self.root),
-                                  "files": [{"path": str(instruction), "surface": "instruction"}]}]}
+                                  "files": [{"path": str(instruction), "surface": "instruction", "ownership": "user"}]}]}
         first = review(enrollment)
         self.assertTrue(all(u["loading"] == "UNKNOWN" for u in first["units"]))
         self.assertEqual(first["previous"]["status"], "unavailable")
@@ -73,7 +73,8 @@ class AgentReviewTests(unittest.TestCase):
         shifted = dict(enrollment)
         shifted["agents"] = [dict(enrollment["agents"][0],
                                   files=[*enrollment["agents"][0]["files"],
-                                         {"path": str(self.root / "other.md"), "surface": "instruction"}])]
+                                         {"path": str(self.root / "other.md"), "surface": "instruction",
+                                          "ownership": "user"}])]
         self.assertEqual(review(shifted, first)["previous"]["status"], "scope_changed")
 
     def test_parse_failure_is_partial_and_record_is_exclusive(self):
@@ -269,7 +270,7 @@ class AgentReviewTests(unittest.TestCase):
     def test_explicit_managed_context_is_inspected_as_context_only(self):
         managed = self.root / "managed-settings.json"
         managed.write_text('{"permissions":{"deny":["Bash(rm:*)"]}}', encoding="utf-8")
-        self.enrollment["agents"][1]["context_files"] = [{"path": str(managed),
+        self.enrollment["agents"][1]["context_files"] = [{"path": str(managed.resolve()),
                                                               "surface": "config", "ownership": "managed"}]
         report = review(self.enrollment)
         managed_units = [u for u in report["units"] if u["source"] == "context-file-0"]
@@ -282,7 +283,7 @@ class AgentReviewTests(unittest.TestCase):
         shared.write_text("# Shared\nfixture guidance\n", encoding="utf-8")
         generic = {"id": "other", "kind": "file-backed", "version": "fixture-1",
                    "support": "unverified", "launch_context": "generic", "root": str(self.project),
-                   "files": [{"path": str(shared), "surface": "instruction"}]}
+                   "files": [{"path": str(shared), "surface": "instruction", "ownership": "shared"}]}
         self.enrollment["agents"].append(generic)
         report = review(self.enrollment)
         sharing = [u for u in report["units"] if u["content_sha256"] ==
@@ -293,20 +294,20 @@ class AgentReviewTests(unittest.TestCase):
                          {"ancestor instruction layer; conflicts need judgment", "UNKNOWN"})
 
     def test_missing_enrolled_files_and_empty_provider_roots_are_partial(self):
-        self.enrollment["agents"][0]["context_files"] = [{"path": str(self.root / "missing.md"),
+        self.enrollment["agents"][0]["context_files"] = [{"path": str(self.root.resolve() / "missing.md"),
                                                               "surface": "instruction", "ownership": "user"}]
         self.enrollment["agents"].append({"id": "other", "kind": "file-backed", "version": "fixture-1",
                                            "support": "unverified", "launch_context": "fixture",
                                            "root": str(self.root),
                                            "files": [{"path": str(self.root / "missing-file.md"),
-                                                      "surface": "instruction"}]})
+                                                      "surface": "instruction", "ownership": "user"}]})
         report = review(self.enrollment)
         self.assertEqual(report["result"], "PARTIAL")
         self.assertEqual(sum(c["status"] == "missing enrolled file" for c in report["coverage"]), 2)
         (self.codex / "config.toml").unlink()
         (self.claude / "settings.json").unlink()
         report = review(self.enrollment)
-        self.assertEqual(sum(c["status"] == "no standard source inspected" for c in report["coverage"]), 2)
+        self.assertEqual(sum(c["status"] == "no user source inspected" for c in report["coverage"]), 2)
 
     def test_invariant_rejects_moved_or_shadowed_unit(self):
         settings = self.claude / "settings.json"
@@ -352,6 +353,57 @@ class AgentReviewTests(unittest.TestCase):
         report = review(self.enrollment)
         self.assertEqual(report["result"], "PARTIAL")
         self.assertTrue(any(c["source"] == "context/managed_and_system" and c["status"] == "unverified_context"
+                            for c in report["coverage"]))
+
+    def test_empty_user_root_is_partial_even_with_project_file(self):
+        (self.project / "CLAUDE.md").write_text("# Project fixture\n", encoding="utf-8")
+        (self.codex / "config.toml").unlink()
+        (self.claude / "settings.json").unlink()
+        report = review(self.enrollment)
+        self.assertEqual(report["result"], "PARTIAL")
+        self.assertTrue(any(c["agent"] == "claude" and c["source"] == "project-0/CLAUDE.md"
+                            and c["status"] == "inspected" for c in report["coverage"]))
+        self.assertEqual({c["agent"] for c in report["coverage"] if c["status"] == "no user source inspected"},
+                         {"codex", "claude"})
+
+    def test_context_identity_changes_comparison_scope(self):
+        first = review(self.enrollment)
+        self.enrollment["agents"][0]["context_evidence"]["managed_and_system"] = "verified:other-evidence"
+        self.assertEqual(review(self.enrollment, first)["previous"]["status"], "scope_changed")
+        self.enrollment["agents"][0]["launch_context"] = "another-fixture"
+        self.assertEqual(review(self.enrollment, first)["previous"]["status"], "scope_changed")
+
+    def test_file_backed_ownership_is_explicit(self):
+        instruction = self.root / "generic.md"
+        instruction.write_text("# Fixture\n", encoding="utf-8")
+        generic = {"agents": [{"id": "other", "kind": "file-backed", "version": "fixture-1",
+                               "support": "unverified", "launch_context": "fixture", "root": str(self.root),
+                               "files": [{"path": str(instruction), "surface": "instruction"}]}]}
+        with self.assertRaises(ValueError):
+            review(generic)
+        generic["agents"][0]["files"][0]["ownership"] = "shared"
+        report = review(generic)
+        self.assertEqual({u["ownership"] for u in report["units"]}, {"shared"})
+
+    def test_nested_hyphenated_secret_fields_are_excluded(self):
+        (self.claude / "settings.json").write_text(
+            '{"hooks":[{"X-Api-Key":"synthetic-secret"}]}', encoding="utf-8")
+        report = review(self.enrollment)
+        self.assertNotIn("synthetic-secret", json.dumps(report))
+        self.assertTrue(any(u["reason"] == "sensitive field excluded from inspection"
+                            for u in report["units"]))
+
+    def test_context_file_intermediate_symlink_is_not_followed(self):
+        external = self.root.resolve() / "external-context"
+        external.mkdir()
+        (external / "settings.json").write_text('{"token":"synthetic-secret"}', encoding="utf-8")
+        link = self.root.resolve() / "linked-context"
+        link.symlink_to(external, target_is_directory=True)
+        self.enrollment["agents"][0]["context_files"] = [{"path": str(link / "settings.json"),
+                                                              "surface": "config", "ownership": "user"}]
+        report = review(self.enrollment)
+        self.assertEqual(report["result"], "PARTIAL")
+        self.assertTrue(any(c["source"] == "context-file-0" and c["status"] == "symlink not followed"
                             for c in report["coverage"]))
 
 

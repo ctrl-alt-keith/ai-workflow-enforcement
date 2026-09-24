@@ -1,22 +1,19 @@
 # Local agent configuration review
 
-`python3 -m enforcement.agent_review_cli` is an inert, local, observe-and-report
-reviewer for explicitly enrolled Codex, Claude Code, and file-backed agents. It
-reads enrolled files and creates one new local JSON record. It never starts an
-agent, tests a permission by running a command, writes an inspected file,
-accepts a baseline, changes enrollment, or configures a scheduler. The operator
-owns cadence, the record location and retention, notification route, and human
-disposition. Do not run it on live agent homes before a separate qualification
-and baseline decision.
+`python3 -m enforcement.agent_review_cli` reviews explicitly enrolled Codex,
+Claude Code, and file-backed sources. It reads local files and creates one JSON
+record; it does not start an agent or change inspected state. The operator owns
+the review cadence, record location and retention, notification route, and
+finding disposition. Live agent homes require separate qualification and a
+human baseline decision before use.
 
 ## Local enrollment
 
-The operator stores enrollment outside the implementation repository and names
-an absolute record path in the predeclared local operational-record directory.
-The path must be unused; the writer uses exclusive creation. The operator
-declares a dated/versioned filename, record retention, and notification route
-in the local run contract before invoking the command. An unavailable directory
-or existing record blocks the run. No fallback destination is selected.
+Store enrollment outside this repository. Before a run, declare the local
+record directory, dated/versioned filename, retention, and notification route.
+Pass an unused absolute record path under that directory. The writer creates
+the record exclusively; an unavailable directory or existing file blocks the
+run.
 
 Synthetic example (the paths are fixtures, not an active workstation scope):
 
@@ -27,7 +24,7 @@ Synthetic example (the paths are fixtures, not an active workstation scope):
   "agents": [
     {"id": "codex", "kind": "codex", "version": "fixture-version", "support": "official-doc-review-id", "launch_context": "fixture-context", "config_root": "/tmp/fixture/codex", "projects": ["/tmp/fixture/project"], "context_evidence": {"managed_and_system": "verified:fixture-evidence", "profile_trust_and_invocation": "verified:fixture-evidence", "nested_and_fallback_instructions": "verified:fixture-evidence"}},
     {"id": "claude", "kind": "claude-code", "version": "fixture-version", "support": "official-doc-review-id", "launch_context": "fixture-context", "config_root": "/tmp/fixture/claude", "projects": ["/tmp/fixture/project"], "context_evidence": {"managed": "verified:fixture-evidence", "ancestor_and_nested_instructions": "verified:fixture-evidence", "environment_and_invocation": "verified:fixture-evidence"}},
-    {"id": "other", "kind": "file-backed", "version": "fixture-version", "support": "unverified", "launch_context": "fixture-context", "root": "/tmp/fixture/other", "files": [{"path": "/tmp/fixture/other/instructions.md", "surface": "instruction"}]}
+    {"id": "other", "kind": "file-backed", "version": "fixture-version", "support": "unverified", "launch_context": "fixture-context", "root": "/tmp/fixture/other", "files": [{"path": "/tmp/fixture/other/instructions.md", "surface": "instruction", "ownership": "user"}]}
   ]
 }
 ```
@@ -36,82 +33,85 @@ Synthetic example (the paths are fixtures, not an active workstation scope):
 python3 -m enforcement.agent_review_cli --enrollment /absolute/local/enrollment.json --record /absolute/local/records/20260924T120000Z-review.json --previous /absolute/local/records/previous.json --baseline /absolute/local/records/accepted.json
 ```
 
-`--previous` is a prior successful observation and `--baseline` is a separately
-human-accepted record. A `PARTIAL` record is rejected as either reference.
-Neither is changed. If omitted, comparison is
-`unavailable`; the first scan cannot be a clean comparison. A changed
-fingerprint never updates the accepted baseline. The command prints only a
-compact status and counts. The full record contains safe aliases, content
-hashes, unit dispositions, source coverage, and comparison identities. It
-does not contain raw config values, rule commands, instruction bodies, exact
-private paths, or raw launch context. The hashes are unsalted and can confirm
-guessed values, so keep operational records private and out of GitHub, Linear,
-telemetry, and external model requests. A `PARTIAL` run exits 1; setup or record
-failure exits 2. Accepted-baseline drift also exits 1. Preserve partial records for diagnosis and do not use them as
-the next successful observation.
+`--previous` names a prior `OBSERVED` record; `--baseline` names a separately
+human-accepted `OBSERVED` record. Both are read-only inputs. Without either,
+that comparison is `unavailable`. A changed fingerprint does not update the
+baseline. `PARTIAL` or accepted-baseline drift exits 1; setup or record failure
+exits 2. Keep partial records for diagnosis, but do not use them as comparison
+references.
 
-Before reading inspected files, the CLI fetches the applicable official Codex
-and Claude Code documentation and records their content hashes. It sends no
-local configuration or instructions in those requests. A failed documentation
-fetch blocks the run. A changed documentation identity appears in comparison;
-its semantic effect still requires human review.
+The command prints compact status and counts. The local record contains safe
+aliases, unsalted content hashes, unit dispositions, coverage, and comparison
+identities. It excludes raw values, commands, instruction bodies, private
+paths, and launch context. Unsalted hashes can confirm guessed values: keep
+records private and out of GitHub, Linear, telemetry, and external model
+requests.
+
+Before reading enrolled files, the CLI fetches applicable official provider
+documentation and records its content hashes. It sends no local content in
+those requests. Fetch failure blocks the run; a changed document hash enters
+the comparison and needs human interpretation. Against an accepted baseline,
+any document hash change reports drift and exits 1 until a human accepts a new
+baseline.
 
 ## Provider interpretation
 
-Codex and Claude Code have separate discovery and precedence contracts. This
-implementation inventories the explicitly enrolled user root and project roots;
-file presence alone never proves loading or effective behavior. Enrolled roots
-must exist and must not be symlinks. User-level
-Codex `config.toml`, `AGENTS.override.md`/`AGENTS.md`, and `.rules` files are
-covered. Project `.codex/config.toml`, project instructions, and project
-`.codex/rules` are covered as conditional context. Codex rule parsing is an
-inert literal `prefix_rule` subset; unsupported Starlark produces `UNKNOWN`.
-For Claude Code, user and project settings, `CLAUDE.md`, `CLAUDE.local.md`,
-project `.claude/CLAUDE.md`, and Markdown rules are covered. Setting keys and entries are separate units;
-restrictive permission entries are retained as guardrail candidates. Prose
-overlap receives human `REVIEW_RATIONALE`, never an automated deletion verdict.
-The existing instruction drift scanner supplies the AGENTS advisory checks;
-its output is kept advisory and does not establish runtime loading.
+Codex and Claude Code use separate discovery and precedence rules. The reviewer
+inventories enrolled user and project roots, which must exist and cannot be
+symlinks. File presence does not establish loading or effective behavior. If no
+user-root source can be inspected, coverage is `UNKNOWN` and the run is
+`PARTIAL`, even when a project source is present.
 
-The generic file-backed mode accepts only explicit files under its enrolled
-root. Its loading/effectiveness field stays `UNKNOWN` even when content can be
-inventoried. It needs no `rules` file or invented universal permission syntax.
+- Codex: user `config.toml`, `AGENTS.override.md`/`AGENTS.md`, and `.rules`;
+  project `.codex/config.toml`, instructions, and `.codex/rules` as conditional
+  context. The inert parser accepts a literal `prefix_rule` subset and marks
+  unsupported Starlark `UNKNOWN`.
+- Claude Code: user and project settings, `CLAUDE.md`, `CLAUDE.local.md`,
+  project `.claude/CLAUDE.md`, and Markdown rules. Settings entries are separate
+  units; restrictive permissions remain guardrails.
 
-Before a live agent is qualified, independently establish its exact installed
-product/version, effective root and overrides (`CODEX_HOME` or
-`CLAUDE_CONFIG_DIR` where applicable), working directory, trust and managed
-layers, invocation/environment settings, source loading, and current provider
-support. A `version` or `support` label in enrollment is an identity supplied
-by the operator, not proof of those facts. Unknown coverage, conditional
-imports, nested instructions, unsupported rule syntax, and managed settings
-must be recorded and resolved or accepted by the human at the per-agent
-baseline boundary. The fixture tests prove scanner mechanics only.
+Instruction overlap receives `REVIEW_RATIONALE` for human judgment. AGENTS
+advisories come from the existing instruction drift scanner and do not prove
+runtime loading.
 
-`context_evidence` names operator-held evidence for relevant layers that this
-bounded file scan cannot establish. Missing domains create explicit `UNKNOWN`
-units and a `PARTIAL` result. Labels alone are not a substitute for actual
-local verification: the record hashes each `verified:` evidence identity and calls it
-`operator_attested`. Codex uses `managed_and_system`,
+File-backed enrollment names explicit files and their ownership (`user`,
+`shared`, or `managed`) under one root. Loading and effectiveness stay
+`UNKNOWN`; no common rules format is assumed.
+
+Live qualification requires independent evidence of installed product/version,
+effective root and overrides (`CODEX_HOME` or `CLAUDE_CONFIG_DIR` where
+applicable), working directory, trust and managed layers, invocation and
+environment, source loading, and current provider support. Enrollment's
+`version` and `support` are operator labels, not that evidence. At the
+per-agent baseline decision, the human resolves or accepts unknown coverage,
+conditional imports, nested instructions, unsupported syntax, and managed
+settings. Fixture tests establish scanner behavior only.
+
+`context_evidence` holds identities for operator-verified layers beyond the
+file scan. A missing or invalid identity adds an `UNKNOWN` unit and yields
+`PARTIAL`; a `verified:` identity is hashed and recorded as
+`operator_attested`, which is a claim rather than proof of verification. Codex
+uses `managed_and_system`,
 `profile_trust_and_invocation`, and `nested_and_fallback_instructions`;
 Claude Code uses `managed`, `ancestor_and_nested_instructions`, and
 `environment_and_invocation`.
+Changes to launch context or context evidence change comparison scope.
 
-When a managed, system, ancestor, nested, or other needed source is actually
-present, enroll its exact path under that agent's optional `context_files` with
+Enroll any present managed, system, ancestor, nested, or other needed source
+under that agent's `context_files` with
 `surface` (`config`, `permission`, or `instruction`) and `ownership` (`user`,
 `shared`, or `managed`). Those files are inventoried as context. Their loading
-remains unverified until the local context evidence establishes it; shared and
-managed content is never a personal prune target.
+remains unverified until local evidence establishes it; shared and managed
+content is not a personal prune target.
 
-Once a human has accepted a per-agent baseline, the local enrollment can pin
-required behavior with `invariants` entries containing `agent`, `source`,
+After human baseline acceptance, local enrollment can pin required behavior
+with `invariants` entries containing `agent`, `source`,
 `locator`, `expected_content_sha256`, and a local `evidence` identity. Copy the
 `locator` and hash from the accepted unit in the local record. A missing expected
-unit produces invariant `drift` and a `PARTIAL` result. The evidence identity
-is hashed in the record. This is where the machine-specific CAK-169 Codex
-writable-root decision must be represented for the relevant Codex enrollment;
-the reviewer does not apply it to Claude or infer it from a historical issue.
-No invariant is created or accepted automatically.
+unit produces invariant `drift` and `PARTIAL`. The evidence identity is hashed
+in the record. A machine-specific CAK-169 Codex writable-root decision belongs
+in the relevant Codex enrollment; it is not inferred or applied to Claude.
+Invariants are neither created nor accepted automatically.
 
 Current provider references, checked 2026-09-24:
 

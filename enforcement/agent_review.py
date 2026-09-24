@@ -93,11 +93,12 @@ def _identity(value: Any) -> str:
 
 
 def _scope_identity(enrollment: dict[str, Any]) -> str:
-    """Only discovery inputs change scope; retention and invariants do not."""
+    """Discovery and execution context change scope; retention and invariants do not."""
     selected = []
     for agent in enrollment["agents"]:
         selected.append({key: agent.get(key) for key in
-                         ("id", "kind", "config_root", "root", "projects", "files", "context_files")})
+                         ("id", "kind", "config_root", "root", "projects", "files", "context_files",
+                          "launch_context", "context_evidence")})
     return _identity(selected)
 
 
@@ -135,6 +136,8 @@ def _source(agent: dict[str, Any], alias: str, path: Path, surface: str,
             if isinstance(candidate, str) and Path(candidate).is_absolute() and _inside(path, Path(candidate)):
                 boundary = Path(candidate)
                 break
+        if boundary is None:
+            boundary = Path(path.anchor)
     return Source(agent["id"], agent["kind"], agent["version"], alias, path,
                   surface, ownership, _digest(context.encode()), loading,
                   _digest(agent["support"].encode()), boundary)
@@ -236,7 +239,7 @@ def discover(enrollment: dict[str, Any]) -> list[Source]:
                 path = _path(item.get("path"), "file path")
                 if not _inside(path.resolve(), root.resolve()):
                     raise ValueError("file-backed path leaves enrolled root")
-                ownership = item.get("ownership", "user")
+                ownership = item.get("ownership")
                 if ownership not in {"user", "shared", "managed"}:
                     raise ValueError("file-backed ownership must be user, shared, or managed")
                 sources.append(_source(agent, f"file-{index}", path, item["surface"],
@@ -340,8 +343,7 @@ def _flatten(value: Any, prefix: str = "") -> list[tuple[str, Any]]:
         result = []
         for key, child in sorted(value.items()):
             # Do not inventory secret-bearing mixed-store fields or leak keys.
-            if key.lower() in _SENSITIVE_FIELDS or any(
-                    marker in key.lower() for marker in _SENSITIVE_MARKERS):
+            if _sensitive_key(key):
                 result.append((f"{prefix}.{key}" if prefix else key, None))
                 continue
             result.extend(_flatten(child, f"{prefix}.{key}" if prefix else key))
@@ -349,8 +351,15 @@ def _flatten(value: Any, prefix: str = "") -> list[tuple[str, Any]]:
     if isinstance(value, list):
         if not value:
             return [(prefix, value)]
-        return [(f"{prefix}[{i}]", child) for i, child in enumerate(value)]
+        return [entry for i, child in enumerate(value)
+                for entry in _flatten(child, f"{prefix}[{i}]")]
     return [(prefix, value)]
+
+
+def _sensitive_key(key: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", key.lower())
+    return normalized in {re.sub(r"[^a-z0-9]", "", field) for field in _SENSITIVE_FIELDS} or any(
+        re.sub(r"[^a-z0-9]", "", marker) in normalized for marker in _SENSITIVE_MARKERS)
 
 
 def _codex_rule_units(source: Source, text: str) -> list[dict[str, str]]:
@@ -462,8 +471,7 @@ def _parse(source: Source, raw: bytes) -> list[dict[str, str]]:
                              source.path, surface, source.ownership, source.context,
                              source.loading, source.support)
         leaf = locator.split(".")[-1].lower()
-        if item is None and (leaf in _SENSITIVE_FIELDS or any(
-                marker in leaf for marker in _SENSITIVE_MARKERS)):
+        if item is None and _sensitive_key(leaf):
             units.append(_unit(unit_source, safe_locator, "", "UNKNOWN",
                                "sensitive field excluded from inspection"))
             continue
@@ -532,7 +540,7 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
     sources = discover(enrollment)
     units: list[dict[str, str]] = []
     coverage: list[dict[str, str]] = []
-    physical: dict[Path, tuple[bytes | None, str | None]] = {}
+    physical: dict[tuple[Path, Path | None], tuple[bytes | None, str | None]] = {}
     for agent in enrollment["agents"]:
         if agent["kind"] not in _CONTEXT_DOMAINS:
             continue
@@ -555,14 +563,16 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
         active = source
         if source.product == "codex" and source.path.name == "AGENTS.md":
             override = source.path.with_name("AGENTS.override.md")
-            if override not in physical:
-                physical[override] = _safe_read(replace(source, path=override))
-            override_raw, override_failure = physical[override]
+            override_key = (override, source.boundary)
+            if override_key not in physical:
+                physical[override_key] = _safe_read(replace(source, path=override))
+            override_raw, override_failure = physical[override_key]
             if override_failure is None and override_raw is not None and override_raw.strip():
                 active = replace(source, loading="shadowed by nonempty override; not loaded")
-        if source.path not in physical:
-            physical[source.path] = _safe_read(active)
-        raw, failure = physical[source.path]
+        source_key = (source.path, source.boundary)
+        if source_key not in physical:
+            physical[source_key] = _safe_read(active)
+        raw, failure = physical[source_key]
         if failure:
             required = active.alias.startswith(("context-file-", "file-"))
             status = "missing enrolled file" if failure == "absent" and required else failure
@@ -583,15 +593,15 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
     for agent in enrollment["agents"]:
         if agent["kind"] == "file-backed":
             continue
-        standard = [item for item in coverage if item["agent"] == agent["id"]
-                    and (item["source"].startswith("user/") or item["source"].startswith("project-"))]
-        if standard and not any(item["status"] == "inspected" for item in standard):
-            coverage.append({"agent": agent["id"], "source": "standard-source-set",
-                             "status": "no standard source inspected"})
-            context_source = _source(agent, "standard-source-set", Path("/"), "config",
+        user_sources = [item for item in coverage if item["agent"] == agent["id"]
+                        and item["source"].startswith("user/")]
+        if user_sources and not any(item["status"] == "inspected" for item in user_sources):
+            coverage.append({"agent": agent["id"], "source": "user-source-set",
+                             "status": "no user source inspected"})
+            context_source = _source(agent, "user-source-set", Path("/"), "config",
                                      "context", agent["launch_context"], "UNKNOWN")
             units.append(_unit(context_source, "source-set", "", "UNKNOWN",
-                               "all standard sources absent or unavailable"))
+                               "all user sources absent or unavailable"))
     units.sort(key=lambda u: (u["agent"], u["source"], u["locator"], u["content_sha256"]))
     coverage.sort(key=lambda c: (c["agent"], c["source"]))
     invariant_results: list[dict[str, str]] = []
