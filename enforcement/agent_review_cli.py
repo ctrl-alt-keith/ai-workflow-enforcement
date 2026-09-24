@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import sys
 
-from .agent_review import review, write_record
+from .agent_review import refresh_provider_docs, review, write_record
 
 
 def _load(path: Path) -> dict:
@@ -48,16 +48,23 @@ def main(argv: list[str] | None = None) -> int:
                 inspected_root = Path(root).resolve()
                 if destination == inspected_root or inspected_root in destination.parents:
                     raise ValueError("operational records cannot be stored under an inspected agent root")
+            for project in agent.get("projects", []):
+                if isinstance(project, str) and Path(project).is_absolute():
+                    inspected_project = Path(project).resolve()
+                    if destination == inspected_project or inspected_project in destination.parents:
+                        raise ValueError("operational records cannot be stored under an enrolled project")
         previous = _load(args.previous) if args.previous else None
         baseline = _load(args.baseline) if args.baseline else None
-        report = review(enrollment, previous, baseline)
+        docs = refresh_provider_docs(enrollment)
+        report = review(enrollment, previous, baseline, docs)
         write_record(report, args.record)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError, RecursionError) as exc:
         print(f"agent review blocked: {type(exc).__name__}", file=sys.stderr)
         return 2
     changed = bool(report["previous"]["new"] or report["previous"]["resolved"]
                    or report["previous"]["status"] == "scope_changed"
-                   or report["accepted_baseline"]["status"] == "scope_changed")
+                   or report["accepted_baseline"]["status"] == "scope_changed"
+                   or report["accepted_baseline"]["new"] or report["accepted_baseline"]["resolved"])
     first_actionable = previous is None and any(
         unit["disposition"] in {"PRUNE_CANDIDATE_REDUNDANT", "PRUNE_CANDIDATE_STALE",
                                 "PRUNE_CANDIDATE_UNSUPPORTED", "REVIEW_NARROWING", "REVIEW_RATIONALE"}
@@ -65,7 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     if report["result"] != "OBSERVED" or changed or first_actionable:
         print(json.dumps({"result": report["result"], "record": "created",
                           "new_findings": len(report["previous"]["new"]),
-                          "resolved_findings": len(report["previous"]["resolved"])}, sort_keys=True))
+                          "resolved_findings": len(report["previous"]["resolved"]),
+                          "baseline_new": len(report["accepted_baseline"]["new"]),
+                          "baseline_resolved": len(report["accepted_baseline"]["resolved"])}, sort_keys=True))
     return 0 if report["result"] == "OBSERVED" else 1
 
 

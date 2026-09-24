@@ -6,7 +6,7 @@ module deliberately does not launch either agent to ask for its effective state.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import ast
 from hashlib import sha256
 import json
@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import tomllib
 from typing import Any
+from urllib.request import Request, urlopen
 
 from .drift_scanner import scan_enrolled_instruction
 
@@ -28,9 +29,10 @@ _ALLOWED_KINDS = frozenset({"codex", "claude-code", "file-backed"})
 _CLAUDE_SETTINGS = ("settings.json", "settings.local.json")
 _RULE_SUFFIXES = frozenset({".md", ".markdown"})
 _HEADING = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
-_CLAUDE_IMPORT = re.compile(r"(?<!\w)@([^\s`]+\.md)\b")
+_CLAUDE_IMPORT = re.compile(r"(?<!\w)@([A-Za-z0-9_./~-]+)")
 _SENSITIVE_FIELDS = frozenset({"token", "apikey", "api_key", "password", "secret",
-                                "oauth", "credentials", "env", "mcpservers"})
+                                "oauth", "credentials", "env", "mcpservers", "mcp_servers",
+                                "headers", "authorization"})
 _REFERENCES = {
     "codex": {"config": "https://learn.chatgpt.com/docs/config-file/config-reference",
               "permission": "https://learn.chatgpt.com/docs/agent-configuration/rules",
@@ -39,6 +41,29 @@ _REFERENCES = {
                     "permission": "https://code.claude.com/docs/en/permissions",
                     "instruction": "https://code.claude.com/docs/en/memory"},
 }
+_CONTEXT_DOMAINS = {
+    "codex": ("managed_and_system", "profile_trust_and_invocation", "nested_and_fallback_instructions"),
+    "claude-code": ("managed", "ancestor_and_nested_instructions", "environment_and_invocation"),
+}
+
+
+def refresh_provider_docs(enrollment: dict[str, Any]) -> dict[str, str]:
+    """Fetch only official public docs; send no inspected source data."""
+    kinds = {agent.get("kind") for agent in enrollment.get("agents", []) if isinstance(agent, dict)}
+    urls = sorted({url for kind in kinds for url in _REFERENCES.get(kind, {}).values()})
+    checked: dict[str, str] = {}
+    for url in urls:
+        request = Request(url, headers={"User-Agent": "local-agent-review/1"})
+        with urlopen(request, timeout=15) as response:
+            final_url = response.geturl()
+            if not (final_url.startswith("https://learn.chatgpt.com/") or
+                    final_url.startswith("https://code.claude.com/")):
+                raise ValueError("provider documentation redirected outside official host")
+            body = response.read(4_000_001)
+            if not body or len(body) > 4_000_000:
+                raise ValueError("provider documentation unavailable or over size bound")
+            checked[url] = _digest(body)
+    return checked
 
 
 @dataclass(frozen=True)
@@ -73,6 +98,13 @@ def _path(value: Any, label: str) -> Path:
     return Path(value)
 
 
+def _directory(value: Any, label: str) -> Path:
+    path = _path(value, label)
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError(f"{label} must be an existing nonsymlink directory")
+    return path
+
+
 def _source(agent: dict[str, Any], alias: str, path: Path, surface: str,
             ownership: str, context: str, loading: str) -> Source:
     return Source(agent["id"], agent["kind"], agent["version"], alias, path,
@@ -95,7 +127,13 @@ def _rules(agent: dict[str, Any], directory: Path, alias: str, ownership: str,
         return [_source(agent, f"{alias}/rules", directory, "instruction",
                         ownership, context, "UNKNOWN")]
     found = []
-    for base, dirs, files in os.walk(directory, followlinks=False):
+    walk_errors: list[OSError] = []
+    for base, dirs, files in os.walk(directory, followlinks=False, onerror=walk_errors.append):
+        for name in dirs:
+            if (Path(base) / name).is_symlink():
+                rel = (Path(base) / name).relative_to(directory).as_posix()
+                found.append(_source(agent, f"{alias}/rules/{_digest(rel.encode())[:12]}",
+                                     Path(base) / name, "instruction", ownership, context, "UNKNOWN"))
         dirs[:] = sorted(d for d in dirs if not (Path(base) / d).is_symlink())
         for name in sorted(files):
             path = Path(base) / name
@@ -103,6 +141,10 @@ def _rules(agent: dict[str, Any], directory: Path, alias: str, ownership: str,
                 rel = path.relative_to(directory).as_posix()
                 found.append(_source(agent, f"{alias}/rules/{_digest(rel.encode())[:12]}", path,
                                      "instruction", ownership, context, loading))
+    for index, error in enumerate(walk_errors):
+        path = Path(error.filename) if error.filename else directory
+        found.append(_source(agent, f"{alias}/rules/unreadable-{index}", path,
+                             "instruction", ownership, context, "UNKNOWN"))
     return found
 
 
@@ -113,9 +155,13 @@ def _codex_rules(agent: dict[str, Any], directory: Path, alias: str,
     if directory.is_symlink() or not directory.is_dir():
         return [_source(agent, f"{alias}/rules", directory, "permission", ownership,
                         context, "UNKNOWN")]
-    return [_source(agent, f"{alias}/rules/{_digest(path.name.encode())[:12]}", path,
-                    "permission", ownership, context, loading)
-            for path in sorted(directory.iterdir()) if path.suffix == ".rules"]
+    found = []
+    for path in sorted(directory.iterdir()):
+        if path.suffix == ".rules" or path.is_dir():
+            found.append(_source(agent, f"{alias}/rules/{_digest(path.name.encode())[:12]}", path,
+                                 "permission", ownership, context,
+                                 loading if path.suffix == ".rules" else "UNKNOWN"))
+    return found
 
 
 def discover(enrollment: dict[str, Any]) -> list[Source]:
@@ -139,8 +185,20 @@ def discover(enrollment: dict[str, Any]) -> list[Source]:
         if not re.fullmatch(r"[A-Za-z0-9._+-]{1,80}", agent["version"]):
             raise ValueError("version must be a bounded identifier")
         kind = agent["kind"]
+        extra = agent.get("context_files", [])
+        if not isinstance(extra, list):
+            raise ValueError("context_files must be a list")
+        for index, item in enumerate(extra):
+            if (not isinstance(item, dict) or item.get("surface") not in
+                    {"config", "permission", "instruction"} or item.get("ownership") not in
+                    {"user", "shared", "managed"}):
+                raise ValueError("context file requires surface and ownership")
+            path = _path(item.get("path"), "context file path")
+            sources.append(_source(agent, f"context-file-{index}", path, item["surface"],
+                                   item["ownership"], agent["launch_context"],
+                                   "operator-enrolled context; effectiveness unverified"))
         if kind == "file-backed":
-            root = _path(agent.get("root"), "file-backed root")
+            root = _directory(agent.get("root"), "file-backed root")
             files = agent.get("files")
             if not isinstance(files, list) or not files:
                 raise ValueError("file-backed agent requires explicit files")
@@ -153,7 +211,7 @@ def discover(enrollment: dict[str, Any]) -> list[Source]:
                 sources.append(_source(agent, f"file-{index}", path, item["surface"],
                                        "user", agent["launch_context"], "UNKNOWN"))
             continue
-        root = _path(agent.get("config_root"), "config_root")
+        root = _directory(agent.get("config_root"), "config_root")
         projects = agent.get("projects", [])
         if not isinstance(projects, list):
             raise ValueError("projects must be a list")
@@ -167,7 +225,7 @@ def discover(enrollment: dict[str, Any]) -> list[Source]:
             sources.extend(_codex_rules(agent, root / "rules", "user", "user", context,
                                         "documented execution-policy layer"))
             for index, value in enumerate(projects):
-                project = _path(value, "project")
+                project = _directory(value, "project")
                 alias = f"project-{index}"
                 sources.append(_source(agent, f"{alias}/.codex/config.toml", project / ".codex/config.toml",
                                        "config", "shared", context, "conditional on project trust"))
@@ -186,7 +244,7 @@ def discover(enrollment: dict[str, Any]) -> list[Source]:
             sources.extend(_rules(agent, root / "rules", "user", "user", context,
                                   "conditional Markdown rule"))
             for index, value in enumerate(projects):
-                project = _path(value, "project")
+                project = _directory(value, "project")
                 alias = f"project-{index}"
                 for name in _CLAUDE_SETTINGS:
                     ownership = "user" if name.endswith(".local.json") else "shared"
@@ -196,6 +254,9 @@ def discover(enrollment: dict[str, Any]) -> list[Source]:
                     ownership = "user" if name.endswith(".local.md") else "shared"
                     sources.extend(_markdown_sources(agent, project, alias, name, ownership, context,
                                                      "ancestor instruction layer; conflicts need judgment"))
+                sources.extend(_markdown_sources(agent, project / ".claude", f"{alias}/.claude",
+                                                 "CLAUDE.md", "shared", context,
+                                                 "project memory layer; conflicts need judgment"))
                 sources.extend(_rules(agent, project / ".claude/rules", alias, "shared", context,
                                       "conditional Markdown rule"))
     aliases = [(s.agent, s.alias) for s in sources]
@@ -213,13 +274,17 @@ def _unit(source: Source, locator: str, digest: str, disposition: str,
             "locator": locator, "content_sha256": digest, "disposition": disposition,
             "reason": reason, "loading": source.loading, "context": source.context,
             "precedence": _precedence(source), "support": source.support,
-            "provider_reference": _REFERENCES.get(source.product, {}).get(source.surface, "UNKNOWN"),
+            "provider_reference": "UNKNOWN" if source.ownership == "context" else
+            _REFERENCES.get(source.product, {}).get(
+                "config" if source.path.suffix in {".toml", ".json"} else source.surface, "UNKNOWN"),
             "evidence": evidence}
 
 
 def _precedence(source: Source) -> str:
+    if source.ownership == "context":
+        return "UNKNOWN"
     if source.product == "codex":
-        if source.surface == "permission" or source.path.suffix == ".rules":
+        if source.path.suffix == ".rules":
             return "matching rules combine by most restrictive decision; active layers conditional"
         if source.surface == "instruction":
             return "root-to-working-directory; first nonempty file per directory, closer guidance later"
@@ -262,34 +327,43 @@ def _codex_rule_units(source: Source, text: str) -> list[dict[str, str]]:
     except SyntaxError:
         raise ValueError("unsupported rules syntax") from None
     units: list[dict[str, str]] = []
-    seen: set[str] = set()
+    seen: dict[str, int] = {}
     for index, statement in enumerate(tree.body, 1):
         call = statement.value if isinstance(statement, ast.Expr) else None
         if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name) or call.func.id != "prefix_rule":
-            units.append(_unit(source, f"statement-{index}", _digest(ast.dump(statement).encode()),
+            identity = _digest(ast.dump(statement).encode())
+            seen[identity] = seen.get(identity, 0) + 1
+            units.append(_unit(source, f"statement-{identity[:12]}-{seen[identity]}", identity,
                                "UNKNOWN", "unsupported rule statement"))
             continue
         try:
             fields = {item.arg: ast.literal_eval(item.value) for item in call.keywords if item.arg}
         except (ValueError, TypeError, SyntaxError, MemoryError):
-            units.append(_unit(source, f"rule-{index}", _digest(ast.dump(call).encode()),
+            identity = _digest(ast.dump(call).encode())
+            seen[identity] = seen.get(identity, 0) + 1
+            units.append(_unit(source, f"rule-{identity[:12]}-{seen[identity]}", identity,
                                "UNKNOWN", "nonliteral rule requires installed-version parser evidence"))
             continue
         pattern = fields.get("pattern")
         decision = fields.get("decision", "allow")
         if not isinstance(pattern, list) or not pattern or not isinstance(decision, str) or decision not in {"allow", "prompt", "forbidden"}:
-            units.append(_unit(source, f"rule-{index}", _digest(ast.dump(call).encode()),
+            identity = _digest(ast.dump(call).encode())
+            seen[identity] = seen.get(identity, 0) + 1
+            units.append(_unit(source, f"rule-{identity[:12]}-{seen[identity]}", identity,
                                "UNKNOWN", "unsupported or incomplete prefix_rule"))
             continue
         identity = _identity((pattern, decision))
+        occurrence = seen.get(identity, 0) + 1
         if decision in {"prompt", "forbidden"}:
             disposition, reason = "KEEP_GUARDRAIL", "restrictive execution boundary"
-        elif identity in seen:
+        elif identity in seen and source.ownership == "user":
             disposition, reason = "PRUNE_CANDIDATE_REDUNDANT", "duplicate allow rule in one source; verify rationale"
+        elif identity in seen:
+            disposition, reason = "REVIEW_RATIONALE", "duplicate shared rule; route to source owner"
         else:
             disposition, reason = "UNKNOWN", "allow rule need and effective reach require review"
-        seen.add(identity)
-        units.append(_unit(source, f"rule-{index}", identity, disposition, reason))
+        seen[identity] = occurrence
+        units.append(_unit(source, f"rule-{identity[:12]}-{occurrence}", identity, disposition, reason))
     return units
 
 
@@ -303,15 +377,29 @@ def _parse(source: Source, raw: bytes) -> list[dict[str, str]]:
         else:
             if text[:headings[0].start()].strip():
                 parts.append(("preamble", text[:headings[0].start()]))
-            parts.extend((f"section-{i}", text[match.start(): headings[i].start() if i < len(headings) else len(text)])
-                         for i, match in enumerate(headings, 1))
-        units = [_unit(source, locator, _digest(body.encode()), "REVIEW_RATIONALE",
+            heading_counts: dict[str, int] = {}
+            for i, match in enumerate(headings, 1):
+                heading_id = _digest(match.group(1).strip().casefold().encode())[:12]
+                heading_counts[heading_id] = heading_counts.get(heading_id, 0) + 1
+                parts.append((f"section-{heading_id}-{heading_counts[heading_id]}",
+                              text[match.start(): headings[i].start() if i < len(headings) else len(text)]))
+        shadowed = source.loading.startswith("shadowed by")
+        units = [_unit(source, locator, _digest(body.encode()),
+                       "UNKNOWN" if shadowed else "REVIEW_RATIONALE",
+                       "not loaded in this context" if shadowed else
                        "written guidance requires human semantic judgment") for locator, body in parts]
         if source.product == "claude-code":
-            for i, match in enumerate(_CLAUDE_IMPORT.finditer(text), 1):
-                units.append(_unit(source, f"import-{i}", _digest(match.group(1).encode()),
+            imports_seen: dict[str, int] = {}
+            for match in _CLAUDE_IMPORT.finditer(text):
+                identity = _digest(match.group(1).encode())
+                imports_seen[identity] = imports_seen.get(identity, 0) + 1
+                units.append(_unit(source, f"import-{identity[:12]}-{imports_seen[identity]}", identity,
                                    "UNKNOWN", "import target and loading remain unverified"))
-        for kind in sorted({finding.kind for finding in scan_enrolled_instruction(source.path, text)}):
+        advisory = () if shadowed else scan_enrolled_instruction(source.path, text)
+        if source.ownership == "user":
+            advisory = tuple(finding for finding in advisory
+                             if finding.kind != "agents_missing_canonical_playbook_reference")
+        for kind in sorted({finding.kind for finding in advisory}):
             units.append(_unit(source, f"drift:{kind}", _digest(kind.encode()),
                                "REVIEW_RATIONALE", "existing instruction-drift scanner advisory"))
         return units
@@ -324,14 +412,19 @@ def _parse(source: Source, raw: bytes) -> list[dict[str, str]]:
     if not isinstance(value, dict):
         raise ValueError("root is not an object")
     units = []
+    locator_counts: dict[str, int] = {}
     for locator, item in _flatten(value):
         if not locator:
             continue
-        surface = "permission" if (locator.startswith("permissions.") or locator in
-                                   {"approval_policy", "sandbox_mode"}) else "config"
-        # Settings names and values may themselves be private. Locators are
-        # stable salted-by-source hashes rather than raw keys/paths/commands.
-        safe_locator = f"entry-{_digest(locator.encode())[:12]}"
+        surface = source.surface if source.product == "file-backed" else (
+            "permission" if (locator.startswith("permissions.") or locator in
+                             {"approval_policy", "sandbox_mode"}) else "config")
+        # Locators omit raw keys and paths. These hashes are unsalted and can
+        # still confirm guesses; records must remain in private local storage.
+        stable_locator = re.sub(r"\[\d+\]", "[]", locator)
+        locator_identity = _identity((stable_locator, item)) if item is not None else _digest(stable_locator.encode())
+        locator_counts[locator_identity] = locator_counts.get(locator_identity, 0) + 1
+        safe_locator = f"entry-{locator_identity[:12]}-{locator_counts[locator_identity]}"
         unit_source = Source(source.agent, source.product, source.version, source.alias,
                              source.path, surface, source.ownership, source.context,
                              source.loading, source.support)
@@ -341,18 +434,24 @@ def _parse(source: Source, raw: bytes) -> list[dict[str, str]]:
             units.append(_unit(unit_source, safe_locator, "", "UNKNOWN",
                                "sensitive field excluded from inspection"))
             continue
-        disposition = "KEEP_GUARDRAIL" if surface == "permission" and (
-            locator.startswith("permissions.deny[") or locator.startswith("permissions.ask[")
-            or locator in {"approval_policy", "sandbox_mode"}) else "UNKNOWN"
+        restrictive_claude = source.product == "claude-code" and (
+            locator.startswith("permissions.deny[") or locator.startswith("permissions.ask["))
+        restrictive_codex = source.product == "codex" and isinstance(item, str) and (
+            (locator == "approval_policy" and item in {"on-request", "untrusted"}) or
+            (locator == "sandbox_mode" and item in {"read-only", "workspace-write"}))
+        disposition = "KEEP_GUARDRAIL" if restrictive_claude or restrictive_codex else "UNKNOWN"
         reason = ("restrictive or approval boundary; preserve pending human review"
                   if disposition == "KEEP_GUARDRAIL" else
                   "effective behavior and necessity require installed-version evidence")
-        if surface == "permission" and locator.startswith("permissions.allow["):
+        if source.product == "claude-code" and surface == "permission" and locator.startswith("permissions.allow["):
             same_list = [unit for unit in units if unit["surface"] == "permission"
                          and unit["content_sha256"] == _identity(item)]
-            if same_list:
+            if same_list and source.ownership == "user":
                 disposition = "PRUNE_CANDIDATE_REDUNDANT"
                 reason = "exact duplicate allow entry in one settings file; verify intent"
+            elif same_list:
+                disposition = "REVIEW_RATIONALE"
+                reason = "duplicate shared allow entry; route to source owner"
         units.append(_unit(unit_source, safe_locator, _identity(item), disposition, reason))
     return units
 
@@ -366,10 +465,14 @@ def _safe_read(source: Source) -> tuple[bytes | None, str | None]:
             return None, "absent"
         if not path.is_file():
             return None, "not a regular file"
-        before = path.stat()
-        with path.open("rb") as handle:
+        import stat
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                return None, "not a regular file"
             raw = handle.read(2_000_001)
-        after = path.stat()
+            after = os.fstat(handle.fileno())
         if len(raw) > 2_000_000:
             return None, "file exceeds 2 MB bound"
         if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
@@ -381,48 +484,83 @@ def _safe_read(source: Source) -> tuple[bytes | None, str | None]:
 
 
 def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
-           baseline: dict[str, Any] | None = None) -> dict[str, Any]:
+           baseline: dict[str, Any] | None = None,
+           provider_docs: dict[str, str] | None = None) -> dict[str, Any]:
     """Produce a sanitized deterministic comparison; no output destination chosen here."""
     sources = discover(enrollment)
     units: list[dict[str, str]] = []
     coverage: list[dict[str, str]] = []
     physical: dict[Path, tuple[bytes | None, str | None]] = {}
+    for agent in enrollment["agents"]:
+        if agent["kind"] not in _CONTEXT_DOMAINS:
+            continue
+        evidence = agent.get("context_evidence", {})
+        if not isinstance(evidence, dict):
+            raise ValueError("context_evidence must be an object")
+        for domain in _CONTEXT_DOMAINS[agent["kind"]]:
+            identifier = evidence.get(domain)
+            if isinstance(identifier, str) and identifier:
+                coverage.append({"agent": agent["id"], "source": f"context/{domain}",
+                                 "status": "operator_attested", "evidence_sha256": _digest(identifier.encode())})
+            else:
+                coverage.append({"agent": agent["id"], "source": f"context/{domain}",
+                                 "status": "unverified_context"})
+                context_source = _source(agent, f"context/{domain}", Path("/"), "config",
+                                         "context", agent["launch_context"], "UNKNOWN")
+                units.append(_unit(context_source, "context", "", "UNKNOWN",
+                                   "higher or conditional layer not qualified"))
     for source in sources:
-        paths = [source.path]
-        if not paths:
-            coverage.append({"agent": source.agent, "source": source.alias, "status": "absent"})
-        for path in paths:
-            active = source if path == source.path else Source(
-                source.agent, source.product, source.version,
-                f"{source.alias}/{_digest(path.name.encode())[:12]}", path, "permission", source.ownership,
-                source.context, source.loading, source.support)
-            if path not in physical:
-                physical[path] = _safe_read(active)
-            raw, failure = physical[path]
-            if failure:
-                coverage.append({"agent": active.agent, "source": active.alias, "status": failure})
-                if failure != "absent":
-                    units.append(_unit(active, "file", "", "UNKNOWN", failure))
-                continue
-            assert raw is not None
-            try:
-                parsed = _parse(active, raw)
-                units.extend(parsed or [_unit(active, "file", _digest(raw), "UNKNOWN",
-                                              "empty or unsupported inventory")])
-                coverage.append({"agent": active.agent, "source": active.alias,
-                                 "status": "inspected", "sha256": _digest(raw)})
-            except (ValueError, UnicodeDecodeError):
-                units.append(_unit(active, "file", _digest(raw), "UNKNOWN", "parse failure"))
-                coverage.append({"agent": active.agent, "source": active.alias, "status": "parse failure"})
+        active = source
+        if source.product == "codex" and source.path.name == "AGENTS.md":
+            override = source.path.with_name("AGENTS.override.md")
+            if override not in physical:
+                physical[override] = _safe_read(replace(source, path=override))
+            override_raw, override_failure = physical[override]
+            if override_failure is None and override_raw is not None and override_raw.strip():
+                active = replace(source, loading="shadowed by nonempty override; not loaded")
+        if source.path not in physical:
+            physical[source.path] = _safe_read(active)
+        raw, failure = physical[source.path]
+        if failure:
+            coverage.append({"agent": active.agent, "source": active.alias, "status": failure})
+            if failure != "absent":
+                units.append(_unit(active, "file", "", "UNKNOWN", failure))
+            continue
+        assert raw is not None
+        try:
+            parsed = _parse(active, raw)
+            units.extend(parsed or [_unit(active, "file", _digest(raw), "UNKNOWN",
+                                          "empty or unsupported inventory")])
+            coverage.append({"agent": active.agent, "source": active.alias,
+                             "status": "inspected", "sha256": _digest(raw)})
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            units.append(_unit(active, "file", _digest(raw), "UNKNOWN", "parse failure"))
+            coverage.append({"agent": active.agent, "source": active.alias, "status": "parse failure"})
     units.sort(key=lambda u: (u["agent"], u["source"], u["locator"], u["content_sha256"]))
     coverage.sort(key=lambda c: (c["agent"], c["source"]))
+    invariant_results: list[dict[str, str]] = []
+    for invariant in enrollment.get("invariants", []):
+        if not isinstance(invariant, dict) or not all(isinstance(invariant.get(key), str) for key in
+                                                       ("agent", "source", "expected_content_sha256", "evidence")):
+            raise ValueError("invariant requires agent, source, expected_content_sha256, evidence")
+        expected = invariant["expected_content_sha256"]
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise ValueError("invariant expected_content_sha256 must be SHA-256")
+        matching = any(unit["agent"] == invariant["agent"] and unit["source"] == invariant["source"]
+                       and unit["content_sha256"] == expected for unit in units)
+        invariant_results.append({"agent": invariant["agent"], "source": invariant["source"],
+                                  "expected_sha256": expected, "evidence_sha256": _digest(invariant["evidence"].encode()),
+                                  "status": "present" if matching else "drift"})
     current_ids = {_identity((u["agent"], u["source"], u["locator"], u["content_sha256"],
                               u["disposition"], u["loading"], u["precedence"], u["version"], u["support"])) for u in units}
+    for url, digest in sorted((provider_docs or {}).items()):
+        current_ids.add(_identity(("provider_doc", url, digest)))
     scope_identity = _identity(enrollment)
     def compare(other: dict[str, Any] | None) -> dict[str, Any]:
         if other is None:
-            return {"status": "unavailable", "new": [], "resolved": []}
-        if other.get("schema_version") != 1 or not isinstance(other.get("fingerprints"), list):
+            return {"status": "unavailable", "reference_sha256": "", "new": [], "resolved": []}
+        if (other.get("schema_version") != 1 or other.get("result") != "OBSERVED"
+                or not isinstance(other.get("fingerprints"), list)):
             raise ValueError("comparison record has unsupported schema")
         old_values = other["fingerprints"]
         if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
@@ -430,11 +568,15 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
             raise ValueError("comparison record has invalid fingerprints")
         old = set(old_values)
         status = "compared" if other.get("scope_sha256") == scope_identity else "scope_changed"
-        return {"status": status, "new": sorted(current_ids - old),
+        return {"status": status, "reference_sha256": _identity(other),
+                "new": sorted(current_ids - old),
                 "resolved": sorted(old - current_ids)}
-    critical = any(c["status"] not in ("inspected", "absent") for c in coverage)
+    critical = (any(c["status"] not in ("inspected", "absent", "operator_attested") for c in coverage)
+                or any(item["status"] == "drift" for item in invariant_results))
     return {"schema_version": 1, "authority": "observe-and-report", "result": "PARTIAL" if critical else "OBSERVED",
             "scope_sha256": scope_identity, "coverage": coverage, "units": units,
+            "invariants": invariant_results,
+            "provider_docs": provider_docs or {},
             "fingerprints": sorted(current_ids), "previous": compare(previous),
             "accepted_baseline": compare(baseline),
             "limitations": ["Effective behavior requires runtime and provider evidence; fixture inspection is not live qualification.",

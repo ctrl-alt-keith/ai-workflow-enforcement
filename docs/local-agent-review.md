@@ -25,8 +25,8 @@ Synthetic example (the paths are fixtures, not an active workstation scope):
   "record_root": "/tmp/fixture/records",
   "record_retention": "fixture retention policy",
   "agents": [
-    {"id": "codex", "kind": "codex", "version": "fixture-version", "support": "official-doc-review-id", "launch_context": "fixture-context", "config_root": "/tmp/fixture/codex", "projects": ["/tmp/fixture/project"]},
-    {"id": "claude", "kind": "claude-code", "version": "fixture-version", "support": "official-doc-review-id", "launch_context": "fixture-context", "config_root": "/tmp/fixture/claude", "projects": ["/tmp/fixture/project"]},
+    {"id": "codex", "kind": "codex", "version": "fixture-version", "support": "official-doc-review-id", "launch_context": "fixture-context", "config_root": "/tmp/fixture/codex", "projects": ["/tmp/fixture/project"], "context_evidence": {"managed_and_system": "fixture-evidence", "profile_trust_and_invocation": "fixture-evidence", "nested_and_fallback_instructions": "fixture-evidence"}},
+    {"id": "claude", "kind": "claude-code", "version": "fixture-version", "support": "official-doc-review-id", "launch_context": "fixture-context", "config_root": "/tmp/fixture/claude", "projects": ["/tmp/fixture/project"], "context_evidence": {"managed": "fixture-evidence", "ancestor_and_nested_instructions": "fixture-evidence", "environment_and_invocation": "fixture-evidence"}},
     {"id": "other", "kind": "file-backed", "version": "fixture-version", "support": "unverified", "launch_context": "fixture-context", "root": "/tmp/fixture/other", "files": [{"path": "/tmp/fixture/other/instructions.md", "surface": "instruction"}]}
   ]
 }
@@ -37,27 +37,37 @@ python3 -m enforcement.agent_review_cli --enrollment /absolute/local/enrollment.
 ```
 
 `--previous` is a prior successful observation and `--baseline` is a separately
-human-accepted record. Neither is changed. If omitted, comparison is
+human-accepted record. A `PARTIAL` record is rejected as either reference.
+Neither is changed. If omitted, comparison is
 `unavailable`; the first scan cannot be a clean comparison. A changed
 fingerprint never updates the accepted baseline. The command prints only a
 compact status and counts. The full record contains safe aliases, content
 hashes, unit dispositions, source coverage, and comparison identities. It
 does not contain raw config values, rule commands, instruction bodies, exact
-private paths, or raw launch context. A `PARTIAL` run exits 1; setup or record
+private paths, or raw launch context. The hashes are unsalted and can confirm
+guessed values, so keep operational records private and out of GitHub, Linear,
+telemetry, and external model requests. A `PARTIAL` run exits 1; setup or record
 failure exits 2. Preserve partial records for diagnosis and do not use them as
 the next successful observation.
+
+Before reading inspected files, the CLI fetches the applicable official Codex
+and Claude Code documentation and records their content hashes. It sends no
+local configuration or instructions in those requests. A failed documentation
+fetch blocks the run. A changed documentation identity appears in comparison;
+its semantic effect still requires human review.
 
 ## Provider interpretation
 
 Codex and Claude Code have separate discovery and precedence contracts. This
 implementation inventories the explicitly enrolled user root and project roots;
-file presence alone never proves loading or effective behavior. User-level
+file presence alone never proves loading or effective behavior. Enrolled roots
+must exist and must not be symlinks. User-level
 Codex `config.toml`, `AGENTS.override.md`/`AGENTS.md`, and `.rules` files are
 covered. Project `.codex/config.toml`, project instructions, and project
 `.codex/rules` are covered as conditional context. Codex rule parsing is an
 inert literal `prefix_rule` subset; unsupported Starlark produces `UNKNOWN`.
-For Claude Code, user and project settings, `CLAUDE.md`, `CLAUDE.local.md`, and
-Markdown rules are covered. Setting keys and entries are separate units;
+For Claude Code, user and project settings, `CLAUDE.md`, `CLAUDE.local.md`,
+project `.claude/CLAUDE.md`, and Markdown rules are covered. Setting keys and entries are separate units;
 restrictive permission entries are retained as guardrail candidates. Prose
 overlap receives human `REVIEW_RATIONALE`, never an automated deletion verdict.
 The existing instruction drift scanner supplies the AGENTS advisory checks;
@@ -76,6 +86,31 @@ by the operator, not proof of those facts. Unknown coverage, conditional
 imports, nested instructions, unsupported rule syntax, and managed settings
 must be recorded and resolved or accepted by the human at the per-agent
 baseline boundary. The fixture tests prove scanner mechanics only.
+
+`context_evidence` names operator-held evidence for relevant layers that this
+bounded file scan cannot establish. Missing domains create explicit `UNKNOWN`
+units and a `PARTIAL` result. Labels alone are not a substitute for actual
+local verification: the record hashes each label and calls it
+`operator_attested`. Codex uses `managed_and_system`,
+`profile_trust_and_invocation`, and `nested_and_fallback_instructions`;
+Claude Code uses `managed`, `ancestor_and_nested_instructions`, and
+`environment_and_invocation`.
+
+When a managed, system, ancestor, nested, or other needed source is actually
+present, enroll its exact path under that agent's optional `context_files` with
+`surface` (`config`, `permission`, or `instruction`) and `ownership` (`user`,
+`shared`, or `managed`). Those files are inventoried as context. Their loading
+remains unverified until the local context evidence establishes it; shared and
+managed content is never a personal prune target.
+
+Once a human has accepted a per-agent baseline, the local enrollment can pin
+required behavior with `invariants` entries containing `agent`, `source`,
+`expected_content_sha256`, and a local `evidence` identity. A missing expected
+unit produces invariant `drift` and a `PARTIAL` result. The evidence identity
+is hashed in the record. This is where the machine-specific CAK-169 Codex
+writable-root decision must be represented for the relevant Codex enrollment;
+the reviewer does not apply it to Claude or infer it from a historical issue.
+No invariant is created or accepted automatically.
 
 Current provider references, checked 2026-09-24:
 
