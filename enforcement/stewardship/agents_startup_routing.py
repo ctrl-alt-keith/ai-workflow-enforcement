@@ -93,7 +93,7 @@ class AgentsStartupRoutingStrategy:
                 summary="The approved AGENTS.md append could not be written or verified.",
                 evidence=_evidence(f"error={type(exc).__name__}"),
             )
-        if observed != expected or not observed.startswith(original_bytes):
+        if observed != expected:
             return StrategyResult(
                 outcome="failed",
                 summary="The AGENTS.md append did not preserve the original bytes exactly.",

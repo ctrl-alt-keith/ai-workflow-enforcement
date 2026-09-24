@@ -86,7 +86,7 @@ class WorktreeIgnoreBaselineStrategy:
                 "The exact .gitignore rule could not be appended and verified.",
                 f"error={type(exc).__name__}",
             )
-        if not observed.startswith(original_bytes) or observed != expected:
+        if observed != expected:
             return _blocked(
                 "The .gitignore append failed deterministic prefix verification.",
                 "prefix_verification=failed",
