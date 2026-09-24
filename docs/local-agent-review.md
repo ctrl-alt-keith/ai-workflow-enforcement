@@ -68,7 +68,10 @@ user-root source can be inspected, coverage is `UNKNOWN` and the run is
   project `.codex/config.toml`, instructions, and `.codex/rules` as conditional
   context. The inert parser accepts a literal `prefix_rule` subset and marks
   unsupported Starlark `UNKNOWN`. Structured inventory selects only
-  `approval_policy`, `sandbox_mode`, and `model`.
+  `approval_policy`, `sandbox_mode`, `model`, and
+  `sandbox_workspace_write.writable_roots`/`network_access`. Writable-root
+  values are hashed only in the private local record, so accepted roots can be
+  pinned by invariant without reporting private paths.
 - Claude Code: user and project settings, `CLAUDE.md`, `CLAUDE.local.md`,
   project `.claude/CLAUDE.md`, and Markdown rules. Structured inventory selects
   `model`, permission `allow`/`ask`/`deny` lists, `defaultMode`, and

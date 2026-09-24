@@ -373,6 +373,17 @@ def _structured_units(source: Source, value: dict[str, Any]) -> list[dict[str, s
     for key, item in sorted(value.items()):
         if key in safe_fields and isinstance(item, (str, bool, int, float)):
             add(key, item, "permission" if key in {"approval_policy", "sandbox_mode"} else "config")
+        elif source.product == "codex" and key == "sandbox_workspace_write" and isinstance(item, dict):
+            for setting, setting_value in sorted(item.items()):
+                locator = f"sandbox_workspace_write.{setting}"
+                if setting == "writable_roots" and isinstance(setting_value, list) and all(
+                        isinstance(root, str) for root in setting_value):
+                    for index, root in enumerate(setting_value):
+                        add(f"{locator}[{index}]", root, "permission")
+                elif setting == "network_access" and isinstance(setting_value, bool):
+                    add(locator, setting_value, "permission")
+                else:
+                    add(locator, None, "permission", opaque=True)
         elif source.product == "claude-code" and key == "permissions" and isinstance(item, dict):
             for permission_key, permission_value in sorted(item.items()):
                 locator = f"permissions.{permission_key}"

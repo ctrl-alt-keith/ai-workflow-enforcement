@@ -461,6 +461,26 @@ class AgentReviewTests(unittest.TestCase):
         self.assertEqual([u["content_sha256"] for u in report["units"]], [""])
         self.assertNotIn("synthetic-secret", json.dumps(report))
 
+    def test_codex_writable_root_remains_pinnable_without_path_output(self):
+        config = self.codex / "config.toml"
+        config.write_text('[sandbox_workspace_write]\nwritable_roots=["/synthetic/private-project"]\n'
+                          'network_access=false\n', encoding="utf-8")
+        first = review(self.enrollment)
+        self.assertNotIn("/synthetic/private-project", json.dumps(first))
+        selected = next(u for u in first["units"] if u["source"] == "user/config.toml"
+                        and u["surface"] == "permission" and
+                        u["content_sha256"] == sha256(json.dumps("/synthetic/private-project").encode()).hexdigest())
+        self.enrollment["invariants"] = [{"agent": "codex", "source": selected["source"],
+                                         "locator": selected["locator"],
+                                         "expected_content_sha256": selected["content_sha256"],
+                                         "evidence": "accepted fixture decision"}]
+        self.assertEqual(review(self.enrollment)["invariants"][0]["status"], "present")
+        config.write_text('[sandbox_workspace_write]\nwritable_roots=[]\nnetwork_access=false\n',
+                          encoding="utf-8")
+        changed = review(self.enrollment)
+        self.assertEqual(changed["invariants"][0]["status"], "drift")
+        self.assertEqual(changed["result"], "PARTIAL")
+
 
 if __name__ == "__main__":
     unittest.main()
