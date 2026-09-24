@@ -73,6 +73,24 @@ class CaptureTests(unittest.TestCase):
             self.assertEqual(json.loads(receipt.read_text())["provider_effect"], "not_attempted")
             self.assertEqual(provider.uploads, [])
 
+    def test_post_upload_mismatch_retains_unverified_identity(self):
+        class ChangedProvider(Provider):
+            def get_metadata(self, path):
+                metadata = super().get_metadata(path)
+                return {**metadata, "rev": "different"} if path == "id:file" else metadata
+
+        with TemporaryDirectory() as root:
+            source = Path(root) / "review.md"
+            source.write_bytes(b"review")
+            provider = ChangedProvider()
+            with self.assertRaises(CaptureBlocked) as caught:
+                capture(provider=provider, issue="CAK-322", source=source,
+                        name="review-v1-2026-09-23.md", acting_email="operator@example.com",
+                        authority="Linear CAK-322")
+            self.assertEqual(caught.exception.effect,
+                             {"status": "observed_unverified", "id": "id:file",
+                              "path": "/issues/CAK-322/review-v1-2026-09-23.md", "rev": "rev-1"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,9 +24,10 @@ class Provider(Protocol):
 
 
 class CaptureBlocked(RuntimeError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, effect: dict[str, object] | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.effect = effect
 
 
 def _folder(metadata: dict[str, object], path: str, identity: str | None = None) -> str:
@@ -74,25 +75,26 @@ def capture(*, provider: Provider, issue: str, source: Path, name: str,
         uploaded = provider.upload_absent(destination, data)
     except ProviderError as exc:
         raise CaptureBlocked("upload_collision" if exc.kind == "collision" else "upload_outcome_unknown") from exc
+    effect = {"status": "observed_unverified", "id": uploaded.get("id"),
+              "path": uploaded.get("path_display"), "rev": uploaded.get("rev")}
     file_id = uploaded.get("id")
     if not isinstance(file_id, str) or not file_id.startswith("id:"):
-        raise CaptureBlocked("upload_identity_unverifiable")
+        raise CaptureBlocked("upload_identity_unverifiable", effect)
     try:
         observed = provider.get_metadata(file_id)
-        _folder(provider.get_metadata(folder_id), folder_path, folder_id)
     except ProviderError as exc:
-        raise CaptureBlocked("uploaded_file_unverifiable") from exc
+        raise CaptureBlocked("uploaded_file_unverifiable", effect) from exc
     if observed.get(".tag") != "file":
-        raise CaptureBlocked("uploaded_file_identity_mismatch")
+        raise CaptureBlocked("uploaded_file_identity_mismatch", effect)
     required = {"id": file_id, "path_lower": destination.casefold(),
                 "size": size, "content_hash": content_hash}
     if any(uploaded.get(key) != value or observed.get(key) != value for key, value in required.items()):
-        raise CaptureBlocked("uploaded_file_identity_mismatch")
+        raise CaptureBlocked("uploaded_file_identity_mismatch", effect)
     if (not isinstance(uploaded.get("rev"), str) or not uploaded["rev"]
             or observed.get("rev") != uploaded["rev"]
             or uploaded.get("path_display") != destination
             or observed.get("path_display") != destination):
-        raise CaptureBlocked("uploaded_file_identity_mismatch")
+        raise CaptureBlocked("uploaded_file_identity_mismatch", effect)
     return {
         "status": "verified", "issue": issue, "authority": authority,
         "folder": {"path": folder_path, "id": folder_id},
@@ -131,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     except CaptureBlocked as exc:
         result = {"status": "blocked", "code": exc.code, "issue": args.issue,
                   "authority": args.authority,
+                  "unverified_upload": exc.effect,
                   "provider_effect": (
                       "unknown_after_attempt" if (exc.code.startswith("upload_")
                       and exc.code != "upload_collision") or exc.code.startswith("uploaded_file_")
