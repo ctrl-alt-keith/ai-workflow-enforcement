@@ -11,6 +11,7 @@ scope.
 
 | Capability | Entry point | Documentation |
 | --- | --- | --- |
+| Capture one admitted issue-owned Dropbox artifact | `python3 -m enforcement.issue_artifact_capture --help` | [Issue artifact capture](docs/issue-artifact-capture.md) |
 | Invoke the fixed issue-owned prompt delivery path | `python3 -m enforcement.prompt_delivery_invocation --help` | [Prompt delivery DAG](docs/prompt-delivery-dag.md) |
 | Inspect the lower-level prompt delivery DAG | `python3 -m enforcement.prompt_delivery_dag --help` | [Prompt delivery DAG](docs/prompt-delivery-dag.md) |
 | Check one manifest-bound Dropbox artifact scope | `python3 -m enforcement.artifact_store_integrity --help` | [Artifact-store integrity](docs/artifact-store-integrity.md) |
