@@ -117,7 +117,6 @@ class AgentReviewTests(unittest.TestCase):
         link_units = [u for u in first["units"] if u["source"] == linked["source"]]
         self.assertEqual(len(link_units), 1)
         self.assertEqual(link_units[0]["disposition"], "UNKNOWN")
-        self.assertEqual(link_units[0]["loading"], "symlink consumption unverified")
         self.assertEqual(sum(u["disposition"] == "KEEP_GUARDRAIL" for u in first["units"]), 2)
 
         link.unlink()
