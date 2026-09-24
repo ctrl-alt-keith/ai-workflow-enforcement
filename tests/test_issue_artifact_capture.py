@@ -110,6 +110,20 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(receipt["provider_effect"], "unknown_after_attempt")
         self.assertEqual(receipt["planned"]["destination"], "/issues/CAK-322/review-v1-2026-09-23.md")
 
+    def test_incomplete_folder_lookup_records_no_write(self):
+        class IncompleteProvider(Provider):
+            def get_metadata(self, path):
+                raise http.client.IncompleteRead(b"partial")
+
+        with TemporaryDirectory() as root:
+            provider = IncompleteProvider()
+            exit_code, receipt = self.run_cli(root, provider)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(receipt["code"], "prewrite_unexpected")
+        self.assertEqual(receipt["provider_effect"], "not_attempted")
+        self.assertEqual(receipt["planned"]["destination"], "/issues/CAK-322/review-v1-2026-09-23.md")
+        self.assertEqual(provider.uploads, [])
+
     def test_collision_receipt_distinguishes_no_create(self):
         class CollisionProvider(Provider):
             def upload_absent(self, path, content):

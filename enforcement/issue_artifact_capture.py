@@ -76,6 +76,8 @@ def capture(*, provider: Provider, issue: str, source: Path, name: str,
         raise
     except ProviderError as exc:
         raise CaptureBlocked("folder_unverifiable", planned=planned) from exc
+    except Exception as exc:
+        raise CaptureBlocked("prewrite_unexpected", planned=planned) from exc
 
     # From this point a provider error may have followed a successful write.
     effect = None
