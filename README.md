@@ -25,6 +25,7 @@ scope.
 | Compose hosted and local work-state evidence | `python3 -m enforcement.work_state_index --help` | [Work-state index](docs/work-state-index.md) |
 | Audit hosted repository settings | `python3 -m enforcement.repo_settings_audit --help` | [Repository settings audit](docs/repo-settings-audit.md) |
 | Audit workflow-drift GitHub App evidence | `python3 -m enforcement.github_app_policy_audit --help` | [GitHub App policy audit](docs/github-apps/workflow-drift/README.md) |
+| Review declared local agent configuration and instructions | `python3 -m enforcement.agent_config_review --help` | [Local agent configuration review](docs/agent-config-review.md) |
 
 All advisory reports remain evidence for review. They do not create policy,
 classification, cleanup authority, or merge authority.
