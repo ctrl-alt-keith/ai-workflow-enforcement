@@ -189,6 +189,7 @@ class GitHubGateway:
                         "push",
                         "--porcelain",
                         "--set-upstream",
+                        f"--force-with-lease=refs/heads/{proposal.branch}:",
                         "origin",
                         f"HEAD:refs/heads/{proposal.branch}",
                     ),
@@ -201,6 +202,12 @@ class GitHubGateway:
             if pushed.returncode != 0:
                 mutations.append({"operation": "push_branch", "success": False})
                 raise GitHubError(_bounded(pushed.stderr or pushed.stdout))
+            if not any(
+                line.startswith(f"*\tHEAD:refs/heads/{proposal.branch}\t")
+                for line in pushed.stdout.splitlines()
+            ):
+                mutations.append({"operation": "push_branch", "success": False})
+                raise GitHubError("push did not create a new branch")
             mutations.append({"operation": "push_branch", "success": True})
 
             try:

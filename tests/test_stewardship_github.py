@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
 from enforcement.stewardship.github import GitHubError, GitHubGateway
 from enforcement.stewardship.models import (
     AGENTS_STARTUP_ROUTING_METADATA,
+    CollisionResult,
+    DeliveryProposal,
     DOCS_DRIFT_METADATA,
+    ValidationResult,
     WORKTREE_IGNORE_BASELINE_METADATA,
 )
 
@@ -125,6 +130,108 @@ class StewardshipGitHubGatewayTests(unittest.TestCase):
                     "ctrl-alt-keith/ai-workflow-enforcement",
                     AGENTS_STARTUP_ROUTING_METADATA.collision_marker,
                 )
+
+    def test_delivery_creates_only_new_branch_even_with_a_racing_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            remote = root / "remote.git"
+            checkout = root / "checkout"
+            subprocess.run(
+                ("git", "init", "--bare", str(remote)), check=True, capture_output=True
+            )
+            subprocess.run(
+                ("git", "init", "-b", "main", str(checkout)),
+                check=True, capture_output=True,
+            )
+
+            def git(*arguments: str) -> str:
+                result = subprocess.run(
+                    ("git", *arguments),
+                    cwd=checkout, check=True, capture_output=True, text=True,
+                )
+                return result.stdout.strip()
+
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.com")
+            git("config", "commit.gpgsign", "false")
+            (checkout / "README.md").write_text("base\n", encoding="utf-8")
+            git("add", "README.md")
+            git("commit", "-m", "base")
+            base_sha = git("rev-parse", "HEAD")
+            git("remote", "add", "origin", str(remote))
+            git("push", "origin", "main")
+
+            for existing_tip in ("absent", "base", "proposed"):
+                with self.subTest(existing_tip=existing_tip):
+                    branch = f"stewardship/test/{existing_tip}"
+                    git("checkout", "--detach", base_sha)
+                    (checkout / "README.md").write_text("changed\n", encoding="utf-8")
+                    patch = git("diff", "--binary", "--full-index") + "\n"
+                    proposal = DeliveryProposal(
+                        repository="example/repo",
+                        base_branch="main",
+                        base_sha=base_sha,
+                        branch=branch,
+                        commit_message="proposal",
+                        pr_title="proposal",
+                        pr_body="proposal",
+                        changed_paths=("README.md",),
+                        patch=patch,
+                        diff_digest="unused",
+                        validation=ValidationResult(status="passed", exit_code=0),
+                        collision=CollisionResult(decision="clear", reason="clear"),
+                    )
+                    gateway = GitHubGateway(read_token="read", write_token="write")
+                    real_run = subprocess.run
+                    pushed = False
+                    tip = ""
+
+                    def collide(command, *args, **kwargs):
+                        nonlocal pushed, tip
+                        if command[:2] == ("git", "push") and not pushed:
+                            pushed = True
+                            if existing_tip != "absent":
+                                tip = (
+                                    base_sha if existing_tip == "base"
+                                    else git("rev-parse", "HEAD")
+                                )
+                                real_run(
+                                    ("git", "push", "origin", f"{tip}:refs/heads/{branch}"),
+                                    cwd=checkout, check=True, capture_output=True, text=True,
+                                )
+                        return real_run(command, *args, **kwargs)
+
+                    with (
+                        mock.patch(
+                            "enforcement.stewardship.github.subprocess.run",
+                            side_effect=collide,
+                        ),
+                        mock.patch.object(
+                            gateway, "_gh_json",
+                            return_value={"html_url": "https://example.test/pr/1"},
+                        ) as create_pr,
+                    ):
+                        result = gateway.deliver(checkout, proposal)
+
+                    self.assertTrue(pushed)
+                    if existing_tip == "absent":
+                        self.assertTrue(result.success)
+                        create_pr.assert_called_once()
+                        tip = result.commit_sha or ""
+                    else:
+                        self.assertFalse(result.success)
+                        self.assertEqual(
+                            ({"operation": "push_branch", "success": False},),
+                            result.mutations,
+                        )
+                        create_pr.assert_not_called()
+                    self.assertEqual(
+                        tip,
+                        subprocess.run(
+                            ("git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"),
+                            check=True, capture_output=True, text=True,
+                        ).stdout.strip(),
+                    )
 
 if __name__ == "__main__":
     unittest.main()
