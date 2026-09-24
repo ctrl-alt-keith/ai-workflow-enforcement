@@ -223,6 +223,11 @@ ref, force-pushes, or decides that an unmarked branch is safe to replace. It
 also rereads the base branch immediately before the delivery boundary and
 blocks if the SHA differs from the hydrated base.
 
+The push uses Git's `--force-with-lease` with an empty expected value, which
+requires the proposed branch to remain absent at push time. If another writer
+creates it first, delivery fails; a successful push must also report a newly
+created branch, so an existing branch at the same commit does not count.
+
 Nonblank target refs never reach this boundary. After a successful targeted
 dry-run inspection and validation, the receipt records `would_create_pr=false`
 because arbitrary-ref inspection is evidence-only and cannot become a delivery
