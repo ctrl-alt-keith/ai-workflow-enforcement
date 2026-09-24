@@ -25,8 +25,8 @@ Synthetic example (the paths are fixtures, not an active workstation scope):
   "record_root": "/tmp/fixture/records",
   "record_retention": "fixture retention policy",
   "agents": [
-    {"id": "codex", "kind": "codex", "version": "fixture-version", "support": "official-doc-review-id", "launch_context": "fixture-context", "config_root": "/tmp/fixture/codex", "projects": ["/tmp/fixture/project"], "context_evidence": {"managed_and_system": "fixture-evidence", "profile_trust_and_invocation": "fixture-evidence", "nested_and_fallback_instructions": "fixture-evidence"}},
-    {"id": "claude", "kind": "claude-code", "version": "fixture-version", "support": "official-doc-review-id", "launch_context": "fixture-context", "config_root": "/tmp/fixture/claude", "projects": ["/tmp/fixture/project"], "context_evidence": {"managed": "fixture-evidence", "ancestor_and_nested_instructions": "fixture-evidence", "environment_and_invocation": "fixture-evidence"}},
+    {"id": "codex", "kind": "codex", "version": "fixture-version", "support": "official-doc-review-id", "launch_context": "fixture-context", "config_root": "/tmp/fixture/codex", "projects": ["/tmp/fixture/project"], "context_evidence": {"managed_and_system": "verified:fixture-evidence", "profile_trust_and_invocation": "verified:fixture-evidence", "nested_and_fallback_instructions": "verified:fixture-evidence"}},
+    {"id": "claude", "kind": "claude-code", "version": "fixture-version", "support": "official-doc-review-id", "launch_context": "fixture-context", "config_root": "/tmp/fixture/claude", "projects": ["/tmp/fixture/project"], "context_evidence": {"managed": "verified:fixture-evidence", "ancestor_and_nested_instructions": "verified:fixture-evidence", "environment_and_invocation": "verified:fixture-evidence"}},
     {"id": "other", "kind": "file-backed", "version": "fixture-version", "support": "unverified", "launch_context": "fixture-context", "root": "/tmp/fixture/other", "files": [{"path": "/tmp/fixture/other/instructions.md", "surface": "instruction"}]}
   ]
 }
@@ -47,7 +47,7 @@ does not contain raw config values, rule commands, instruction bodies, exact
 private paths, or raw launch context. The hashes are unsalted and can confirm
 guessed values, so keep operational records private and out of GitHub, Linear,
 telemetry, and external model requests. A `PARTIAL` run exits 1; setup or record
-failure exits 2. Preserve partial records for diagnosis and do not use them as
+failure exits 2. Accepted-baseline drift also exits 1. Preserve partial records for diagnosis and do not use them as
 the next successful observation.
 
 Before reading inspected files, the CLI fetches the applicable official Codex
@@ -90,7 +90,7 @@ baseline boundary. The fixture tests prove scanner mechanics only.
 `context_evidence` names operator-held evidence for relevant layers that this
 bounded file scan cannot establish. Missing domains create explicit `UNKNOWN`
 units and a `PARTIAL` result. Labels alone are not a substitute for actual
-local verification: the record hashes each label and calls it
+local verification: the record hashes each `verified:` evidence identity and calls it
 `operator_attested`. Codex uses `managed_and_system`,
 `profile_trust_and_invocation`, and `nested_and_fallback_instructions`;
 Claude Code uses `managed`, `ancestor_and_nested_instructions`, and
@@ -105,7 +105,8 @@ managed content is never a personal prune target.
 
 Once a human has accepted a per-agent baseline, the local enrollment can pin
 required behavior with `invariants` entries containing `agent`, `source`,
-`expected_content_sha256`, and a local `evidence` identity. A missing expected
+`locator`, `expected_content_sha256`, and a local `evidence` identity. Copy the
+`locator` and hash from the accepted unit in the local record. A missing expected
 unit produces invariant `drift` and a `PARTIAL` result. The evidence identity
 is hashed in the record. This is where the machine-specific CAK-169 Codex
 writable-root decision must be represented for the relevant Codex enrollment;

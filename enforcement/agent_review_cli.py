@@ -69,13 +69,16 @@ def main(argv: list[str] | None = None) -> int:
         unit["disposition"] in {"PRUNE_CANDIDATE_REDUNDANT", "PRUNE_CANDIDATE_STALE",
                                 "PRUNE_CANDIDATE_UNSUPPORTED", "REVIEW_NARROWING", "REVIEW_RATIONALE"}
         for unit in report["units"])
-    if report["result"] != "OBSERVED" or changed or first_actionable:
+    attested_count = sum(item["status"] == "operator_attested" for item in report["coverage"])
+    if report["result"] != "OBSERVED" or changed or first_actionable or (previous is None and attested_count):
         print(json.dumps({"result": report["result"], "record": "created",
+                          "baseline_status": report["baseline_status"],
+                          "attested_context_domains": attested_count,
                           "new_findings": len(report["previous"]["new"]),
                           "resolved_findings": len(report["previous"]["resolved"]),
                           "baseline_new": len(report["accepted_baseline"]["new"]),
                           "baseline_resolved": len(report["accepted_baseline"]["resolved"])}, sort_keys=True))
-    return 0 if report["result"] == "OBSERVED" else 1
+    return 0 if report["result"] == "OBSERVED" and report["baseline_status"] != "drift" else 1
 
 
 if __name__ == "__main__":

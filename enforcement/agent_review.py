@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import tomllib
 from typing import Any
 from urllib.request import Request, urlopen
@@ -32,7 +33,9 @@ _HEADING = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
 _CLAUDE_IMPORT = re.compile(r"(?<!\w)@([A-Za-z0-9_./~-]+)")
 _SENSITIVE_FIELDS = frozenset({"token", "apikey", "api_key", "password", "secret",
                                 "oauth", "credentials", "env", "mcpservers", "mcp_servers",
-                                "headers", "authorization"})
+                                "headers", "authorization", "cookie", "pat", "credential"})
+_SENSITIVE_MARKERS = ("token", "secret", "password", "apikey", "api_key", "credential",
+                      "auth", "cookie", "private_key", "bearer")
 _REFERENCES = {
     "codex": {"config": "https://learn.chatgpt.com/docs/config-file/config-reference",
               "permission": "https://learn.chatgpt.com/docs/agent-configuration/rules",
@@ -78,6 +81,7 @@ class Source:
     context: str
     loading: str
     support: str
+    boundary: Path | None = None
 
 
 def _digest(data: bytes) -> str:
@@ -86,6 +90,15 @@ def _digest(data: bytes) -> str:
 
 def _identity(value: Any) -> str:
     return _digest(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _scope_identity(enrollment: dict[str, Any]) -> str:
+    """Only discovery inputs change scope; retention and invariants do not."""
+    selected = []
+    for agent in enrollment["agents"]:
+        selected.append({key: agent.get(key) for key in
+                         ("id", "kind", "config_root", "root", "projects", "files", "context_files")})
+    return _identity(selected)
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -107,9 +120,24 @@ def _directory(value: Any, label: str) -> Path:
 
 def _source(agent: dict[str, Any], alias: str, path: Path, surface: str,
             ownership: str, context: str, loading: str) -> Source:
+    boundary = None
+    if alias.startswith("user/"):
+        boundary = Path(agent["config_root"])
+    elif alias.startswith("project-"):
+        match = re.match(r"project-(\d+)", alias)
+        if match:
+            boundary = Path(agent["projects"][int(match.group(1))])
+    elif alias.startswith("file-"):
+        boundary = Path(agent["root"])
+    elif alias.startswith("context-file-"):
+        roots = [agent.get("config_root"), agent.get("root"), *agent.get("projects", [])]
+        for candidate in roots:
+            if isinstance(candidate, str) and Path(candidate).is_absolute() and _inside(path, Path(candidate)):
+                boundary = Path(candidate)
+                break
     return Source(agent["id"], agent["kind"], agent["version"], alias, path,
                   surface, ownership, _digest(context.encode()), loading,
-                  _digest(agent["support"].encode()))
+                  _digest(agent["support"].encode()), boundary)
 
 
 def _markdown_sources(agent: dict[str, Any], root: Path, alias: str, name: str,
@@ -123,7 +151,7 @@ def _rules(agent: dict[str, Any], directory: Path, alias: str, ownership: str,
     """Bounded discovery in a known rules directory, without following links."""
     if not directory.exists():
         return []
-    if directory.is_symlink() or not directory.is_dir():
+    if directory.is_symlink() or directory.parent.is_symlink() or not directory.is_dir():
         return [_source(agent, f"{alias}/rules", directory, "instruction",
                         ownership, context, "UNKNOWN")]
     found = []
@@ -152,7 +180,7 @@ def _codex_rules(agent: dict[str, Any], directory: Path, alias: str,
                  ownership: str, context: str, loading: str) -> list[Source]:
     if not directory.exists():
         return []
-    if directory.is_symlink() or not directory.is_dir():
+    if directory.is_symlink() or directory.parent.is_symlink() or not directory.is_dir():
         return [_source(agent, f"{alias}/rules", directory, "permission", ownership,
                         context, "UNKNOWN")]
     found = []
@@ -208,8 +236,11 @@ def discover(enrollment: dict[str, Any]) -> list[Source]:
                 path = _path(item.get("path"), "file path")
                 if not _inside(path.resolve(), root.resolve()):
                     raise ValueError("file-backed path leaves enrolled root")
+                ownership = item.get("ownership", "user")
+                if ownership not in {"user", "shared", "managed"}:
+                    raise ValueError("file-backed ownership must be user, shared, or managed")
                 sources.append(_source(agent, f"file-{index}", path, item["surface"],
-                                       "user", agent["launch_context"], "UNKNOWN"))
+                                       ownership, agent["launch_context"], "UNKNOWN"))
             continue
         root = _directory(agent.get("config_root"), "config_root")
         projects = agent.get("projects", [])
@@ -266,7 +297,7 @@ def discover(enrollment: dict[str, Any]) -> list[Source]:
 
 
 def _unit(source: Source, locator: str, digest: str, disposition: str,
-          reason: str, *, evidence: str = "") -> dict[str, str]:
+          reason: str) -> dict[str, str]:
     if disposition not in DISPOSITIONS:
         raise ValueError("invalid disposition")
     return {"agent": source.agent, "product": source.product, "version": source.version,
@@ -277,12 +308,14 @@ def _unit(source: Source, locator: str, digest: str, disposition: str,
             "provider_reference": "UNKNOWN" if source.ownership == "context" else
             _REFERENCES.get(source.product, {}).get(
                 "config" if source.path.suffix in {".toml", ".json"} else source.surface, "UNKNOWN"),
-            "evidence": evidence}
+            "evidence": ""}
 
 
 def _precedence(source: Source) -> str:
     if source.ownership == "context":
         return "UNKNOWN"
+    if source.alias.startswith("context-file-"):
+        return "operator-enrolled context; precedence unverified"
     if source.product == "codex":
         if source.path.suffix == ".rules":
             return "matching rules combine by most restrictive decision; active layers conditional"
@@ -308,7 +341,7 @@ def _flatten(value: Any, prefix: str = "") -> list[tuple[str, Any]]:
         for key, child in sorted(value.items()):
             # Do not inventory secret-bearing mixed-store fields or leak keys.
             if key.lower() in _SENSITIVE_FIELDS or any(
-                    marker in key.lower() for marker in ("token", "secret", "password", "apikey", "api_key")):
+                    marker in key.lower() for marker in _SENSITIVE_MARKERS):
                 result.append((f"{prefix}.{key}" if prefix else key, None))
                 continue
             result.extend(_flatten(child, f"{prefix}.{key}" if prefix else key))
@@ -324,7 +357,7 @@ def _codex_rule_units(source: Source, text: str) -> list[dict[str, str]]:
     """Parse the documented literal prefix_rule subset without evaluating Starlark."""
     try:
         tree = ast.parse(text)
-    except SyntaxError:
+    except (SyntaxError, MemoryError):
         raise ValueError("unsupported rules syntax") from None
     units: list[dict[str, str]] = []
     seen: dict[str, int] = {}
@@ -430,7 +463,7 @@ def _parse(source: Source, raw: bytes) -> list[dict[str, str]]:
                              source.loading, source.support)
         leaf = locator.split(".")[-1].lower()
         if item is None and (leaf in _SENSITIVE_FIELDS or any(
-                marker in leaf for marker in ("token", "secret", "password", "apikey", "api_key"))):
+                marker in leaf for marker in _SENSITIVE_MARKERS)):
             units.append(_unit(unit_source, safe_locator, "", "UNKNOWN",
                                "sensitive field excluded from inspection"))
             continue
@@ -458,6 +491,16 @@ def _parse(source: Source, raw: bytes) -> list[dict[str, str]]:
 
 def _safe_read(source: Source) -> tuple[bytes | None, str | None]:
     path = source.path
+    if source.boundary is not None:
+        try:
+            relative = path.relative_to(source.boundary)
+        except ValueError:
+            return None, "outside enrolled root"
+        current = source.boundary
+        for part in relative.parts[:-1]:
+            current = current / part
+            if current.is_symlink():
+                return None, "symlink not followed"
     if path.is_symlink():
         return None, "symlink not followed"
     try:
@@ -465,8 +508,7 @@ def _safe_read(source: Source) -> tuple[bytes | None, str | None]:
             return None, "absent"
         if not path.is_file():
             return None, "not a regular file"
-        import stat
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(descriptor, "rb") as handle:
             before = os.fstat(handle.fileno())
             if not stat.S_ISREG(before.st_mode):
@@ -499,7 +541,7 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
             raise ValueError("context_evidence must be an object")
         for domain in _CONTEXT_DOMAINS[agent["kind"]]:
             identifier = evidence.get(domain)
-            if isinstance(identifier, str) and identifier:
+            if isinstance(identifier, str) and re.fullmatch(r"verified:[A-Za-z0-9._/-]{6,}", identifier):
                 coverage.append({"agent": agent["id"], "source": f"context/{domain}",
                                  "status": "operator_attested", "evidence_sha256": _digest(identifier.encode())})
             else:
@@ -522,9 +564,11 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
             physical[source.path] = _safe_read(active)
         raw, failure = physical[source.path]
         if failure:
-            coverage.append({"agent": active.agent, "source": active.alias, "status": failure})
-            if failure != "absent":
-                units.append(_unit(active, "file", "", "UNKNOWN", failure))
+            required = active.alias.startswith(("context-file-", "file-"))
+            status = "missing enrolled file" if failure == "absent" and required else failure
+            coverage.append({"agent": active.agent, "source": active.alias, "status": status})
+            if status != "absent":
+                units.append(_unit(active, "file", "", "UNKNOWN", status))
             continue
         assert raw is not None
         try:
@@ -536,26 +580,40 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
         except (ValueError, UnicodeDecodeError, RecursionError):
             units.append(_unit(active, "file", _digest(raw), "UNKNOWN", "parse failure"))
             coverage.append({"agent": active.agent, "source": active.alias, "status": "parse failure"})
+    for agent in enrollment["agents"]:
+        if agent["kind"] == "file-backed":
+            continue
+        standard = [item for item in coverage if item["agent"] == agent["id"]
+                    and (item["source"].startswith("user/") or item["source"].startswith("project-"))]
+        if standard and not any(item["status"] == "inspected" for item in standard):
+            coverage.append({"agent": agent["id"], "source": "standard-source-set",
+                             "status": "no standard source inspected"})
+            context_source = _source(agent, "standard-source-set", Path("/"), "config",
+                                     "context", agent["launch_context"], "UNKNOWN")
+            units.append(_unit(context_source, "source-set", "", "UNKNOWN",
+                               "all standard sources absent or unavailable"))
     units.sort(key=lambda u: (u["agent"], u["source"], u["locator"], u["content_sha256"]))
     coverage.sort(key=lambda c: (c["agent"], c["source"]))
     invariant_results: list[dict[str, str]] = []
     for invariant in enrollment.get("invariants", []):
         if not isinstance(invariant, dict) or not all(isinstance(invariant.get(key), str) for key in
-                                                       ("agent", "source", "expected_content_sha256", "evidence")):
-            raise ValueError("invariant requires agent, source, expected_content_sha256, evidence")
+                                                       ("agent", "source", "locator", "expected_content_sha256", "evidence")):
+            raise ValueError("invariant requires agent, source, locator, expected_content_sha256, evidence")
         expected = invariant["expected_content_sha256"]
         if not re.fullmatch(r"[0-9a-f]{64}", expected):
             raise ValueError("invariant expected_content_sha256 must be SHA-256")
         matching = any(unit["agent"] == invariant["agent"] and unit["source"] == invariant["source"]
-                       and unit["content_sha256"] == expected for unit in units)
+                       and unit["locator"] == invariant["locator"] and unit["content_sha256"] == expected
+                       and not unit["loading"].startswith("shadowed") for unit in units)
         invariant_results.append({"agent": invariant["agent"], "source": invariant["source"],
-                                  "expected_sha256": expected, "evidence_sha256": _digest(invariant["evidence"].encode()),
+                                  "locator": invariant["locator"], "expected_sha256": expected,
+                                  "evidence_sha256": _digest(invariant["evidence"].encode()),
                                   "status": "present" if matching else "drift"})
     current_ids = {_identity((u["agent"], u["source"], u["locator"], u["content_sha256"],
                               u["disposition"], u["loading"], u["precedence"], u["version"], u["support"])) for u in units}
     for url, digest in sorted((provider_docs or {}).items()):
         current_ids.add(_identity(("provider_doc", url, digest)))
-    scope_identity = _identity(enrollment)
+    scope_identity = _scope_identity(enrollment)
     def compare(other: dict[str, Any] | None) -> dict[str, Any]:
         if other is None:
             return {"status": "unavailable", "reference_sha256": "", "new": [], "resolved": []}
@@ -571,14 +629,19 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
         return {"status": status, "reference_sha256": _identity(other),
                 "new": sorted(current_ids - old),
                 "resolved": sorted(old - current_ids)}
+    previous_comparison = compare(previous)
+    baseline_comparison = compare(baseline)
+    baseline_status = ("unavailable" if baseline is None else "drift" if
+                       baseline_comparison["new"] or baseline_comparison["resolved"] or
+                       baseline_comparison["status"] == "scope_changed" else "aligned")
     critical = (any(c["status"] not in ("inspected", "absent", "operator_attested") for c in coverage)
                 or any(item["status"] == "drift" for item in invariant_results))
     return {"schema_version": 1, "authority": "observe-and-report", "result": "PARTIAL" if critical else "OBSERVED",
             "scope_sha256": scope_identity, "coverage": coverage, "units": units,
             "invariants": invariant_results,
             "provider_docs": provider_docs or {},
-            "fingerprints": sorted(current_ids), "previous": compare(previous),
-            "accepted_baseline": compare(baseline),
+            "fingerprints": sorted(current_ids), "previous": previous_comparison,
+            "accepted_baseline": baseline_comparison, "baseline_status": baseline_status,
             "limitations": ["Effective behavior requires runtime and provider evidence; fixture inspection is not live qualification.",
                             "No disposition accepts drift or authorizes an inspected-source edit."]}
 

@@ -22,15 +22,17 @@ class AgentReviewTests(unittest.TestCase):
         self.project = self.root / "project"
         for path in (self.codex, self.claude, self.project / ".claude", self.root / "records"):
             path.mkdir(parents=True)
+        (self.codex / "config.toml").write_text('model = "fixture"\n', encoding="utf-8")
+        (self.claude / "settings.json").write_text("{}", encoding="utf-8")
         self.enrollment = {"agents": [
             {"id": "codex", "kind": "codex", "version": "fixture-1", "support": "official-doc-fixture",
              "launch_context": "fixture", "config_root": str(self.codex), "projects": [str(self.project)],
-             "context_evidence": {"managed_and_system": "fixture-checked", "profile_trust_and_invocation": "fixture-checked",
-                                  "nested_and_fallback_instructions": "fixture-checked"}},
+             "context_evidence": {"managed_and_system": "verified:fixture-checked", "profile_trust_and_invocation": "verified:fixture-checked",
+                                  "nested_and_fallback_instructions": "verified:fixture-checked"}},
             {"id": "claude", "kind": "claude-code", "version": "fixture-1", "support": "official-doc-fixture",
              "launch_context": "fixture", "config_root": str(self.claude), "projects": [str(self.project)],
-             "context_evidence": {"managed": "fixture-checked", "ancestor_and_nested_instructions": "fixture-checked",
-                                  "environment_and_invocation": "fixture-checked"}},
+             "context_evidence": {"managed": "verified:fixture-checked", "ancestor_and_nested_instructions": "verified:fixture-checked",
+                                  "environment_and_invocation": "verified:fixture-checked"}},
         ]}
 
     def test_distinct_providers_and_shared_source_without_mutation(self):
@@ -69,7 +71,9 @@ class AgentReviewTests(unittest.TestCase):
         self.assertTrue(changed["previous"]["new"])
         self.assertTrue(changed["previous"]["resolved"])
         shifted = dict(enrollment)
-        shifted["record_retention"] = "changed local contract"
+        shifted["agents"] = [dict(enrollment["agents"][0],
+                                  files=[*enrollment["agents"][0]["files"],
+                                         {"path": str(self.root / "other.md"), "surface": "instruction"}])]
         self.assertEqual(review(shifted, first)["previous"]["status"], "scope_changed")
 
     def test_parse_failure_is_partial_and_record_is_exclusive(self):
@@ -86,6 +90,7 @@ class AgentReviewTests(unittest.TestCase):
     def test_symlink_is_not_followed(self):
         secret = self.root / "secret.json"
         secret.write_text('{"token": "do-not-read"}', encoding="utf-8")
+        (self.claude / "settings.json").unlink()
         (self.claude / "settings.json").symlink_to(secret)
         report = review(self.enrollment)
         self.assertEqual(report["result"], "PARTIAL")
@@ -232,7 +237,7 @@ class AgentReviewTests(unittest.TestCase):
                 code = main(["--enrollment", str(manifest), "--record",
                              str(self.root / "records/20260924T000000Z-baseline.json"),
                              "--previous", str(previous), "--baseline", str(baseline)])
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertIn('"baseline_new": 1', output.getvalue())
 
     def test_record_under_enrolled_project_is_rejected(self):
@@ -250,10 +255,11 @@ class AgentReviewTests(unittest.TestCase):
         config = self.codex / "config.toml"
         config.write_text('sandbox_mode = "read-only"\n', encoding="utf-8")
         first = review(self.enrollment)
-        expected = next(unit["content_sha256"] for unit in first["units"]
-                        if unit["source"] == "user/config.toml")
+        selected = next(unit for unit in first["units"] if unit["source"] == "user/config.toml")
         self.enrollment["invariants"] = [{"agent": "codex", "source": "user/config.toml",
-                                         "expected_content_sha256": expected, "evidence": "accepted fixture decision"}]
+                                         "locator": selected["locator"],
+                                         "expected_content_sha256": selected["content_sha256"],
+                                         "evidence": "accepted fixture decision"}]
         self.assertEqual(review(self.enrollment)["invariants"][0]["status"], "present")
         config.write_text('sandbox_mode = "danger-full-access"\n', encoding="utf-8")
         changed = review(self.enrollment)
@@ -285,6 +291,68 @@ class AgentReviewTests(unittest.TestCase):
         self.assertEqual({u["agent"] for u in sharing}, {"claude", "other"})
         self.assertEqual({u["loading"] for u in sharing},
                          {"ancestor instruction layer; conflicts need judgment", "UNKNOWN"})
+
+    def test_missing_enrolled_files_and_empty_provider_roots_are_partial(self):
+        self.enrollment["agents"][0]["context_files"] = [{"path": str(self.root / "missing.md"),
+                                                              "surface": "instruction", "ownership": "user"}]
+        self.enrollment["agents"].append({"id": "other", "kind": "file-backed", "version": "fixture-1",
+                                           "support": "unverified", "launch_context": "fixture",
+                                           "root": str(self.root),
+                                           "files": [{"path": str(self.root / "missing-file.md"),
+                                                      "surface": "instruction"}]})
+        report = review(self.enrollment)
+        self.assertEqual(report["result"], "PARTIAL")
+        self.assertEqual(sum(c["status"] == "missing enrolled file" for c in report["coverage"]), 2)
+        (self.codex / "config.toml").unlink()
+        (self.claude / "settings.json").unlink()
+        report = review(self.enrollment)
+        self.assertEqual(sum(c["status"] == "no standard source inspected" for c in report["coverage"]), 2)
+
+    def test_invariant_rejects_moved_or_shadowed_unit(self):
+        settings = self.claude / "settings.json"
+        settings.write_text('{"permissions":{"deny":["Bash(rm:*)"]}}', encoding="utf-8")
+        unit = next(u for u in review(self.enrollment)["units"] if u["source"] == "user/settings.json")
+        self.enrollment["invariants"] = [{"agent": "claude", "source": unit["source"],
+                                         "locator": unit["locator"], "expected_content_sha256": unit["content_sha256"],
+                                         "evidence": "fixture"}]
+        self.assertEqual(review(self.enrollment)["invariants"][0]["status"], "present")
+        settings.write_text('{"permissions":{"allow":["Bash(rm:*)"]}}', encoding="utf-8")
+        self.assertEqual(review(self.enrollment)["invariants"][0]["status"], "drift")
+        del self.enrollment["invariants"]
+        memory = self.codex / "AGENTS.md"
+        memory.write_text("# Fixture\nGuarded text\n", encoding="utf-8")
+        unit = next(u for u in review(self.enrollment)["units"] if u["source"] == "user/AGENTS.md")
+        self.enrollment["invariants"] = [{"agent": "codex", "source": unit["source"],
+                                         "locator": unit["locator"], "expected_content_sha256": unit["content_sha256"],
+                                         "evidence": "fixture"}]
+        (self.codex / "AGENTS.override.md").write_text("# Override\n", encoding="utf-8")
+        self.assertEqual(review(self.enrollment)["invariants"][0]["status"], "drift")
+
+    def test_intermediate_symlink_not_followed(self):
+        external = self.root / "external"
+        external.mkdir()
+        (external / "CLAUDE.md").write_text("synthetic secret content", encoding="utf-8")
+        (self.project / ".claude").rmdir()
+        (self.project / ".claude").symlink_to(external, target_is_directory=True)
+        report = review(self.enrollment)
+        self.assertEqual(report["result"], "PARTIAL")
+        self.assertNotIn("synthetic secret content", json.dumps(report))
+        self.assertTrue(any(c["status"] == "symlink not followed" for c in report["coverage"]))
+
+    def test_invariant_addition_does_not_change_comparison_scope(self):
+        first = review(self.enrollment)
+        unit = next(u for u in first["units"] if u["source"] == "user/config.toml")
+        self.enrollment["invariants"] = [{"agent": "codex", "source": unit["source"],
+                                         "locator": unit["locator"], "expected_content_sha256": unit["content_sha256"],
+                                         "evidence": "fixture"}]
+        self.assertEqual(review(self.enrollment, first)["previous"]["status"], "compared")
+
+    def test_invalid_context_attestation_stays_unknown(self):
+        self.enrollment["agents"][0]["context_evidence"]["managed_and_system"] = "fixture-checked"
+        report = review(self.enrollment)
+        self.assertEqual(report["result"], "PARTIAL")
+        self.assertTrue(any(c["source"] == "context/managed_and_system" and c["status"] == "unverified_context"
+                            for c in report["coverage"]))
 
 
 if __name__ == "__main__":
