@@ -609,7 +609,12 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
             continue
         assert raw is not None
         try:
-            parsed = _parse(active, raw)
+            if link_sha256:
+                active = replace(active, loading="symlink consumption unverified")
+                parsed = [_unit(active, "link", _digest(raw), "UNKNOWN",
+                                "link target inspected; Codex loading not established")]
+            else:
+                parsed = _parse(active, raw)
             units.extend(parsed or [_unit(active, "file", _digest(raw), "UNKNOWN",
                                           "empty or unsupported inventory")])
             observation = {"agent": active.agent, "source": active.alias,
