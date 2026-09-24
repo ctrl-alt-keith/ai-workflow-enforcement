@@ -10,7 +10,9 @@ local output file is not durable capture.
 
 Supply the governing `CAK-<id>`, a fresh local source and receipt path, a
 unique dated and versioned name, the expected Dropbox account and namespace,
-and the storage-admission authority reference. The command writes only to the
+and the storage-admission authority reference. The caller must establish that
+namespace from the owning storage contract; a numeric ID alone is not authority.
+The command writes only to the
 verified provider folder `/issues/CAK-<id>/`; a Dropbox synced source path
 never selects the destination. The folder must already exist. Resolve an
 absent folder through the authorized provider route before capture; unknown

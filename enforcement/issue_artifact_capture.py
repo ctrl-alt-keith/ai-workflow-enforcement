@@ -24,10 +24,12 @@ class Provider(Protocol):
 
 
 class CaptureBlocked(RuntimeError):
-    def __init__(self, code: str, effect: dict[str, object] | None = None) -> None:
+    def __init__(self, code: str, effect: dict[str, object] | None = None,
+                 planned: dict[str, object] | None = None) -> None:
         super().__init__(code)
         self.code = code
         self.effect = effect
+        self.planned = planned
 
 
 def _folder(metadata: dict[str, object], path: str, identity: str | None = None) -> str:
@@ -60,41 +62,53 @@ def capture(*, provider: Provider, issue: str, source: Path, name: str,
     content_hash = dropbox_content_hash(data)
     folder_path = f"/issues/{issue}"
     destination = f"{folder_path}/{name}"
+    planned = {"destination": destination, "size": size, "sha256": sha256,
+               "dropbox_content_hash": content_hash}
 
     try:
         account = provider.get_current_account()
         if account.get("email") != acting_email:
-            raise CaptureBlocked("acting_identity_mismatch")
+            raise CaptureBlocked("acting_identity_mismatch", planned=planned)
         folder_id = _folder(provider.get_metadata(folder_path), folder_path)
         _folder(provider.get_metadata(folder_id), folder_path, folder_id)
+    except CaptureBlocked as exc:
+        exc.planned = planned
+        raise
     except ProviderError as exc:
-        raise CaptureBlocked("folder_unverifiable") from exc
+        raise CaptureBlocked("folder_unverifiable", planned=planned) from exc
 
     # From this point a provider error may have followed a successful write.
+    effect = None
     try:
-        uploaded = provider.upload_absent(destination, data)
-    except ProviderError as exc:
-        raise CaptureBlocked("upload_collision" if exc.kind == "collision" else "upload_outcome_unknown") from exc
-    effect = {"status": "observed_unverified", "id": uploaded.get("id"),
-              "path": uploaded.get("path_display"), "rev": uploaded.get("rev")}
-    file_id = uploaded.get("id")
-    if not isinstance(file_id, str) or not file_id.startswith("id:"):
-        raise CaptureBlocked("upload_identity_unverifiable", effect)
-    try:
-        observed = provider.get_metadata(file_id)
-    except ProviderError as exc:
-        raise CaptureBlocked("uploaded_file_unverifiable", effect) from exc
-    if observed.get(".tag") != "file":
-        raise CaptureBlocked("uploaded_file_identity_mismatch", effect)
-    required = {"id": file_id, "path_lower": destination.casefold(),
-                "size": size, "content_hash": content_hash}
-    if any(uploaded.get(key) != value or observed.get(key) != value for key, value in required.items()):
-        raise CaptureBlocked("uploaded_file_identity_mismatch", effect)
-    if (not isinstance(uploaded.get("rev"), str) or not uploaded["rev"]
-            or observed.get("rev") != uploaded["rev"]
-            or uploaded.get("path_display") != destination
-            or observed.get("path_display") != destination):
-        raise CaptureBlocked("uploaded_file_identity_mismatch", effect)
+        try:
+            uploaded = provider.upload_absent(destination, data)
+        except ProviderError as exc:
+            code = "upload_collision" if exc.kind == "collision" else "upload_outcome_unknown"
+            raise CaptureBlocked(code, planned=planned) from exc
+        effect = {"status": "observed_unverified", "id": uploaded.get("id"),
+                  "path": uploaded.get("path_display"), "rev": uploaded.get("rev")}
+        file_id = uploaded.get("id")
+        if not isinstance(file_id, str) or not file_id.startswith("id:"):
+            raise CaptureBlocked("upload_identity_unverifiable", effect, planned)
+        try:
+            observed = provider.get_metadata(file_id)
+        except ProviderError as exc:
+            raise CaptureBlocked("uploaded_file_unverifiable", effect, planned) from exc
+        if observed.get(".tag") != "file":
+            raise CaptureBlocked("uploaded_file_identity_mismatch", effect, planned)
+        required = {"id": file_id, "path_lower": destination.casefold(),
+                    "size": size, "content_hash": content_hash}
+        if any(uploaded.get(key) != value or observed.get(key) != value for key, value in required.items()):
+            raise CaptureBlocked("uploaded_file_identity_mismatch", effect, planned)
+        if (not isinstance(uploaded.get("rev"), str) or not uploaded["rev"]
+                or observed.get("rev") != uploaded["rev"]
+                or uploaded.get("path_display") != destination
+                or observed.get("path_display") != destination):
+            raise CaptureBlocked("uploaded_file_identity_mismatch", effect, planned)
+    except CaptureBlocked:
+        raise
+    except Exception as exc:
+        raise CaptureBlocked("unexpected_after_upload", effect, planned) from exc
     return {
         "status": "verified", "issue": issue, "authority": authority,
         "folder": {"path": folder_path, "id": folder_id},
@@ -133,10 +147,12 @@ def main(argv: list[str] | None = None) -> int:
     except CaptureBlocked as exc:
         result = {"status": "blocked", "code": exc.code, "issue": args.issue,
                   "authority": args.authority,
+                  "planned": exc.planned,
                   "unverified_upload": exc.effect,
                   "provider_effect": (
                       "unknown_after_attempt" if (exc.code.startswith("upload_")
                       and exc.code != "upload_collision") or exc.code.startswith("uploaded_file_")
+                      or exc.code == "unexpected_after_upload"
                       else "collision_no_create" if exc.code == "upload_collision" else "not_attempted"
                   )}
     result["namespace_id"] = args.namespace_id

@@ -1,9 +1,13 @@
+import hashlib
+import http.client
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
 from enforcement.issue_artifact_capture import CaptureBlocked, capture, main
+from enforcement.artifact_store_integrity import ProviderError, dropbox_content_hash
 
 
 class Provider:
@@ -31,6 +35,18 @@ class Provider:
 
 
 class CaptureTests(unittest.TestCase):
+    def run_cli(self, root, provider):
+        source = Path(root) / "review.md"
+        source.write_bytes(b"review")
+        receipt = Path(root) / "receipt.json"
+        with patch("enforcement.issue_artifact_capture.DropboxClient", return_value=provider), \
+             patch.dict("os.environ", {"DROPBOX_ACCESS_TOKEN": "test-token"}):
+            exit_code = main(["--source-file", str(source), "--issue", "CAK-322",
+                              "--name", "review-v1-2026-09-23.md", "--authority", "Linear CAK-322",
+                              "--acting-email", "operator@example.com", "--namespace-id", "123",
+                              "--receipt-file", str(receipt)])
+        return exit_code, json.loads(receipt.read_text())
+
     def test_local_sync_path_does_not_select_provider_destination(self):
         with TemporaryDirectory() as root:
             local = Path(root) / "Dropbox" / "ctrl-alt-keith-artifacts" / "issues" / "CAK-322"
@@ -58,20 +74,66 @@ class CaptureTests(unittest.TestCase):
 
     def test_blocked_cli_records_no_provider_write(self):
         with TemporaryDirectory() as root:
-            source = Path(root) / "review.md"
-            source.write_bytes(b"review")
-            receipt = Path(root) / "receipt.json"
             provider = Provider(folder_path="/ctrl-alt-keith-artifacts/issues/CAK-322")
-            with patch("enforcement.issue_artifact_capture.DropboxClient", return_value=provider), \
-                 patch.dict("os.environ", {"DROPBOX_ACCESS_TOKEN": "test-token"}):
-                exit_code = main(["--source-file", str(source), "--issue", "CAK-322",
-                                  "--name", "review-v1-2026-09-23.md", "--authority", "Linear CAK-322",
-                                  "--acting-email", "operator@example.com", "--namespace-id", "123",
-                                  "--receipt-file", str(receipt)])
-            import json
+            exit_code, receipt = self.run_cli(root, provider)
             self.assertEqual(exit_code, 1)
-            self.assertEqual(json.loads(receipt.read_text())["provider_effect"], "not_attempted")
+            self.assertEqual(receipt["provider_effect"], "not_attempted")
             self.assertEqual(provider.uploads, [])
+
+    def test_uncertain_upload_receipt_keeps_planned_identity(self):
+        class UncertainProvider(Provider):
+            def upload_absent(self, path, content):
+                self.uploads.append((path, content))
+                raise ProviderError("unverifiable", "response unavailable")
+
+        with TemporaryDirectory() as root:
+            exit_code, receipt = self.run_cli(root, UncertainProvider())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(receipt["provider_effect"], "unknown_after_attempt")
+        self.assertEqual(receipt["planned"], {
+            "destination": "/issues/CAK-322/review-v1-2026-09-23.md",
+            "size": 6, "sha256": hashlib.sha256(b"review").hexdigest(),
+            "dropbox_content_hash": dropbox_content_hash(b"review"),
+        })
+        self.assertIsNone(receipt["unverified_upload"])
+
+    def test_incomplete_upload_response_still_writes_unknown_receipt(self):
+        class IncompleteProvider(Provider):
+            def upload_absent(self, path, content):
+                self.uploads.append((path, content))
+                raise http.client.IncompleteRead(b"partial")
+
+        with TemporaryDirectory() as root:
+            exit_code, receipt = self.run_cli(root, IncompleteProvider())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(receipt["code"], "unexpected_after_upload")
+        self.assertEqual(receipt["provider_effect"], "unknown_after_attempt")
+        self.assertEqual(receipt["planned"]["destination"], "/issues/CAK-322/review-v1-2026-09-23.md")
+
+    def test_collision_receipt_distinguishes_no_create(self):
+        class CollisionProvider(Provider):
+            def upload_absent(self, path, content):
+                raise ProviderError("collision", "target occupied")
+
+        with TemporaryDirectory() as root:
+            exit_code, receipt = self.run_cli(root, CollisionProvider())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(receipt["provider_effect"], "collision_no_create")
+        self.assertEqual(receipt["planned"]["destination"], "/issues/CAK-322/review-v1-2026-09-23.md")
+
+    def test_incomplete_readback_keeps_unverified_upload_identity(self):
+        class IncompleteProvider(Provider):
+            def get_metadata(self, path):
+                if path == "id:file":
+                    raise http.client.IncompleteRead(b"partial")
+                return super().get_metadata(path)
+
+        with TemporaryDirectory() as root:
+            exit_code, receipt = self.run_cli(root, IncompleteProvider())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(receipt["provider_effect"], "unknown_after_attempt")
+        self.assertEqual(receipt["unverified_upload"]["id"], "id:file")
+        self.assertEqual(receipt["planned"]["size"], 6)
 
     def test_post_upload_mismatch_retains_unverified_identity(self):
         class ChangedProvider(Provider):
