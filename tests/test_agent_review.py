@@ -99,6 +99,42 @@ class AgentReviewTests(unittest.TestCase):
         self.assertNotIn("do-not-read", json.dumps(report))
         self.assertTrue(any(c["status"] == "symlink not followed" for c in report["coverage"]))
 
+    def test_same_directory_codex_rule_symlink_tracks_target_identity(self):
+        rules = self.codex / "rules"
+        rules.mkdir()
+        body = 'prefix_rule(pattern=["rm"], decision="forbidden")\n'
+        for name in ("first.rules", "second.rules"):
+            (rules / name).write_text(body, encoding="utf-8")
+        link = rules / "default.rules"
+        link.symlink_to("first.rules")
+        first = review(self.enrollment)
+        self.assertEqual(first["result"], "OBSERVED")
+        linked = next(c for c in first["coverage"] if c["source"].startswith("user/rules/")
+                      and "link_sha256" in c)
+        self.assertEqual(linked["status"], "inspected")
+        self.assertEqual(linked["link_sha256"], sha256(b"first.rules").hexdigest())
+        self.assertNotIn("first.rules", json.dumps(first))
+
+        link.unlink()
+        link.symlink_to("second.rules")
+        second = review(self.enrollment, first)
+        self.assertEqual(second["result"], "OBSERVED")
+        self.assertTrue(second["previous"]["source_new"])
+        self.assertTrue(second["previous"]["source_resolved"])
+        self.assertEqual(second["previous"]["new"], [])
+
+    def test_codex_rule_symlink_outside_directory_is_not_followed(self):
+        rules = self.codex / "rules"
+        rules.mkdir()
+        outside = self.codex / "outside.rules"
+        outside.write_text('prefix_rule(pattern=["private"], decision="allow")\n', encoding="utf-8")
+        (rules / "default.rules").symlink_to("../outside.rules")
+        report = review(self.enrollment)
+        self.assertEqual(report["result"], "PARTIAL")
+        self.assertTrue(any(c["source"].startswith("user/rules/") and c["status"] == "symlink not followed"
+                            for c in report["coverage"]))
+        self.assertNotIn("private", json.dumps(report))
+
     def test_codex_rule_guards_and_duplicates_are_distinct(self):
         rules = self.codex / "rules"
         rules.mkdir()

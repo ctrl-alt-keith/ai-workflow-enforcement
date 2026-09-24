@@ -71,7 +71,12 @@ user-root source can be inspected, coverage is `UNKNOWN` and the run is
   `approval_policy`, `sandbox_mode`, `model`, and
   `sandbox_workspace_write.writable_roots`/`network_access`. Writable-root
   values are hashed only in the private local record, so accepted roots can be
-  pinned by invariant without reporting private paths.
+  pinned by invariant without reporting private paths. A `.rules` file may be a
+  relative symlink to a regular `.rules` file in the same rules directory. The
+  reviewer inspects that target under the link's own source identity and hashes
+  the target filename so retargeting changes comparison evidence. Links to
+  other directories, chained links, and other symlinked sources remain
+  `PARTIAL` and are not followed.
 - Claude Code: user and project settings, `CLAUDE.md`, `CLAUDE.local.md`,
   project `.claude/CLAUDE.md`, and Markdown rules. Structured inventory selects
   `model`, permission `allow`/`ask`/`deny` lists, `defaultMode`, and
