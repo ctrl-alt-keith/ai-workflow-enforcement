@@ -572,6 +572,19 @@ def _scan_agents_alignment(document: Document, playbook: tuple[Document, ...]) -
     return findings
 
 
+def scan_enrolled_instruction(path: Path, text: str) -> tuple[AdvisoryFinding, ...]:
+    """Reuse existing AGENTS and command-example advisories for one enrolled file.
+
+    The local agent reviewer consumes only finding kinds; snippets and raw
+    private paths remain on this process's local side of its reporting boundary.
+    """
+    document = Document(path.parent, path, text)
+    findings = _scan_shell_wrapper_examples(document)
+    if path.name == "AGENTS.md":
+        findings.extend(_scan_agents_alignment(document, ()))
+    return tuple(findings)
+
+
 def _playbook_phrase_set(playbook: tuple[Document, ...]) -> set[str]:
     phrases: set[str] = set()
     for document in playbook:

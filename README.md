@@ -18,6 +18,7 @@ scope.
 | Inventory repository validation claims and targets | `python3 -m enforcement.validation_contract_inventory --help` | [Validation contract inventory](docs/validation-contract-inventory.md) |
 | Produce a source-backed repository preflight | `python3 -m enforcement.repo_preflight --help` | [Repository preflight](docs/repo-preflight.md) |
 | Scan notes and playbook roots for advisory drift | `python3 -m enforcement.cli --help` | [Drift calibration](docs/drift-review-calibration.md) |
+| Inventory explicitly enrolled local agent configuration and instructions | `python3 -m enforcement.agent_review_cli --help` | [Local agent review](docs/local-agent-review.md) |
 | Render scanner JSON for review | `python3 -m enforcement.review_packet --help` | [Review packet](docs/review-packet.md) |
 | Refresh resolved local repositories safely | `python3 -m enforcement.safe_refresh_repos --help` | [Safe repository refresh](docs/safe-refresh-repos.md) |
 | Review or apply branch cleanup | `python3 -m enforcement.branch_cleanup --help` | [Branch cleanup](docs/branch-cleanup.md) |
