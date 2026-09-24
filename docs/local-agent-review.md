@@ -74,9 +74,10 @@ user-root source can be inspected, coverage is `UNKNOWN` and the run is
   pinned by invariant without reporting private paths. A `.rules` file may be a
   relative symlink to a regular `.rules` file in the same rules directory. The
   reviewer inspects that target under the link's own source identity and hashes
-  the target filename so retargeting changes comparison evidence. Links to
-  other directories, chained links, and other symlinked sources remain
-  `PARTIAL` and are not followed.
+  the target filename so retargeting changes comparison evidence. The link gets
+  one `UNKNOWN` unit because its runtime loading is unverified; the regular
+  target is inventoried separately. Links to other directories, chained links,
+  and other symlinked sources remain `PARTIAL` and are not followed.
 - Claude Code: user and project settings, `CLAUDE.md`, `CLAUDE.local.md`,
   project `.claude/CLAUDE.md`, and Markdown rules. Structured inventory selects
   `model`, permission `allow`/`ask`/`deny` lists, `defaultMode`, and
