@@ -500,40 +500,64 @@ def _parse(source: Source, raw: bytes) -> list[dict[str, str]]:
     return _structured_units(source, value)
 
 
-def _safe_read(source: Source) -> tuple[bytes | None, str | None]:
+def _safe_read(source: Source) -> tuple[bytes | None, str | None, str]:
     path = source.path
     if source.boundary is not None:
         try:
             relative = path.relative_to(source.boundary)
         except ValueError:
-            return None, "outside enrolled root"
+            return None, "outside enrolled root", ""
         current = source.boundary
         for part in relative.parts[:-1]:
             current = current / part
             if current.is_symlink():
-                return None, "symlink not followed"
+                return None, "symlink not followed", ""
+    link_path = None
+    link_before = None
+    link_name = ""
     if path.is_symlink():
-        return None, "symlink not followed"
+        if not (source.product == "codex" and source.surface == "permission"
+                and "/rules/" in source.alias and path.suffix == ".rules"):
+            return None, "symlink not followed", ""
+        try:
+            link_before = path.lstat()
+            link_name = os.readlink(path)
+            if (not stat.S_ISLNK(link_before.st_mode) or not link_name.endswith(".rules")
+                    or "/" in link_name or link_name in {".", ".."}):
+                return None, "symlink not followed", ""
+            link_path = path
+            path = path.parent / link_name
+            if path.is_symlink() or not path.is_file():
+                return None, "symlink not followed", ""
+        except OSError:
+            return None, "unreadable", ""
     try:
         if not path.exists():
-            return None, "absent"
+            return None, "absent", ""
         if not path.is_file():
-            return None, "not a regular file"
+            return None, "not a regular file", ""
+        if link_path is not None and not hasattr(os, "O_NOFOLLOW"):
+            return None, "symlink not followed", ""
         descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(descriptor, "rb") as handle:
             before = os.fstat(handle.fileno())
             if not stat.S_ISREG(before.st_mode):
-                return None, "not a regular file"
+                return None, "not a regular file", ""
             raw = handle.read(2_000_001)
             after = os.fstat(handle.fileno())
         if len(raw) > 2_000_000:
-            return None, "file exceeds 2 MB bound"
+            return None, "file exceeds 2 MB bound", ""
         if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
                 after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
-            return None, "source changed during read"
-        return raw, None
+            return None, "source changed during read", ""
+        if link_path is not None:
+            link_after = link_path.lstat()
+            if (link_before.st_dev, link_before.st_ino, link_before.st_size, link_before.st_mtime_ns) != (
+                    link_after.st_dev, link_after.st_ino, link_after.st_size, link_after.st_mtime_ns) or os.readlink(link_path) != link_name:
+                return None, "source changed during read", ""
+        return raw, None, _digest(link_name.encode()) if link_path is not None else ""
     except OSError:
-        return None, "unreadable"
+        return None, "unreadable", ""
 
 
 def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
@@ -543,7 +567,7 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
     sources = discover(enrollment)
     units: list[dict[str, str]] = []
     coverage: list[dict[str, str]] = []
-    physical: dict[tuple[Path, Path | None], tuple[bytes | None, str | None]] = {}
+    physical: dict[tuple[Path, Path | None], tuple[bytes | None, str | None, str]] = {}
     for agent in enrollment["agents"]:
         if agent["kind"] not in _CONTEXT_DOMAINS:
             continue
@@ -569,13 +593,13 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
             override_key = (override, source.boundary)
             if override_key not in physical:
                 physical[override_key] = _safe_read(replace(source, path=override))
-            override_raw, override_failure = physical[override_key]
+            override_raw, override_failure, _ = physical[override_key]
             if override_failure is None and override_raw is not None and override_raw.strip():
                 active = replace(source, loading="shadowed by nonempty override; not loaded")
         source_key = (source.path, source.boundary)
         if source_key not in physical:
             physical[source_key] = _safe_read(active)
-        raw, failure = physical[source_key]
+        raw, failure, link_sha256 = physical[source_key]
         if failure:
             required = active.alias.startswith(("context-file-", "file-"))
             status = "missing enrolled file" if failure == "absent" and required else failure
@@ -588,8 +612,11 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
             parsed = _parse(active, raw)
             units.extend(parsed or [_unit(active, "file", _digest(raw), "UNKNOWN",
                                           "empty or unsupported inventory")])
-            coverage.append({"agent": active.agent, "source": active.alias,
-                             "status": "inspected", "sha256": _digest(raw)})
+            observation = {"agent": active.agent, "source": active.alias,
+                           "status": "inspected", "sha256": _digest(raw)}
+            if link_sha256:
+                observation["link_sha256"] = link_sha256
+            coverage.append(observation)
         except (ValueError, UnicodeDecodeError, RecursionError):
             units.append(_unit(active, "file", _digest(raw), "UNKNOWN", "parse failure"))
             coverage.append({"agent": active.agent, "source": active.alias, "status": "parse failure"})
@@ -625,7 +652,8 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
     current_ids = {_identity((u["agent"], u["source"], u["locator"], u["content_sha256"],
                               u["disposition"], u["loading"], u["precedence"], u["version"], u["support"])) for u in units}
     observed_ids = {_identity((item["agent"], item["source"], item["status"],
-                               item.get("sha256", ""), item.get("evidence_sha256", "")))
+                               item.get("sha256", ""), item.get("evidence_sha256", "")) +
+                              ((item["link_sha256"],) if "link_sha256" in item else ()))
                     for item in coverage}
     current_docs = provider_docs or {}
     scope_identity = _scope_identity(enrollment)
