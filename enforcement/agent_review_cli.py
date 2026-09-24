@@ -61,10 +61,10 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, json.JSONDecodeError, RecursionError) as exc:
         print(f"agent review blocked: {type(exc).__name__}", file=sys.stderr)
         return 2
-    changed = bool(report["previous"]["new"] or report["previous"]["resolved"]
-                   or report["previous"]["status"] == "scope_changed"
-                   or report["accepted_baseline"]["status"] == "scope_changed"
-                   or report["accepted_baseline"]["new"] or report["accepted_baseline"]["resolved"])
+    changes = ("new", "resolved", "source_new", "source_resolved", "provider_docs_changed")
+    changed = any(report[name]["status"] == "scope_changed" or
+                  any(report[name][key] for key in changes)
+                  for name in ("previous", "accepted_baseline"))
     first_actionable = previous is None and any(
         unit["disposition"] in {"PRUNE_CANDIDATE_REDUNDANT", "PRUNE_CANDIDATE_STALE",
                                 "PRUNE_CANDIDATE_UNSUPPORTED", "REVIEW_NARROWING", "REVIEW_RATIONALE"}
@@ -76,8 +76,15 @@ def main(argv: list[str] | None = None) -> int:
                           "attested_context_domains": attested_count,
                           "new_findings": len(report["previous"]["new"]),
                           "resolved_findings": len(report["previous"]["resolved"]),
+                          "new_source_observations": len(report["previous"]["source_new"]),
+                          "resolved_source_observations": len(report["previous"]["source_resolved"]),
+                          "provider_docs_changed": len(report["previous"]["provider_docs_changed"]),
                           "baseline_new": len(report["accepted_baseline"]["new"]),
-                          "baseline_resolved": len(report["accepted_baseline"]["resolved"])}, sort_keys=True))
+                          "baseline_resolved": len(report["accepted_baseline"]["resolved"]),
+                          "baseline_source_changes": len(report["accepted_baseline"]["source_new"]) +
+                              len(report["accepted_baseline"]["source_resolved"]),
+                          "baseline_provider_docs_changed": len(
+                              report["accepted_baseline"]["provider_docs_changed"])}, sort_keys=True))
     return 0 if report["result"] == "OBSERVED" and report["baseline_status"] != "drift" else 1
 
 

@@ -34,11 +34,13 @@ python3 -m enforcement.agent_review_cli --enrollment /absolute/local/enrollment.
 ```
 
 `--previous` names a prior `OBSERVED` record; `--baseline` names a separately
-human-accepted `OBSERVED` record. Both are read-only inputs. Without either,
-that comparison is `unavailable`. A changed fingerprint does not update the
-baseline. `PARTIAL` or accepted-baseline drift exits 1; setup or record failure
-exits 2. Keep partial records for diagnosis, but do not use them as comparison
-references.
+human-accepted `OBSERVED` record in the current record schema. Both are
+read-only inputs. Without either, that comparison is `unavailable`. Comparison
+separates finding fingerprints, source observations (including file order and
+content), and provider-document identities. A change in any of them does not
+update the baseline. `PARTIAL` or accepted-baseline drift exits 1; setup,
+record, or reference-schema failure exits 2. Keep partial records for diagnosis,
+but do not use them as comparison references.
 
 The command prints compact status and counts. The local record contains safe
 aliases, unsalted content hashes, unit dispositions, coverage, and comparison
@@ -49,8 +51,8 @@ requests.
 
 Before reading enrolled files, the CLI fetches applicable official provider
 documentation and records its content hashes. It sends no local content in
-those requests. Fetch failure blocks the run; a changed document hash enters
-the comparison and needs human interpretation. Against an accepted baseline,
+those requests. Fetch failure blocks the run; a changed document hash is
+reported separately from new or resolved findings and needs human interpretation. Against an accepted baseline,
 any document hash change reports drift and exits 1 until a human accepts a new
 baseline.
 
@@ -65,10 +67,16 @@ user-root source can be inspected, coverage is `UNKNOWN` and the run is
 - Codex: user `config.toml`, `AGENTS.override.md`/`AGENTS.md`, and `.rules`;
   project `.codex/config.toml`, instructions, and `.codex/rules` as conditional
   context. The inert parser accepts a literal `prefix_rule` subset and marks
-  unsupported Starlark `UNKNOWN`.
+  unsupported Starlark `UNKNOWN`. Structured inventory selects only
+  `approval_policy`, `sandbox_mode`, and `model`.
 - Claude Code: user and project settings, `CLAUDE.md`, `CLAUDE.local.md`,
-  project `.claude/CLAUDE.md`, and Markdown rules. Settings entries are separate
-  units; restrictive permissions remain guardrails.
+  project `.claude/CLAUDE.md`, and Markdown rules. Structured inventory selects
+  `model`, permission `allow`/`ask`/`deny` lists, `defaultMode`, and
+  `disableBypassPermissionsMode`; restrictive permissions remain guardrails.
+
+Other structured fields remain opaque `UNKNOWN` units. Their nested values
+are not inventoried or hashed individually; the private whole-file observation
+hash still detects source changes.
 
 Instruction overlap receives `REVIEW_RATIONALE` for human judgment. AGENTS
 advisories come from the existing instruction drift scanner and do not prove
@@ -76,7 +84,7 @@ runtime loading.
 
 File-backed enrollment names explicit files and their ownership (`user`,
 `shared`, or `managed`) under one root. Loading and effectiveness stay
-`UNKNOWN`; no common rules format is assumed.
+`UNKNOWN`; structured files stay opaque and no common rules format is assumed.
 
 Live qualification requires independent evidence of installed product/version,
 effective root and overrides (`CODEX_HOME` or `CLAUDE_CONFIG_DIR` where

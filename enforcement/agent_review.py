@@ -31,11 +31,10 @@ _CLAUDE_SETTINGS = ("settings.json", "settings.local.json")
 _RULE_SUFFIXES = frozenset({".md", ".markdown"})
 _HEADING = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
 _CLAUDE_IMPORT = re.compile(r"(?<!\w)@([A-Za-z0-9_./~-]+)")
-_SENSITIVE_FIELDS = frozenset({"token", "apikey", "api_key", "password", "secret",
-                                "oauth", "credentials", "env", "mcpservers", "mcp_servers",
-                                "headers", "authorization", "cookie", "pat", "credential"})
-_SENSITIVE_MARKERS = ("token", "secret", "password", "apikey", "api_key", "credential",
-                      "auth", "cookie", "private_key", "bearer")
+_CODEX_SAFE_FIELDS = frozenset({"approval_policy", "sandbox_mode", "model"})
+_CLAUDE_SAFE_FIELDS = frozenset({"model"})
+_CLAUDE_PERMISSION_LISTS = frozenset({"allow", "ask", "deny"})
+_CLAUDE_PERMISSION_SCALARS = frozenset({"defaultMode", "disableBypassPermissionsMode"})
 _REFERENCES = {
     "codex": {"config": "https://learn.chatgpt.com/docs/config-file/config-reference",
               "permission": "https://learn.chatgpt.com/docs/agent-configuration/rules",
@@ -336,30 +335,61 @@ def _precedence(source: Source) -> str:
     return "UNKNOWN"
 
 
-def _flatten(value: Any, prefix: str = "") -> list[tuple[str, Any]]:
-    if isinstance(value, dict):
-        if not value:
-            return [(prefix, value)]
-        result = []
-        for key, child in sorted(value.items()):
-            # Do not inventory secret-bearing mixed-store fields or leak keys.
-            if _sensitive_key(key):
-                result.append((f"{prefix}.{key}" if prefix else key, None))
-                continue
-            result.extend(_flatten(child, f"{prefix}.{key}" if prefix else key))
-        return result
-    if isinstance(value, list):
-        if not value:
-            return [(prefix, value)]
-        return [entry for i, child in enumerate(value)
-                for entry in _flatten(child, f"{prefix}[{i}]")]
-    return [(prefix, value)]
+def _structured_units(source: Source, value: dict[str, Any]) -> list[dict[str, str]]:
+    """Select documented safe provider fields; keep all other structures opaque."""
+    units: list[dict[str, str]] = []
+    seen_allow: set[str] = set()
 
+    def add(locator: str, item: Any, surface: str, opaque: bool = False) -> None:
+        selected = replace(source, surface=surface)
+        if opaque:
+            units.append(_unit(selected, f"opaque-{_digest(locator.encode())[:12]}", "",
+                               "UNKNOWN", "unsupported structured field; contents not inventoried"))
+            return
+        digest = _identity(item)
+        locator_digest = _identity((re.sub(r"\[\d+\]", "[]", locator), item))
+        occurrence = sum(unit["locator"].startswith(f"entry-{locator_digest[:12]}-") for unit in units) + 1
+        safe_locator = f"entry-{locator_digest[:12]}-{occurrence}"
+        restrictive_claude = source.product == "claude-code" and (
+            locator.startswith("permissions.deny[") or locator.startswith("permissions.ask["))
+        restrictive_codex = source.product == "codex" and isinstance(item, str) and (
+            (locator == "approval_policy" and item in {"on-request", "untrusted"}) or
+            (locator == "sandbox_mode" and item in {"read-only", "workspace-write"}))
+        disposition = "KEEP_GUARDRAIL" if restrictive_claude or restrictive_codex else "UNKNOWN"
+        reason = ("restrictive or approval boundary; preserve pending human review"
+                  if disposition == "KEEP_GUARDRAIL" else
+                  "effective behavior and necessity require installed-version evidence")
+        if source.product == "claude-code" and locator.startswith("permissions.allow["):
+            if digest in seen_allow and source.ownership == "user":
+                disposition, reason = ("PRUNE_CANDIDATE_REDUNDANT",
+                                       "exact duplicate allow entry in one settings file; verify intent")
+            elif digest in seen_allow:
+                disposition, reason = ("REVIEW_RATIONALE",
+                                       "duplicate shared allow entry; route to source owner")
+            seen_allow.add(digest)
+        units.append(_unit(selected, safe_locator, digest, disposition, reason))
 
-def _sensitive_key(key: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]", "", key.lower())
-    return normalized in {re.sub(r"[^a-z0-9]", "", field) for field in _SENSITIVE_FIELDS} or any(
-        re.sub(r"[^a-z0-9]", "", marker) in normalized for marker in _SENSITIVE_MARKERS)
+    safe_fields = _CODEX_SAFE_FIELDS if source.product == "codex" else _CLAUDE_SAFE_FIELDS
+    for key, item in sorted(value.items()):
+        if key in safe_fields and isinstance(item, (str, bool, int, float)):
+            add(key, item, "permission" if key in {"approval_policy", "sandbox_mode"} else "config")
+        elif source.product == "claude-code" and key == "permissions" and isinstance(item, dict):
+            for permission_key, permission_value in sorted(item.items()):
+                locator = f"permissions.{permission_key}"
+                if permission_key in _CLAUDE_PERMISSION_LISTS and isinstance(permission_value, list):
+                    if all(isinstance(entry, str) for entry in permission_value):
+                        for index, entry in enumerate(permission_value):
+                            add(f"{locator}[{index}]", entry, "permission")
+                    else:
+                        add(locator, None, "permission", opaque=True)
+                elif permission_key in _CLAUDE_PERMISSION_SCALARS and isinstance(
+                        permission_value, (str, bool)):
+                    add(locator, permission_value, "permission")
+                else:
+                    add(locator, None, "permission", opaque=True)
+        else:
+            add(key, None, source.surface, opaque=True)
+    return units
 
 
 def _codex_rule_units(source: Source, text: str) -> list[dict[str, str]]:
@@ -447,54 +477,16 @@ def _parse(source: Source, raw: bytes) -> list[dict[str, str]]:
         return units
     if source.product == "codex" and source.path.suffix == ".rules":
         return _codex_rule_units(source, raw.decode("utf-8"))
+    if source.product == "file-backed":
+        return [_unit(source, "opaque-file", "", "UNKNOWN",
+                      "unverified file-backed semantics; contents not inventoried")]
     try:
         value = tomllib.loads(raw.decode("utf-8")) if source.path.suffix == ".toml" else json.loads(raw)
     except (UnicodeDecodeError, tomllib.TOMLDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(type(exc).__name__) from None
     if not isinstance(value, dict):
         raise ValueError("root is not an object")
-    units = []
-    locator_counts: dict[str, int] = {}
-    for locator, item in _flatten(value):
-        if not locator:
-            continue
-        surface = source.surface if source.product == "file-backed" else (
-            "permission" if (locator.startswith("permissions.") or locator in
-                             {"approval_policy", "sandbox_mode"}) else "config")
-        # Locators omit raw keys and paths. These hashes are unsalted and can
-        # still confirm guesses; records must remain in private local storage.
-        stable_locator = re.sub(r"\[\d+\]", "[]", locator)
-        locator_identity = _identity((stable_locator, item)) if item is not None else _digest(stable_locator.encode())
-        locator_counts[locator_identity] = locator_counts.get(locator_identity, 0) + 1
-        safe_locator = f"entry-{locator_identity[:12]}-{locator_counts[locator_identity]}"
-        unit_source = Source(source.agent, source.product, source.version, source.alias,
-                             source.path, surface, source.ownership, source.context,
-                             source.loading, source.support)
-        leaf = locator.split(".")[-1].lower()
-        if item is None and _sensitive_key(leaf):
-            units.append(_unit(unit_source, safe_locator, "", "UNKNOWN",
-                               "sensitive field excluded from inspection"))
-            continue
-        restrictive_claude = source.product == "claude-code" and (
-            locator.startswith("permissions.deny[") or locator.startswith("permissions.ask["))
-        restrictive_codex = source.product == "codex" and isinstance(item, str) and (
-            (locator == "approval_policy" and item in {"on-request", "untrusted"}) or
-            (locator == "sandbox_mode" and item in {"read-only", "workspace-write"}))
-        disposition = "KEEP_GUARDRAIL" if restrictive_claude or restrictive_codex else "UNKNOWN"
-        reason = ("restrictive or approval boundary; preserve pending human review"
-                  if disposition == "KEEP_GUARDRAIL" else
-                  "effective behavior and necessity require installed-version evidence")
-        if source.product == "claude-code" and surface == "permission" and locator.startswith("permissions.allow["):
-            same_list = [unit for unit in units if unit["surface"] == "permission"
-                         and unit["content_sha256"] == _identity(item)]
-            if same_list and source.ownership == "user":
-                disposition = "PRUNE_CANDIDATE_REDUNDANT"
-                reason = "exact duplicate allow entry in one settings file; verify intent"
-            elif same_list:
-                disposition = "REVIEW_RATIONALE"
-                reason = "duplicate shared allow entry; route to source owner"
-        units.append(_unit(unit_source, safe_locator, _identity(item), disposition, reason))
-    return units
+    return _structured_units(source, value)
 
 
 def _safe_read(source: Source) -> tuple[bytes | None, str | None]:
@@ -621,36 +613,53 @@ def review(enrollment: dict[str, Any], previous: dict[str, Any] | None = None,
                                   "status": "present" if matching else "drift"})
     current_ids = {_identity((u["agent"], u["source"], u["locator"], u["content_sha256"],
                               u["disposition"], u["loading"], u["precedence"], u["version"], u["support"])) for u in units}
-    for url, digest in sorted((provider_docs or {}).items()):
-        current_ids.add(_identity(("provider_doc", url, digest)))
+    observed_ids = {_identity((item["agent"], item["source"], item["status"],
+                               item.get("sha256", ""), item.get("evidence_sha256", "")))
+                    for item in coverage}
+    current_docs = provider_docs or {}
     scope_identity = _scope_identity(enrollment)
     def compare(other: dict[str, Any] | None) -> dict[str, Any]:
         if other is None:
-            return {"status": "unavailable", "reference_sha256": "", "new": [], "resolved": []}
-        if (other.get("schema_version") != 1 or other.get("result") != "OBSERVED"
-                or not isinstance(other.get("fingerprints"), list)):
+            return {"status": "unavailable", "reference_sha256": "", "new": [], "resolved": [],
+                    "source_new": [], "source_resolved": [], "provider_docs_changed": []}
+        if (other.get("schema_version") != 2 or other.get("result") != "OBSERVED"
+                or not isinstance(other.get("fingerprints"), list)
+                or not isinstance(other.get("observation_fingerprints"), list)
+                or not isinstance(other.get("provider_docs"), dict)):
             raise ValueError("comparison record has unsupported schema")
         old_values = other["fingerprints"]
+        old_observed = other["observation_fingerprints"]
         if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
-               for value in old_values):
+               for value in [*old_values, *old_observed]):
             raise ValueError("comparison record has invalid fingerprints")
+        old_docs = other["provider_docs"]
+        if any(not isinstance(url, str) or not isinstance(digest, str) or
+               not re.fullmatch(r"[0-9a-f]{64}", digest) for url, digest in old_docs.items()):
+            raise ValueError("comparison record has invalid provider documentation")
         old = set(old_values)
+        old_sources = set(old_observed)
         status = "compared" if other.get("scope_sha256") == scope_identity else "scope_changed"
         return {"status": status, "reference_sha256": _identity(other),
                 "new": sorted(current_ids - old),
-                "resolved": sorted(old - current_ids)}
+                "resolved": sorted(old - current_ids),
+                "source_new": sorted(observed_ids - old_sources),
+                "source_resolved": sorted(old_sources - observed_ids),
+                "provider_docs_changed": sorted(url for url in current_docs.keys() | old_docs.keys()
+                                                if current_docs.get(url) != old_docs.get(url))}
     previous_comparison = compare(previous)
     baseline_comparison = compare(baseline)
     baseline_status = ("unavailable" if baseline is None else "drift" if
-                       baseline_comparison["new"] or baseline_comparison["resolved"] or
+                       any(baseline_comparison[key] for key in
+                           ("new", "resolved", "source_new", "source_resolved", "provider_docs_changed")) or
                        baseline_comparison["status"] == "scope_changed" else "aligned")
     critical = (any(c["status"] not in ("inspected", "absent", "operator_attested") for c in coverage)
                 or any(item["status"] == "drift" for item in invariant_results))
-    return {"schema_version": 1, "authority": "observe-and-report", "result": "PARTIAL" if critical else "OBSERVED",
+    return {"schema_version": 2, "authority": "observe-and-report", "result": "PARTIAL" if critical else "OBSERVED",
             "scope_sha256": scope_identity, "coverage": coverage, "units": units,
             "invariants": invariant_results,
-            "provider_docs": provider_docs or {},
-            "fingerprints": sorted(current_ids), "previous": previous_comparison,
+            "provider_docs": current_docs,
+            "fingerprints": sorted(current_ids), "observation_fingerprints": sorted(observed_ids),
+            "previous": previous_comparison,
             "accepted_baseline": baseline_comparison, "baseline_status": baseline_status,
             "limitations": ["Effective behavior requires runtime and provider evidence; fixture inspection is not live qualification.",
                             "No disposition accepts drift or authorizes an inspected-source edit."]}

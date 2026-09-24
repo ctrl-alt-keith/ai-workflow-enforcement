@@ -2,6 +2,7 @@
 
 import json
 import io
+from hashlib import sha256
 from contextlib import redirect_stdout
 from pathlib import Path
 import tempfile
@@ -119,7 +120,7 @@ class AgentReviewTests(unittest.TestCase):
         report = review(self.enrollment)
         self.assertTrue(any(u["locator"].startswith("import-") and u["disposition"] == "UNKNOWN"
                             for u in report["units"]))
-        self.assertTrue(any(u["reason"] == "sensitive field excluded from inspection"
+        self.assertTrue(any(u["reason"] == "unsupported structured field; contents not inventoried"
                             for u in report["units"]))
         self.assertTrue(any(u["disposition"] == "PRUNE_CANDIDATE_REDUNDANT"
                             for u in report["units"]))
@@ -192,9 +193,11 @@ class AgentReviewTests(unittest.TestCase):
 
     def test_changed_provider_document_is_comparison_change(self):
         first = review(self.enrollment, provider_docs={"official-doc": "a" * 64})
-        second = review(self.enrollment, first, provider_docs={"official-doc": "b" * 64})
-        self.assertEqual(len(second["previous"]["new"]), 1)
-        self.assertEqual(len(second["previous"]["resolved"]), 1)
+        second = review(self.enrollment, first, first, provider_docs={"official-doc": "b" * 64})
+        self.assertEqual(second["previous"]["new"], [])
+        self.assertEqual(second["previous"]["resolved"], [])
+        self.assertEqual(second["previous"]["provider_docs_changed"], ["official-doc"])
+        self.assertEqual(second["baseline_status"], "drift")
 
     def test_codex_mcp_secrets_are_excluded(self):
         (self.codex / "config.toml").write_text(
@@ -202,7 +205,7 @@ class AgentReviewTests(unittest.TestCase):
             encoding="utf-8")
         report = review(self.enrollment)
         self.assertNotIn("synthetic-secret", json.dumps(report))
-        self.assertTrue(any(u["reason"] == "sensitive field excluded from inspection"
+        self.assertTrue(any(u["reason"] == "unsupported structured field; contents not inventoried"
                             for u in report["units"]))
 
     def test_rule_and_permission_insertion_keep_existing_fingerprints(self):
@@ -390,8 +393,10 @@ class AgentReviewTests(unittest.TestCase):
             '{"hooks":[{"X-Api-Key":"synthetic-secret"}]}', encoding="utf-8")
         report = review(self.enrollment)
         self.assertNotIn("synthetic-secret", json.dumps(report))
-        self.assertTrue(any(u["reason"] == "sensitive field excluded from inspection"
+        self.assertTrue(any(u["reason"] == "unsupported structured field; contents not inventoried"
                             for u in report["units"]))
+        nested_value_hash = sha256(json.dumps("synthetic-secret", separators=(",", ":")).encode()).hexdigest()
+        self.assertNotIn(nested_value_hash, json.dumps(report))
 
     def test_context_file_intermediate_symlink_is_not_followed(self):
         external = self.root.resolve() / "external-context"
@@ -405,6 +410,56 @@ class AgentReviewTests(unittest.TestCase):
         self.assertEqual(report["result"], "PARTIAL")
         self.assertTrue(any(c["source"] == "context-file-0" and c["status"] == "symlink not followed"
                             for c in report["coverage"]))
+
+    def test_source_order_change_is_visible_without_finding_churn(self):
+        instructions = self.claude / "CLAUDE.md"
+        instructions.write_text("# First\nA\n# Second\nB\n", encoding="utf-8")
+        first = review(self.enrollment)
+        instructions.write_text("# Second\nB\n# First\nA\n", encoding="utf-8")
+        changed = review(self.enrollment, first, first)
+        self.assertEqual(changed["previous"]["new"], [])
+        self.assertEqual(changed["previous"]["resolved"], [])
+        self.assertTrue(changed["previous"]["source_new"])
+        self.assertTrue(changed["previous"]["source_resolved"])
+        self.assertEqual(changed["baseline_status"], "drift")
+
+    def test_opaque_store_changes_source_without_nested_value_fingerprint(self):
+        settings = self.claude / "settings.json"
+        settings.write_text('{"http_headers":{"X-Private":"synthetic-secret"}}', encoding="utf-8")
+        first = review(self.enrollment)
+        self.assertTrue(any(u["reason"] == "unsupported structured field; contents not inventoried"
+                            for u in first["units"]))
+        nested_hash = sha256(json.dumps("synthetic-secret", separators=(",", ":")).encode()).hexdigest()
+        self.assertNotIn(nested_hash, json.dumps(first))
+        settings.write_text('{"http_headers":{"X-Private":"changed-secret"}}', encoding="utf-8")
+        second = review(self.enrollment, first)
+        self.assertEqual(second["previous"]["new"], [])
+        self.assertEqual(second["previous"]["resolved"], [])
+        self.assertTrue(second["previous"]["source_new"])
+
+    def test_supported_provider_fields_keep_useful_dispositions(self):
+        (self.codex / "config.toml").write_text(
+            'approval_policy="on-request"\nsandbox_mode="read-only"\n[hooks]\nprivate="fixture"\n',
+            encoding="utf-8")
+        (self.claude / "settings.json").write_text(
+            '{"permissions":{"deny":["Bash(rm:*)"],"allow":["Read","Read"]},'
+            '"env":{"TOKEN":"synthetic-secret"}}', encoding="utf-8")
+        report = review(self.enrollment)
+        self.assertEqual(sum(u["disposition"] == "KEEP_GUARDRAIL" for u in report["units"]), 3)
+        self.assertTrue(any(u["disposition"] == "PRUNE_CANDIDATE_REDUNDANT" for u in report["units"]))
+        self.assertTrue(any(u["reason"] == "unsupported structured field; contents not inventoried"
+                            for u in report["units"]))
+
+    def test_generic_structured_file_stays_opaque(self):
+        private = self.root / "other.json"
+        private.write_text('{"nested":{"token":"synthetic-secret"}}', encoding="utf-8")
+        enrollment = {"agents": [{"id": "other", "kind": "file-backed", "version": "fixture-1",
+                                  "support": "unverified", "launch_context": "fixture", "root": str(self.root),
+                                  "files": [{"path": str(private), "surface": "config", "ownership": "user"}]}]}
+        report = review(enrollment)
+        self.assertEqual([u["loading"] for u in report["units"]], ["UNKNOWN"])
+        self.assertEqual([u["content_sha256"] for u in report["units"]], [""])
+        self.assertNotIn("synthetic-secret", json.dumps(report))
 
 
 if __name__ == "__main__":
