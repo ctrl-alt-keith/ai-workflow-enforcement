@@ -131,6 +131,27 @@ class SafeRefreshReposTests(unittest.TestCase):
         self.assertEqual("mismatch", result.identity.status)
         self.assertFalse(any(call.args[1][0] == "fetch" for call in git.call_args_list))
 
+    def test_incomplete_repository_identity_blocks_before_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            for target in (
+                RepoTarget("sample", repo, expected_repository="ctrl-alt-keith/sample"),
+                RepoTarget("sample", repo, expected_repository_id=7),
+            ):
+                with (
+                    self.subTest(target=target),
+                    mock.patch.object(
+                        safe_refresh_module,
+                        "_git",
+                        wraps=safe_refresh_module._git,
+                    ) as git,
+                ):
+                    result = safe_refresh_repos(SafeRefreshConfig((target,))).repositories[0]
+
+                self.assertEqual("blocked", result.status)
+                self.assertIn("requires both", result.details[0])
+                self.assertFalse(any(call.args[1][0] == "fetch" for call in git.call_args_list))
+
     def test_loads_complete_provider_backed_branch_cleanup_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

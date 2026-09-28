@@ -167,6 +167,9 @@ def safe_refresh_repo(target: RepoTarget) -> RepoRefreshResult:
     if Path(top_level.stdout.strip()).resolve() != target.path.resolve():
         result.details.append("configured checkout path is not the Git worktree top level")
         return result
+    if bool(target.expected_repository) != (target.expected_repository_id is not None):
+        result.details.append("repository identity requires both expected repository and repository ID")
+        return result
     if target.expected_repository and target.expected_repository_id is not None:
         identity = verify_local_repository_identity(
             target.path,
