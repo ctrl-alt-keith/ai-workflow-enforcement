@@ -732,6 +732,35 @@ class RepoSettingsAuditTests(unittest.TestCase):
         self.assertEqual("drift", item.status)
         self.assertIn("ctrl-alt-keith/old", item.actual)
 
+    def test_org_audit_skips_archived_repositories_but_preserves_inventory(self) -> None:
+        responses = {
+            "__repo_list__": [
+                {"nameWithOwner": "ctrl-alt-keith/sample"},
+                {"nameWithOwner": "ctrl-alt-keith/archived", "archived": True},
+            ]
+        }
+        responses.update(_clean_responses())
+        runner = FakeGh(responses)
+
+        report = audit_org_repo_settings("ctrl-alt-keith", runner=runner)
+
+        data = json.loads(repo_settings_audit.render_org_json_report(report))
+        self.assertEqual(
+            ["ctrl-alt-keith/archived", "ctrl-alt-keith/sample"],
+            data["repositories"],
+        )
+        self.assertEqual(["ctrl-alt-keith/archived"], data["archived_repositories"])
+        self.assertEqual(2, data["repository_count_attestation"]["enumerated_total"])
+        self.assertEqual(
+            {"repository_count": 2, "audited_repository_count": 1, "archived_repository_count": 1},
+            data["summary"],
+        )
+        self.assertEqual(["ctrl-alt-keith/sample"], [item["repository"] for item in data["reports"]])
+        self.assertNotIn(
+            "/repos/ctrl-alt-keith/archived",
+            [command[-1] for command in runner.commands],
+        )
+
     def test_org_audit_does_not_classify_orphans_when_membership_is_unproven(self) -> None:
         responses = {
             "__repo_list__": [{"nameWithOwner": "ctrl-alt-keith/sample"}],
@@ -860,7 +889,7 @@ class FakeGh:
                         "name": entry["nameWithOwner"].split("/", 1)[1],
                         "full_name": entry["nameWithOwner"],
                         "owner": {"login": entry["nameWithOwner"].split("/", 1)[0]},
-                        "archived": False,
+                        "archived": bool(entry.get("archived", False)),
                         "private": bool(entry.get("isPrivate")),
                         "visibility": "private" if entry.get("isPrivate") else "public",
                         "default_branch": "main",
