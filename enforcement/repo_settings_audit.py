@@ -155,6 +155,7 @@ class OrgRepoSettingsReport:
     policy_override_membership: AuditItem
     errors: tuple[str, ...] = ()
     repository_enumeration: OrganizationRepositoryEnumeration | None = None
+    archived_repositories: tuple[str, ...] = ()
 
 
 Runner = Callable[[tuple[str, ...]], GhCommand]
@@ -210,15 +211,17 @@ def audit_org_repo_settings(
     workspace_root: Path | None = None,
     runner: Runner | None = None,
 ) -> OrgRepoSettingsReport:
-    """Build a read-only settings report for all visible repositories in an organization."""
+    """Audit active repositories while attesting the full visible organization inventory."""
     started = _utc_now()
     gh = runner or _gh
     enumeration = enumerate_organization_repositories(org, gh)
     repositories = tuple(repo.full_name for repo in enumeration.repositories)
+    active_repositories = tuple(repo.full_name for repo in enumeration.repositories if not repo.archived)
+    archived_repositories = tuple(repo.full_name for repo in enumeration.repositories if repo.archived)
     errors = list(enumeration.errors)
     reports: list[RepoSettingsReport] = []
     include_local_source = workspace_root is not None
-    for repo in repositories:
+    for repo in active_repositories:
         try:
             reports.append(
                 audit_repo_settings(
@@ -247,6 +250,7 @@ def audit_org_repo_settings(
         policy_override_membership=_policy_override_membership_item(enumeration),
         errors=tuple(errors),
         repository_enumeration=enumeration,
+        archived_repositories=archived_repositories,
     )
 
 
@@ -407,6 +411,7 @@ def render_org_text_report(report: OrgRepoSettingsReport) -> str:
         f"Finished: {report.finished_at}",
         f"Repositories discovered: {len(report.repositories)}",
         f"Repositories audited: {len(report.reports)}",
+        f"Archived repositories skipped: {len(report.archived_repositories)}",
         *_org_count_attestation_text(report.repository_enumeration),
         (
             "Hosted governance summary: "
@@ -422,6 +427,9 @@ def render_org_text_report(report: OrgRepoSettingsReport) -> str:
         ),
         "",
     ]
+    if report.archived_repositories:
+        lines.append("Archived repositories excluded from audit: " + ", ".join(report.archived_repositories))
+        lines.append("")
     for error in report.errors:
         lines.append(f"ERROR: {error}")
     if report.errors:
@@ -476,10 +484,12 @@ def render_org_json_report(report: OrgRepoSettingsReport) -> str:
         "started_at": report.started_at,
         "finished_at": report.finished_at,
         "repositories": list(report.repositories),
+        "archived_repositories": list(report.archived_repositories),
         "repository_count_attestation": _org_count_attestation_json(report.repository_enumeration),
         "summary": {
             "repository_count": len(report.repositories),
             "audited_repository_count": len(report.reports),
+            "archived_repository_count": len(report.archived_repositories),
         },
         "policy_override_membership": asdict(report.policy_override_membership),
         "hosted_governance_summary": _org_summary(report.reports, hosted=True),
