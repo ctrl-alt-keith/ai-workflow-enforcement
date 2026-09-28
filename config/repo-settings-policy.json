@@ -56,8 +56,12 @@
     },
     "ctrl-alt-keith/.github": {
       "required_checks": [
-        "markdownlint"
+        "check"
       ]
+    },
+    "ctrl-alt-keith/gitlab-linode-lab": {
+      "visibility": "private",
+      "require_status_checks": false
     },
     "ctrl-alt-keith/ai-workflow-playbook": {
       "required_checks": [
