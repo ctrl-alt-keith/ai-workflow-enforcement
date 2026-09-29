@@ -67,6 +67,29 @@ class SafeRefreshReposTests(unittest.TestCase):
         self.assertEqual("", result.before)
         self.assertTrue(result.details)
 
+    def test_fetch_failure_blocks_without_pulling_or_changing_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            before = _rev_parse(repo, "HEAD")
+            _git(repo, "remote", "set-url", "origin", str(Path(tmp) / "missing.git"))
+
+            with mock.patch.object(
+                safe_refresh_module,
+                "_git",
+                wraps=safe_refresh_module._git,
+            ) as git:
+                report = safe_refresh_repos(SafeRefreshConfig((RepoTarget("sample", repo),)))
+
+            self.assertEqual(before, _rev_parse(repo, "HEAD"))
+            self.assertEqual("", _git(repo, "status", "--porcelain").stdout)
+
+        result = report.repositories[0]
+        self.assertEqual("blocked", result.status)
+        self.assertEqual(before, result.before)
+        self.assertEqual("", result.after)
+        self.assertIn("git fetch origin failed", result.details[0])
+        self.assertFalse(any(call.args[1][0] == "pull" for call in git.call_args_list))
+
     def test_wrong_branch_blocks_before_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
