@@ -12,7 +12,7 @@ Run an audit for one repository:
 python3 -m enforcement.repo_settings_audit --repo ctrl-alt-keith/example
 ```
 
-Run a hosted-only organization audit across visible repositories:
+Run a hosted-only organization audit across active visible repositories:
 
 ```sh
 python3 -m enforcement.repo_settings_audit --org ctrl-alt-keith
@@ -77,6 +77,11 @@ root is supplied, the audit maps each `owner/name` repository to
 `<workspace-root>/<name>` and only reads that path. It does not switch branches,
 clean worktrees, fetch refs, delete stale worktree metadata, or mutate local or
 hosted repository state.
+
+Organization enumeration retains archived repositories in the discovered
+inventory, but skips their settings and local-source audits. Text output names
+the skipped repositories; JSON output lists them in `archived_repositories`
+and distinguishes discovered, audited, and archived counts in `summary`.
 
 ## Central Baseline Policy
 
