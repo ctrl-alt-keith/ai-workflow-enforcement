@@ -35,16 +35,8 @@ SHELL_SYNTAX_RE = re.compile(
 ENV_ASSIGNMENT_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+(?:\s+|$))+")
 @dataclass(frozen=True)
 class Document:
-    root: Path
     path: Path
     text: str
-
-    @property
-    def display_path(self) -> str:
-        try:
-            return self.path.relative_to(self.root).as_posix()
-        except ValueError:
-            return self.path.as_posix()
 
 
 @dataclass(frozen=True)
@@ -170,7 +162,7 @@ def _load_documents(roots: tuple[Path, ...], ignore_patterns: tuple[str, ...]) -
         for path in files:
             if path.suffix.lower() not in SUPPORTED_SUFFIXES:
                 continue
-            document, skipped = _read_document(root, path)
+            document, skipped = _read_document(path)
             if document is not None:
                 documents.append(document)
             if skipped is not None:
@@ -182,9 +174,9 @@ def _load_documents(roots: tuple[Path, ...], ignore_patterns: tuple[str, ...]) -
     )
 
 
-def _read_document(root: Path, path: Path) -> tuple[Document | None, SkippedPath | None]:
+def _read_document(path: Path) -> tuple[Document | None, SkippedPath | None]:
     try:
-        return Document(root=root, path=path, text=path.read_text(encoding="utf-8")), None
+        return Document(path=path, text=path.read_text(encoding="utf-8")), None
     except UnicodeDecodeError:
         return None, SkippedPath(path, "not valid UTF-8")
     except OSError as exc:
@@ -578,7 +570,7 @@ def scan_enrolled_instruction(path: Path, text: str) -> tuple[AdvisoryFinding, .
     The local agent reviewer consumes only finding kinds; snippets and raw
     private paths remain on this process's local side of its reporting boundary.
     """
-    document = Document(path.parent, path, text)
+    document = Document(path, text)
     findings = _scan_shell_wrapper_examples(document)
     if path.name == "AGENTS.md":
         findings.extend(_scan_agents_alignment(document, ()))
