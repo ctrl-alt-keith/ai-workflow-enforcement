@@ -57,6 +57,13 @@ class ValidationContractInventoryTests(unittest.TestCase):
         self.assertEqual(["make test"], [finding.claimed_validation for finding in findings])
         self.assertEqual("Match", findings[0].classification)
 
+    def test_rather_than_keeps_only_the_intended_command(self) -> None:
+        with _fixtures() as root:
+            repo = _repo(root, "contrast", agents="Use make test rather than `make check`.\n", makefile="test:\n\ttrue\n")
+            findings = inventory_validation_contracts([repo], clock=lambda: STAMP).repositories[0].findings
+        self.assertEqual(["make test"], [finding.claimed_validation for finding in findings])
+        self.assertEqual("Match", findings[0].classification)
+
 
 def _only(repo: Path):
     return inventory_validation_contracts([repo], clock=lambda: STAMP).repositories[0].findings[0]

@@ -21,6 +21,8 @@ repository preflight inspection. Ambiguous validation prose, missing
 documentation, and claims without a Makefile are `Unclear`. A missing target is
 a `Mismatch` only when a Makefile is directly observable. Repositories with no
 validation claim and no Makefile surface are `Not applicable`.
+Commands mentioned only as alternatives after “instead of” or “rather than”
+are not treated as active claims.
 
 The report is evidence, not policy. It does not execute validation commands,
 mutate repositories, inspect branch protection, rank repositories, or infer
