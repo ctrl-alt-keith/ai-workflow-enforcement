@@ -206,7 +206,7 @@ def _accept_command_candidate(line: str, match: re.Match[str]) -> bool:
         return False
     if _DEPRECATED_COMMAND.search(suffix):
         return False
-    for contrast in re.finditer(r"\binstead of\b", line, re.I):
+    for contrast in re.finditer(r"\b(?:instead of|rather than)\b", line, re.I):
         contrast_end = len(line)
         delimiter = re.search(r"[,;]", line[contrast.end():])
         if delimiter:
