@@ -50,7 +50,9 @@ The scan flow is:
 
 Repository, pull request, and issue collection uses `gh api --paginate --slurp`
 with `per_page=100` endpoints so paginated responses are included in a single
-report.
+report. Empty output, missing page lists, or items without valid PR/issue
+identity mark that collection partial; they are not counted as confirmed empty
+results.
 
 Organization enumeration uses the shared credential-aware completeness
 contract documented in `docs/branch-cleanup.md`. Valid visible repository

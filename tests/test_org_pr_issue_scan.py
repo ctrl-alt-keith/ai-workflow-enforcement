@@ -184,6 +184,35 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertEqual(0, advisory_code)
         self.assertEqual(1, failing_code)
 
+    def test_malformed_collection_never_reports_complete_empty_results(self) -> None:
+        endpoint = "/repos/ctrl-alt-keith/sample/pulls?state=open&per_page=100"
+        for malformed in (
+            "",
+            "[]",
+            "{}",
+            '[{"number": 1}]',
+            '[[{"number": 1}], null]',
+            '[[{"number": 1}, null]]',
+            "[[{}]]",
+            '[[{"number": "abc", "title": "PR", "html_url": "https://github.com/example"}]]',
+        ):
+            with self.subTest(malformed=malformed):
+                gh = FakeGh(
+                    {
+                        "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("sample")]],
+                        endpoint: GhCommand(argv=(), returncode=0, stdout=malformed, stderr=""),
+                        "/repos/ctrl-alt-keith/sample/issues?state=open&per_page=100": [[]],
+                    }
+                )
+
+                report = scan_org_work(runner=gh)
+
+                self.assertEqual([], report.repositories[0].pull_requests)
+                self.assertEqual(1, len(report.repositories[0].skipped))
+                self.assertIn("pull requests inaccessible:", report.repositories[0].skipped[0])
+                self.assertEqual(1, _run_main_with_report(report, "--fail-on-error")[0])
+
+
 class FakeGh:
     def __init__(self, responses: dict[str, object]) -> None:
         self.responses = responses

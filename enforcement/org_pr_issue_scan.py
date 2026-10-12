@@ -335,23 +335,29 @@ def _fetch_collection(endpoint: str, runner: Runner) -> tuple[tuple[dict[str, ob
         detail = (result.stderr or result.stdout or f"exit {result.returncode}").splitlines()[0]
         return (), detail
     try:
-        data = json.loads(result.stdout or "[]")
+        data = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         return (), f"invalid JSON from gh api: {exc}"
-    return tuple(_flatten_collection(data)), ""
+    if not isinstance(data, list) or not data or not all(isinstance(page, list) for page in data):
+        return (), "gh api did not return paginated collection lists"
+    if not all(isinstance(item, dict) for page in data for item in page):
+        return (), "gh api paginated collection contained a non-object item"
+    if not all(_valid_work_item(item) for page in data for item in page):
+        return (), "gh api paginated collection contained an item without a valid identity"
+    return tuple(item for page in data for item in page), ""
 
 
-def _flatten_collection(data: object) -> Iterable[dict[str, object]]:
-    if isinstance(data, dict):
-        yield data
-        return
-    if not isinstance(data, list):
-        return
-    for item in data:
-        if isinstance(item, list):
-            yield from _flatten_collection(item)
-        elif isinstance(item, dict):
-            yield item
+def _valid_work_item(item: dict[str, object]) -> bool:
+    number = item.get("number")
+    return (
+        isinstance(number, int)
+        and not isinstance(number, bool)
+        and number > 0
+        and isinstance(item.get("title"), str)
+        and bool(item["title"])
+        and isinstance(item.get("html_url"), str)
+        and bool(item["html_url"])
+    )
 
 
 def _work_item(repo: str, item: dict[str, object]) -> WorkItem:
