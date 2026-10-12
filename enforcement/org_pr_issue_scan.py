@@ -338,11 +338,26 @@ def _fetch_collection(endpoint: str, runner: Runner) -> tuple[tuple[dict[str, ob
         data = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         return (), f"invalid JSON from gh api: {exc}"
-    if not isinstance(data, list) or not all(isinstance(page, list) for page in data):
+    if not isinstance(data, list) or not data or not all(isinstance(page, list) for page in data):
         return (), "gh api did not return paginated collection lists"
     if not all(isinstance(item, dict) for page in data for item in page):
         return (), "gh api paginated collection contained a non-object item"
+    if not all(_valid_work_item(item) for page in data for item in page):
+        return (), "gh api paginated collection contained an item without a valid identity"
     return tuple(item for page in data for item in page), ""
+
+
+def _valid_work_item(item: dict[str, object]) -> bool:
+    number = item.get("number")
+    return (
+        isinstance(number, int)
+        and not isinstance(number, bool)
+        and number > 0
+        and isinstance(item.get("title"), str)
+        and bool(item["title"])
+        and isinstance(item.get("html_url"), str)
+        and bool(item["html_url"])
+    )
 
 
 def _work_item(repo: str, item: dict[str, object]) -> WorkItem:

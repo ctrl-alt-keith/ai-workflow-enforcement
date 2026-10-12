@@ -186,7 +186,16 @@ class OrgPrIssueScanTests(unittest.TestCase):
 
     def test_malformed_collection_never_reports_complete_empty_results(self) -> None:
         endpoint = "/repos/ctrl-alt-keith/sample/pulls?state=open&per_page=100"
-        for malformed in ("", "{}", '[{"number": 1}]', '[[{"number": 1}], null]', '[[{"number": 1}, null]]'):
+        for malformed in (
+            "",
+            "[]",
+            "{}",
+            '[{"number": 1}]',
+            '[[{"number": 1}], null]',
+            '[[{"number": 1}, null]]',
+            "[[{}]]",
+            '[[{"number": "abc", "title": "PR", "html_url": "https://github.com/example"}]]',
+        ):
             with self.subTest(malformed=malformed):
                 gh = FakeGh(
                     {
