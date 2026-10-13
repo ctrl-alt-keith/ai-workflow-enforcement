@@ -212,6 +212,25 @@ class OrgPrIssueScanTests(unittest.TestCase):
                 self.assertIn("pull requests inaccessible:", report.repositories[0].skipped[0])
                 self.assertEqual(1, _run_main_with_report(report, "--fail-on-error")[0])
 
+    def test_malformed_issue_collection_preserves_prs_and_reports_partial_coverage(self) -> None:
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("sample")]],
+                "/repos/ctrl-alt-keith/sample/pulls?state=open&per_page=100": [[_item(7, "Valid PR")]],
+                "/repos/ctrl-alt-keith/sample/issues?state=open&per_page=100": GhCommand(
+                    argv=(), returncode=0, stdout="[[null]]", stderr=""
+                ),
+            }
+        )
+
+        report = scan_org_work(runner=gh)
+
+        self.assertEqual([7], [pr.number for pr in report.repositories[0].pull_requests])
+        self.assertEqual([], report.repositories[0].issues)
+        self.assertEqual(1, len(report.repositories[0].skipped))
+        self.assertIn("issues inaccessible:", report.repositories[0].skipped[0])
+        self.assertEqual(1, _run_main_with_report(report, "--fail-on-error")[0])
+
 
 class FakeGh:
     def __init__(self, responses: dict[str, object]) -> None:
