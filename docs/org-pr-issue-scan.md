@@ -69,9 +69,12 @@ actor/owner identity, pagination, and exact count evidence all succeed. Scope
 labels alone never establish complete coverage.
 
 `--repo` may be repeated and accepts either a repository name or `org/name`
-within the selected organization. Unknown selected repositories are treated as
-operator input errors after organization enumeration, so the tool stops instead
-of silently producing an empty or misleading scoped report.
+within the selected organization. When organization enumeration is complete,
+unknown selected repositories are operator input errors and the tool stops.
+When enumeration is incomplete, selected repositories absent from the visible
+inventory are reported as coverage errors while visible selections are still
+scanned. In that case, `--fail-on-error` returns exit code 1; the default exit
+remains advisory.
 
 Each pull request and issue entry includes the repository name, number, title,
 URL, author, labels, assignees, and `updated_at` when GitHub returns those
