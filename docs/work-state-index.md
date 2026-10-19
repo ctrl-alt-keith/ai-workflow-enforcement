@@ -20,6 +20,10 @@ python3 -m enforcement.work_state_index \
   --branch-cleanup-config examples/branch-cleanup.json
 ```
 
+`--repo` accepts a bare repository name or an exact `organization/name`
+locator for the configured organization. A locator naming another organization
+is rejected by branch-cleanup scope projection rather than mapped by its name.
+
 Markdown is the default. Use `--output-format json` for the machine-readable
 form. Existing branch stale-audit evidence can be included with `--audit-stale`
 and `--audit-github-prs`; these flags are passed to the existing dry-run API and

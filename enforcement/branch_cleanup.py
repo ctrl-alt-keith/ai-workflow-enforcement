@@ -471,12 +471,30 @@ def project_branch_cleanup_scope(
     selected_repositories: Iterable[str],
 ) -> BranchCleanupConfig:
     """Project resolved targets without discarding their scope provenance."""
-    selected = tuple(dict.fromkeys(item.split("/", 1)[-1] for item in selected_repositories if item))
+    scope = config.scope_reconciliation
+    selected_names: list[str] = []
+    for raw in selected_repositories:
+        item = raw.strip()
+        if not item:
+            continue
+        if "/" in item:
+            owner, name = item.split("/", 1)
+            if (
+                not scope
+                or scope.mode != "github_organization"
+                or owner != scope.organization
+                or not name
+                or "/" in name
+            ):
+                raise ValueError(f"selected repository has an invalid organization locator: {item}")
+            item = name
+        if item not in selected_names:
+            selected_names.append(item)
+    selected = tuple(selected_names)
     if not selected:
         return config
-    selected_names = set(selected)
-    targets = tuple(target for target in config.repositories if target.name in selected_names)
-    scope = config.scope_reconciliation
+    selected_name_set = set(selected)
+    targets = tuple(target for target in config.repositories if target.name in selected_name_set)
     if scope is None:
         return replace(config, repositories=targets)
     if scope.mode == "legacy_explicit_compatibility":
@@ -485,7 +503,7 @@ def project_branch_cleanup_scope(
         return replace(config, repositories=targets)
 
     candidate_names = {item.split("/", 1)[-1] for item in scope.candidates}
-    missing = tuple(sorted(selected_names - candidate_names, key=str.casefold))
+    missing = tuple(sorted(selected_name_set - candidate_names, key=str.casefold))
     if missing and scope.completeness == "complete":
         raise ValueError(f"selected repositories are absent from complete provider scope: {list(missing)}")
     errors = list(scope.errors)
@@ -499,10 +517,10 @@ def project_branch_cleanup_scope(
     projected = replace(
         scope,
         candidates=tuple(
-            locator for locator in scope.candidates if locator.split("/", 1)[-1] in selected_names
+            locator for locator in scope.candidates if locator.split("/", 1)[-1] in selected_name_set
         ),
         resolved_targets=tuple(
-            target for target in scope.resolved_targets if target.name in selected_names
+            target for target in scope.resolved_targets if target.name in selected_name_set
         ),
         errors=tuple(errors),
         mutation_ready=mutation_ready,
