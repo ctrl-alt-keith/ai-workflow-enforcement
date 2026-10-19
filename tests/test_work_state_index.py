@@ -111,6 +111,21 @@ class WorkStateIndexTests(unittest.TestCase):
         cleanup = next(source for source in index.sources if source.name == "branch_cleanup_dry_run")
         self.assertEqual("github_organization", cleanup.payload["scope"]["mode"])
 
+    def test_provider_selection_accepts_bare_and_matching_qualified_names(self) -> None:
+        config = _provider_config(completeness="complete", mutation_ready=True)
+
+        bare = branch_cleanup.project_branch_cleanup_scope(config, ("alpha",))
+        qualified = branch_cleanup.project_branch_cleanup_scope(config, ("example/alpha",))
+
+        self.assertEqual(bare, qualified)
+        self.assertEqual(("example/alpha",), qualified.scope_reconciliation.candidates)
+
+    def test_provider_selection_rejects_different_organization(self) -> None:
+        config = _provider_config(completeness="complete", mutation_ready=True)
+
+        with self.assertRaisesRegex(ValueError, "invalid organization locator"):
+            branch_cleanup.project_branch_cleanup_scope(config, ("other/alpha",))
+
     def test_selected_unknown_provider_view_remains_unknown(self) -> None:
         config = _provider_config(
             completeness="unknown",
