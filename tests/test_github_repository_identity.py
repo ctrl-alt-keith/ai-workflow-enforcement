@@ -47,6 +47,31 @@ class RepositoryIdentityTests(unittest.TestCase):
 
         self.assertEqual("unverified", verification.status)
 
+    def test_different_effective_push_destination_blocks_provider_lookup(self) -> None:
+        provider_calls: list[tuple[str, ...]] = []
+        verification = _verify(
+            push="git@github.com:someone-else/sample.git",
+            provider_calls=provider_calls,
+        )
+
+        self.assertEqual("mismatch", verification.status)
+        self.assertIn("fetch locator", verification.detail)
+        self.assertEqual([], provider_calls)
+
+    def test_multiple_effective_push_destinations_block_provider_lookup(self) -> None:
+        provider_calls: list[tuple[str, ...]] = []
+        verification = _verify(
+            push=(
+                "git@github.com:ctrl-alt-keith/sample.git\n"
+                "git@github.com:someone-else/sample.git"
+            ),
+            provider_calls=provider_calls,
+        )
+
+        self.assertEqual("unverified", verification.status)
+        self.assertIn("exactly one fetch URL and one effective push URL", verification.detail)
+        self.assertEqual([], provider_calls)
+
     def test_unavailable_remote_blocks_provider_lookup(self) -> None:
         provider_calls: list[tuple[str, ...]] = []
 
@@ -102,13 +127,16 @@ def _verify(
     fetch_result: Result | None = None,
     provider_id: int = 7,
     provider_stdout: str | None = None,
+    provider_calls: list[tuple[str, ...]] | None = None,
 ):
     def git_runner(_path: Path, argv: tuple[str, ...]) -> Result:
         if "--push" in argv:
             return Result(0, push)
         return fetch_result or Result(0, fetch)
 
-    def provider_runner(_argv: tuple[str, ...]) -> Result:
+    def provider_runner(argv: tuple[str, ...]) -> Result:
+        if provider_calls is not None:
+            provider_calls.append(argv)
         return Result(0, provider_stdout or json.dumps({"id": provider_id, "full_name": "ctrl-alt-keith/sample"}))
 
     return verify_local_repository_identity(
