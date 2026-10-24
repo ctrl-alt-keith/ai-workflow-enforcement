@@ -23,6 +23,12 @@
     }
   },
   "repositories": {
+    "ctrl-alt-keith/codex-remote-lab": {
+      "visibility": "private",
+      "required_checks": [
+        "make check"
+      ]
+    },
     "ctrl-alt-keith/ai-workflow-incubator": {
       "visibility": "private",
       "auto_merge": "enabled",
