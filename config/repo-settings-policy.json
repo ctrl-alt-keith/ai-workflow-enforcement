@@ -25,7 +25,6 @@
   "repositories": {
     "ctrl-alt-keith/codex-remote-lab": {
       "visibility": "private",
-      "administrator_bypass": "disabled",
       "required_checks": [
         "make check"
       ]
