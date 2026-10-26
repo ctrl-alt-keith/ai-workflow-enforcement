@@ -231,6 +231,27 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertIn("issues inaccessible:", report.repositories[0].skipped[0])
         self.assertEqual(1, _run_main_with_report(report, "--fail-on-error")[0])
 
+    def test_duplicate_page_items_mark_collection_partial_instead_of_inflating_counts(self) -> None:
+        duplicate = _item(7, "Repeated PR")
+        gh = FakeGh(
+            {
+                "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("sample")]],
+                "/repos/ctrl-alt-keith/sample/pulls?state=open&per_page=100": [
+                    [duplicate], [duplicate]
+                ],
+                "/repos/ctrl-alt-keith/sample/issues?state=open&per_page=100": [
+                    [_item(11, "Issue")]
+                ],
+            }
+        )
+
+        report = scan_org_work(runner=gh)
+
+        self.assertEqual([], report.repositories[0].pull_requests)
+        self.assertEqual([11], [issue.number for issue in report.repositories[0].issues])
+        self.assertIn("duplicate work item numbers", report.repositories[0].skipped[0])
+        self.assertEqual(1, _run_main_with_report(report, "--fail-on-error")[0])
+
 
 class FakeGh:
     def __init__(self, responses: dict[str, object]) -> None:
