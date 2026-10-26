@@ -344,6 +344,9 @@ def _fetch_collection(endpoint: str, runner: Runner) -> tuple[tuple[dict[str, ob
         return (), "gh api paginated collection contained a non-object item"
     if not all(_valid_work_item(item) for page in data for item in page):
         return (), "gh api paginated collection contained an item without a valid identity"
+    numbers = [item["number"] for page in data for item in page]
+    if len(numbers) != len(set(numbers)):
+        return (), "gh api paginated collection contained duplicate work item numbers"
     return tuple(item for page in data for item in page), ""
 
 
