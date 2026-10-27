@@ -54,6 +54,8 @@ report. Empty output, missing page lists, or items without valid PR/issue
 identity mark that collection partial; they are not counted as confirmed empty
 results. Repeated item numbers within or across pages also mark the affected
 collection partial, since its open-item count cannot be trusted.
+An item URL pointing outside the repository being scanned also marks that
+collection partial rather than attributing the item to the wrong repository.
 
 Organization enumeration uses the shared credential-aware completeness
 contract documented in `docs/branch-cleanup.md`. Valid visible repository

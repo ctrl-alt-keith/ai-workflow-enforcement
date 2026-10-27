@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 from typing import Callable, Iterable
+from urllib.parse import urlsplit
 
 from .github_org_repositories import OrganizationRepositoryEnumeration, enumerate_organization_repositories
 
@@ -234,13 +235,13 @@ def _scan_repository(org: str, repo: Repository, runner: Runner) -> RepositoryWo
     pr_endpoint = f"/repos/{org}/{repo.name}/pulls?state=open&per_page=100"
     issue_endpoint = f"/repos/{org}/{repo.name}/issues?state=open&per_page=100"
 
-    prs, pr_error = _fetch_collection(pr_endpoint, runner)
+    prs, pr_error = _fetch_collection(pr_endpoint, repo.full_name, runner)
     if pr_error:
         report.skipped.append(f"pull requests inaccessible: {pr_error}")
     else:
         report.pull_requests.extend(_work_item(repo.name, item) for item in prs)
 
-    issues, issue_error = _fetch_collection(issue_endpoint, runner)
+    issues, issue_error = _fetch_collection(issue_endpoint, repo.full_name, runner)
     if issue_error:
         report.skipped.append(f"issues inaccessible: {issue_error}")
     else:
@@ -329,7 +330,7 @@ def _select_visible_repositories(
     return tuple(by_name[name] for name in selected_names if name in by_name), missing
 
 
-def _fetch_collection(endpoint: str, runner: Runner) -> tuple[tuple[dict[str, object], ...], str]:
+def _fetch_collection(endpoint: str, full_name: str, runner: Runner) -> tuple[tuple[dict[str, object], ...], str]:
     result = runner(("gh", "api", "--paginate", "--slurp", endpoint))
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or f"exit {result.returncode}").splitlines()[0]
@@ -344,10 +345,26 @@ def _fetch_collection(endpoint: str, runner: Runner) -> tuple[tuple[dict[str, ob
         return (), "gh api paginated collection contained a non-object item"
     if not all(_valid_work_item(item) for page in data for item in page):
         return (), "gh api paginated collection contained an item without a valid identity"
+    if not all(_item_url_matches_repository(item["html_url"], full_name) for page in data for item in page):
+        return (), "gh api paginated collection contained an item outside repository"
     numbers = [item["number"] for page in data for item in page]
     if len(numbers) != len(set(numbers)):
         return (), "gh api paginated collection contained duplicate work item numbers"
     return tuple(item for page in data for item in page), ""
+
+
+def _item_url_matches_repository(url: str, full_name: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    parts = parsed.path.strip("/").split("/")
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "github.com"
+        and len(parts) >= 3
+        and "/".join(parts[:2]).casefold() == full_name.casefold()
+    )
 
 
 def _valid_work_item(item: dict[str, object]) -> bool:
