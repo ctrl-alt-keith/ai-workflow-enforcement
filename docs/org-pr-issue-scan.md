@@ -54,6 +54,9 @@ report. Empty output, missing page lists, or items without valid PR/issue
 identity mark that collection partial; they are not counted as confirmed empty
 results. Repeated item numbers within or across pages also mark the affected
 collection partial, since its open-item count cannot be trusted.
+An item URL must match the exact GitHub repository, item type, and API number.
+Malformed paths, suffixes, or mismatched identities mark that collection partial
+rather than attributing an unverified item to the repository.
 
 Organization enumeration uses the shared credential-aware completeness
 contract documented in `docs/branch-cleanup.md`. Valid visible repository

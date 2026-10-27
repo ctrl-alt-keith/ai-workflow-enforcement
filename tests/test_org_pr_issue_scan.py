@@ -18,16 +18,16 @@ class OrgPrIssueScanTests(unittest.TestCase):
                     [_repo("beta")],
                 ],
                 "/repos/ctrl-alt-keith/alpha/pulls?state=open&per_page=100": [
-                    [_item(7, "Alpha PR", labels=("workflow",), assignees=("keith",))]
+                    [_item(7, "Alpha PR", repo="alpha", labels=("workflow",), assignees=("keith",))]
                 ],
                 "/repos/ctrl-alt-keith/alpha/issues?state=open&per_page=100": [
-                    [_item(11, "Alpha issue", author="octocat")]
+                    [_item(11, "Alpha issue", repo="alpha", kind="issues", author="octocat")]
                 ],
                 "/repos/ctrl-alt-keith/beta/pulls?state=open&per_page=100": [
-                    [_item(3, "Beta PR")]
+                    [_item(3, "Beta PR", repo="beta")]
                 ],
                 "/repos/ctrl-alt-keith/beta/issues?state=open&per_page=100": [
-                    [_item(4, "Beta issue", labels=("bug", "docs"))]
+                    [_item(4, "Beta issue", repo="beta", kind="issues", labels=("bug", "docs"))]
                 ],
             }
         )
@@ -50,7 +50,7 @@ class OrgPrIssueScanTests(unittest.TestCase):
                 "/repos/ctrl-alt-keith/sample/pulls?state=open&per_page=100": [[]],
                 "/repos/ctrl-alt-keith/sample/issues?state=open&per_page=100": [
                     [
-                        _item(1, "Real issue"),
+                        _item(1, "Real issue", kind="issues"),
                         {
                             **_item(2, "PR surfaced by issues endpoint"),
                             "pull_request": {"url": "https://api.github.com/pr/2"},
@@ -72,12 +72,12 @@ class OrgPrIssueScanTests(unittest.TestCase):
                     [_repo("second")],
                 ],
                 "/repos/ctrl-alt-keith/first/pulls?state=open&per_page=100": [
-                    [_item(1, "First PR page one")],
-                    [_item(2, "First PR page two")],
+                    [_item(1, "First PR page one", repo="first")],
+                    [_item(2, "First PR page two", repo="first")],
                 ],
                 "/repos/ctrl-alt-keith/first/issues?state=open&per_page=100": [
-                    [_item(3, "First issue page one")],
-                    [_item(4, "First issue page two")],
+                    [_item(3, "First issue page one", repo="first", kind="issues")],
+                    [_item(4, "First issue page two", repo="first", kind="issues")],
                 ],
                 "/repos/ctrl-alt-keith/second/pulls?state=open&per_page=100": [[]],
                 "/repos/ctrl-alt-keith/second/issues?state=open&per_page=100": [[]],
@@ -104,12 +104,12 @@ class OrgPrIssueScanTests(unittest.TestCase):
                     [_repo("gamma")],
                 ],
                 "/repos/ctrl-alt-keith/alpha/pulls?state=open&per_page=100": [
-                    [_item(1, "Alpha PR")]
+                    [_item(1, "Alpha PR", repo="alpha")]
                 ],
                 "/repos/ctrl-alt-keith/alpha/issues?state=open&per_page=100": [[]],
                 "/repos/ctrl-alt-keith/beta/pulls?state=open&per_page=100": [[]],
                 "/repos/ctrl-alt-keith/beta/issues?state=open&per_page=100": [
-                    [_item(2, "Beta issue")]
+                    [_item(2, "Beta issue", repo="beta", kind="issues")]
                 ],
             }
         )
@@ -240,7 +240,7 @@ class OrgPrIssueScanTests(unittest.TestCase):
                     [duplicate], [duplicate]
                 ],
                 "/repos/ctrl-alt-keith/sample/issues?state=open&per_page=100": [
-                    [_item(11, "Issue")]
+                    [_item(11, "Issue", kind="issues")]
                 ],
             }
         )
@@ -251,6 +251,78 @@ class OrgPrIssueScanTests(unittest.TestCase):
         self.assertEqual([11], [issue.number for issue in report.repositories[0].issues])
         self.assertIn("duplicate work item numbers", report.repositories[0].skipped[0])
         self.assertEqual(1, _run_main_with_report(report, "--fail-on-error")[0])
+
+    def test_work_item_from_another_repository_marks_collection_partial(self) -> None:
+        for url in ("https://github.com/ctrl-alt-keith/other/pull/7", "https://[bad"):
+            with self.subTest(url=url):
+                gh = FakeGh(
+                    {
+                        "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("sample")]],
+                        "/repos/ctrl-alt-keith/sample/pulls?state=open&per_page=100": [
+                            [{**_item(7, "Foreign PR"), "html_url": url}]
+                        ],
+                        "/repos/ctrl-alt-keith/sample/issues?state=open&per_page=100": [
+                            [_item(11, "Valid issue", kind="issues")]
+                        ],
+                    }
+                )
+
+                report = scan_org_work(runner=gh)
+
+                self.assertEqual([], report.repositories[0].pull_requests)
+                self.assertEqual([11], [issue.number for issue in report.repositories[0].issues])
+                self.assertIn("mismatched URL identity", report.repositories[0].skipped[0])
+                self.assertEqual(1, _run_main_with_report(report, "--fail-on-error")[0])
+
+    def test_mismatched_or_malformed_item_urls_mark_only_their_collection_partial(self) -> None:
+        invalid_urls = (
+            "https://github.com/ctrl-alt-keith/sample/pull/8",  # number mismatch
+            "https://github.com/ctrl-alt-keith/sample/issues/7",  # wrong item type
+            "https://github.com/ctrl-alt-keith/sample/pull/7/extra",
+            "https://github.com/ctrl-alt-keith/sample/pull/7/",
+            "https://github.com/ctrl-alt-keith/sample/pull/7?tab=files",
+            "https://github.com/ctrl-alt-keith/sample/pull/7#discussion",
+            "https://github.com:443/ctrl-alt-keith/sample/pull/7",
+        )
+        for url in invalid_urls:
+            with self.subTest(url=url):
+                gh = FakeGh(
+                    {
+                        "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("sample")]],
+                        "/repos/ctrl-alt-keith/sample/pulls?state=open&per_page=100": [
+                            [{**_item(7, "PR"), "html_url": url}]
+                        ],
+                        "/repos/ctrl-alt-keith/sample/issues?state=open&per_page=100": [
+                            [_item(11, "Valid issue", kind="issues")]
+                        ],
+                    }
+                )
+                report = scan_org_work(runner=gh)
+                self.assertEqual([], report.repositories[0].pull_requests)
+                self.assertEqual([11], [issue.number for issue in report.repositories[0].issues])
+                self.assertEqual(1, len(report.repositories[0].skipped))
+                self.assertEqual(1, _run_main_with_report(report, "--fail-on-error")[0])
+
+    def test_issue_with_pull_url_marks_issue_collection_partial(self) -> None:
+        invalid_items = (
+            _item(11, "Wrong type"),
+            {**_item(11, "Wrong number", kind="issues"), "html_url": "https://github.com/ctrl-alt-keith/sample/issues/12"},
+            {**_item(11, "Mislabeled PR", kind="issues"), "pull_request": {"url": "https://api.github.com/pr/11"}},
+        )
+        for item in invalid_items:
+            with self.subTest(item=item):
+                gh = FakeGh(
+                    {
+                        "/orgs/ctrl-alt-keith/repos?type=all&per_page=100": [[_repo("sample")]],
+                        "/repos/ctrl-alt-keith/sample/pulls?state=open&per_page=100": [[_item(7, "Valid PR")]],
+                        "/repos/ctrl-alt-keith/sample/issues?state=open&per_page=100": [[item]],
+                    }
+                )
+                report = scan_org_work(runner=gh)
+                self.assertEqual([7], [pr.number for pr in report.repositories[0].pull_requests])
+                self.assertEqual([], report.repositories[0].issues)
+                self.assertEqual(1, len(report.repositories[0].skipped))
+                self.assertEqual(1, _run_main_with_report(report, "--fail-on-error")[0])
 
 
 class FakeGh:
@@ -315,6 +387,8 @@ def _item(
     number: int,
     title: str,
     *,
+    repo: str = "sample",
+    kind: str = "pull",
     author: str = "keith",
     labels: tuple[str, ...] = (),
     assignees: tuple[str, ...] = (),
@@ -322,7 +396,7 @@ def _item(
     return {
         "number": number,
         "title": title,
-        "html_url": f"https://github.com/ctrl-alt-keith/sample/{number}",
+        "html_url": f"https://github.com/ctrl-alt-keith/{repo}/{kind}/{number}",
         "user": {"login": author},
         "labels": [{"name": label} for label in labels],
         "assignees": [{"login": assignee} for assignee in assignees],
