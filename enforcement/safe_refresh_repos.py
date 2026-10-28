@@ -43,6 +43,7 @@ class RepoTarget:
     expected_repository_id: int | None = None
     checkout_branch: str = ""
     catalog_locator_only: bool = False
+    catalog_commit: str = ""
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,7 @@ def load_startup_catalog(path: Path, workspace_root: Path, checkout_branch: str 
                 expected_repository=name,
                 checkout_branch=checkout_branch,
                 catalog_locator_only=True,
+                catalog_commit=commit,
             )
         )
     return SafeRefreshConfig(tuple(targets))
@@ -225,6 +227,14 @@ def safe_refresh_repo(target: RepoTarget) -> RepoRefreshResult:
         locator_error = _verify_catalog_locator(target)
         if locator_error:
             result.details.append(locator_error)
+            return result
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", target.catalog_commit):
+            result.details.append("startup catalog commit is invalid")
+            return result
+        pinned_type = _git(target.path, "cat-file", "-t", target.catalog_commit)
+        pinned_ancestor = _git(target.path, "merge-base", "--is-ancestor", target.catalog_commit, "HEAD")
+        if pinned_type.returncode != 0 or pinned_type.stdout != "commit" or pinned_ancestor.returncode != 0:
+            result.details.append("checkout does not contain the selected catalog commit")
             return result
     elif bool(target.expected_repository) != (target.expected_repository_id is not None):
         result.details.append("repository identity requires both expected repository and repository ID")

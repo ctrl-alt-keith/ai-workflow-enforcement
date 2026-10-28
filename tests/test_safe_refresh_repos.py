@@ -138,6 +138,7 @@ class SafeRefreshReposTests(unittest.TestCase):
             self.assertEqual("work", config.repositories[0].checkout_branch)
             self.assertEqual(root / "sample", config.repositories[0].path)
             self.assertTrue(config.repositories[0].catalog_locator_only)
+            self.assertEqual("a" * 40, config.repositories[0].catalog_commit)
             catalog.write_text(json.dumps([{
                 "name": "ctrl-alt-keith/sample", "host": "github.com",
                 "mount_path": "../escape", "commit": "a" * 40,
@@ -166,6 +167,19 @@ class SafeRefreshReposTests(unittest.TestCase):
             self.assertIsNone(safe_refresh_module._verify_catalog_locator(target))
             _git(repo, "remote", "set-url", "origin", "https://token@github.com/ctrl-alt-keith/sample.git")
             self.assertIn("embedded credentials", safe_refresh_module._verify_catalog_locator(target))
+
+    def test_catalog_commit_mismatch_blocks_before_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_repo(Path(tmp))
+            _git(repo, "switch", "-c", "work")
+            _git(repo, "remote", "set-url", "origin", "https://github.com/ctrl-alt-keith/sample.git")
+            target = RepoTarget("ctrl-alt-keith/sample", repo, expected_repository="ctrl-alt-keith/sample",
+                                checkout_branch="work", catalog_locator_only=True, catalog_commit="b" * 40)
+            with mock.patch.object(safe_refresh_module, "_git", wraps=safe_refresh_module._git) as git:
+                result = safe_refresh_repos(SafeRefreshConfig((target,))).repositories[0]
+            self.assertEqual("blocked", result.status)
+            self.assertIn("does not contain", result.details[0])
+            self.assertFalse(any(call.args[1][0] == "fetch" for call in git.call_args_list))
 
     def test_dirty_worktree_blocks_without_fetching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

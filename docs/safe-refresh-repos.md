@@ -44,7 +44,7 @@ The catalog mode uses the existing selected repository names, mount paths, and
 commit pins; it does not enumerate an organization or read 1Password. Each
 checkout must be on the specified task-local branch without an upstream, have
 a clean tree, and have one GitHub fetch URL and one push URL matching the catalog
-repository name. A fetched `origin/main` can then fast-forward the `work`
+repository name. Its `HEAD` must contain the catalog's pinned commit. A fetched `origin/main` can then fast-forward the `work`
 branch without renaming it. The original catalog pin remains a reproducible
 starting snapshot; this command qualifies the resulting checkout at startup.
 
