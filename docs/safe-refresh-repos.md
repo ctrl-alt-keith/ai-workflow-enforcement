@@ -16,7 +16,7 @@ python3 -m enforcement.safe_refresh_repos --config examples/branch-cleanup.json
 
 The helper reuses branch cleanup's canonical provider discovery, exclusions,
 workspace resolution, local overrides, and checkout/provider identity verifier.
-It fails before fetch or pull when provider-backed scope is not mutation-ready
+It fails before fetch or merge when provider-backed scope is not mutation-ready
 because credential completeness or stable-ID exclusion reconciliation is
 unproven. For provider targets, exactly matching fetch/push locators and the
 enumerated provider repository ID are also required before refresh. Legacy
@@ -25,12 +25,10 @@ explicit compatibility mode.
 Branch policy fields such as `protected_branches` and `stale_approvals` remain
 owned by `enforcement.branch_cleanup` and do not change refresh mechanics.
 
-## Managed task startup
+## Task-start catalog mode
 
-The cloud environment's selected-repository catalog is a separate, narrower
-inventory. At a **new task startup boundary**, after the platform has mounted
-its isolated checkouts and before agents start working, the saved setup script
-can invoke:
+After isolated checkouts are mounted, and before work begins, a task-start
+caller can run:
 
 ```sh
 python3 -m enforcement.safe_refresh_repos \
@@ -40,19 +38,12 @@ python3 -m enforcement.safe_refresh_repos \
   --output-format json
 ```
 
-The catalog mode uses the existing selected repository names, mount paths, and
-commit pins; it does not enumerate an organization or read 1Password. Each
-checkout must be on the specified task-local branch without an upstream, have
-a clean tree, and have one GitHub fetch URL and one push URL matching the catalog
-repository name. Its `HEAD` must contain the catalog's pinned commit. A fetched `origin/main` can then fast-forward the `work`
-branch without renaming it. The original catalog pin remains a reproducible
-starting snapshot; this command qualifies the resulting checkout at startup.
-
-This command must not run against checkouts in active tasks. A blocked result
-requires startup to stop and report the repository and reason. The saved cloud
-setup/configuration is the invocation owner; this repository only supplies the
-refresh implementation. Updating that saved configuration and publishing a new
-version require their own review and fresh-runtime retest.
+This mode uses only selected catalog entries and makes no provider-discovery or
+1Password reads. It requires a clean task-local branch without upstream, the
+catalog commit in its history, and matching GitHub fetch/push locators. It
+fast-forwards to the commit fetched from `main`, preserving the branch name.
+Call it only at a new task boundary; stop on any blocked result. It must not
+run against an active task's checkout.
 
 Refresh one or more named repositories from that inventory:
 

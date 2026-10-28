@@ -297,14 +297,21 @@ def safe_refresh_repo(target: RepoTarget) -> RepoRefreshResult:
         return result
     result.before = before.stdout.strip()
 
-    fetch = _git(target.path, "fetch", target.remote, target.default_branch)
+    fetch = _git(
+        target.path,
+        "fetch",
+        "--no-tags",
+        "--write-fetch-head",
+        target.remote,
+        f"refs/heads/{target.default_branch}",
+    )
     if fetch.returncode != 0:
         result.details.append(f"git fetch {target.remote} failed: {_command_failure_detail(fetch)}")
         return result
 
-    remote_head = _git(target.path, "rev-parse", expected_upstream)
+    remote_head = _git(target.path, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
     if remote_head.returncode != 0:
-        result.details.append(f"cannot determine {expected_upstream}: {_command_failure_detail(remote_head)}")
+        result.details.append(f"cannot determine fetched {target.default_branch}: {_command_failure_detail(remote_head)}")
         return result
     expected_head = remote_head.stdout.strip()
     ancestor = _git(target.path, "merge-base", "--is-ancestor", result.before, expected_head)
@@ -349,7 +356,7 @@ def safe_refresh_repo(target: RepoTarget) -> RepoRefreshResult:
     result.after = after.stdout.strip()
 
     if result.after != expected_head:
-        result.details.append(f"HEAD {result.after} does not match {expected_upstream} {expected_head}")
+        result.details.append(f"HEAD {result.after} does not match fetched {target.default_branch} {expected_head}")
         return result
 
     result.status = STATUS_REFRESHED if result.before != result.after else STATUS_ALREADY_CURRENT

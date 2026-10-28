@@ -93,6 +93,22 @@ class SafeRefreshReposTests(unittest.TestCase):
             self.assertEqual(_rev_parse(repo, "origin/main"), _rev_parse(repo, "HEAD"))
             self.assertEqual("work", _git(repo, "branch", "--show-current").stdout.strip())
 
+    def test_fetch_head_drives_refresh_when_origin_main_tracking_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            _git(repo, "switch", "-c", "work")
+            stale_main = _rev_parse(repo, "origin/main")
+            _git(repo, "config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other")
+            _push_remote_commit(root, repo, "remote.txt", "new main\n")
+
+            result = safe_refresh_repos(SafeRefreshConfig((RepoTarget("sample", repo, checkout_branch="work"),))).repositories[0]
+
+            self.assertEqual("refreshed", result.status)
+            self.assertEqual(stale_main, _rev_parse(repo, "origin/main"))
+            self.assertNotEqual(stale_main, _rev_parse(repo, "HEAD"))
+            self.assertEqual(_rev_parse(repo, "FETCH_HEAD"), _rev_parse(repo, "HEAD"))
+
     def test_task_work_branch_preserves_dirty_ahead_diverged_and_detached(self) -> None:
         for state in ("dirty", "ahead", "diverged", "detached"):
             with self.subTest(state=state), tempfile.TemporaryDirectory() as tmp:
