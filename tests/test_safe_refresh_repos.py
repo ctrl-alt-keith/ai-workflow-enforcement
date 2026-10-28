@@ -55,6 +55,28 @@ class SafeRefreshReposTests(unittest.TestCase):
         self.assertEqual(local_head, after)
         self.assertTrue(result.details)
 
+    def test_diverged_remote_blocks_after_fetch_without_changing_local_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            (repo / "local.txt").write_text("local work\n", encoding="utf-8")
+            _git(repo, "add", "local.txt")
+            _git(repo, "commit", "-m", "Local work")
+            local_head = _rev_parse(repo, "HEAD")
+            _push_remote_commit(root, repo, "remote.txt", "remote work\n")
+
+            report = safe_refresh_repos(SafeRefreshConfig((RepoTarget("sample", repo),)))
+
+            self.assertEqual(local_head, _rev_parse(repo, "HEAD"))
+            self.assertNotEqual(local_head, _rev_parse(repo, "origin/main"))
+            self.assertEqual("", _git(repo, "status", "--porcelain").stdout)
+
+        result = report.repositories[0]
+        self.assertEqual("blocked", result.status)
+        self.assertEqual(local_head, result.before)
+        self.assertEqual("", result.after)
+        self.assertIn("git pull --ff-only failed", result.details[0])
+
     def test_dirty_worktree_blocks_without_fetching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
