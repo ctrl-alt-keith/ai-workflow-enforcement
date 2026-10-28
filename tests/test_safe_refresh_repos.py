@@ -36,6 +36,27 @@ class SafeRefreshReposTests(unittest.TestCase):
         self.assertEqual(after, result.after)
         self.assertNotEqual(before, after)
 
+    def test_inventory_mode_still_fetches_other_branches_and_tags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _make_repo(root)
+            _push_remote_commit(root, repo, "remote.txt", "new main\n")
+            writer = root / "writer"
+            _git(writer, "tag", "-a", "v1", "-m", "version 1")
+            _git(writer, "push", "origin", "v1")
+            _git(writer, "switch", "-c", "side")
+            (writer / "side.txt").write_text("side branch\n", encoding="utf-8")
+            _git(writer, "add", "side.txt")
+            _git(writer, "commit", "-m", "Side branch")
+            _git(writer, "push", "origin", "side")
+
+            result = safe_refresh_repos(SafeRefreshConfig((RepoTarget("sample", repo),))).repositories[0]
+
+            self.assertEqual("refreshed", result.status)
+            self.assertEqual(_rev_parse(repo, "FETCH_HEAD"), _rev_parse(repo, "HEAD"))
+            self.assertEqual(0, _git(repo, "show-ref", "--verify", "--quiet", "refs/remotes/origin/side").returncode)
+            self.assertEqual(0, _git(repo, "show-ref", "--verify", "--quiet", "refs/tags/v1").returncode)
+
     def test_unpushed_local_commit_blocks_without_changing_head(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
@@ -99,8 +120,11 @@ class SafeRefreshReposTests(unittest.TestCase):
             repo = _make_repo(root)
             _git(repo, "switch", "-c", "work")
             stale_main = _rev_parse(repo, "origin/main")
-            _git(repo, "config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other")
             _push_remote_commit(root, repo, "remote.txt", "new main\n")
+            writer = root / "writer"
+            _git(writer, "switch", "-c", "other")
+            _git(writer, "push", "origin", "other")
+            _git(repo, "config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other")
 
             result = safe_refresh_repos(SafeRefreshConfig((RepoTarget("sample", repo, checkout_branch="work"),))).repositories[0]
 
@@ -181,8 +205,16 @@ class SafeRefreshReposTests(unittest.TestCase):
                                 checkout_branch="work", catalog_locator_only=True)
             _git(repo, "remote", "set-url", "origin", "https://github.com/ctrl-alt-keith/sample.git")
             self.assertIsNone(safe_refresh_module._verify_catalog_locator(target))
+            _git(repo, "remote", "set-url", "origin", "ssh://git@github.com/CTRL-ALT-KEITH/Sample.git")
+            self.assertIsNone(safe_refresh_module._verify_catalog_locator(target))
+            _git(repo, "remote", "set-url", "origin", "git@github.com:ctrl-alt-keith/sample.git")
+            self.assertIsNone(safe_refresh_module._verify_catalog_locator(target))
             _git(repo, "remote", "set-url", "origin", "https://token@github.com/ctrl-alt-keith/sample.git")
             self.assertIn("embedded credentials", safe_refresh_module._verify_catalog_locator(target))
+            _git(repo, "remote", "set-url", "origin", "ssh://other@github.com/ctrl-alt-keith/sample.git")
+            self.assertIn("embedded credentials", safe_refresh_module._verify_catalog_locator(target))
+            _git(repo, "remote", "set-url", "origin", "https://github.example.com/ctrl-alt-keith/sample.git")
+            self.assertIn("does not match", safe_refresh_module._verify_catalog_locator(target))
 
     def test_catalog_commit_mismatch_blocks_before_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

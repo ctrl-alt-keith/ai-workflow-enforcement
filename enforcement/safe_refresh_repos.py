@@ -297,6 +297,12 @@ def safe_refresh_repo(target: RepoTarget) -> RepoRefreshResult:
         return result
     result.before = before.stdout.strip()
 
+    if not target.catalog_locator_only:
+        inventory_fetch = _git(target.path, "fetch", target.remote)
+        if inventory_fetch.returncode != 0:
+            result.details.append(f"git fetch {target.remote} failed: {_command_failure_detail(inventory_fetch)}")
+            return result
+
     fetch = _git(
         target.path,
         "fetch",
@@ -375,14 +381,25 @@ def _verify_catalog_locator(target: RepoTarget) -> str | None:
     push_urls = push.stdout.splitlines()
     if len(fetch_urls) != 1 or len(push_urls) != 1:
         return "catalog checkout remote must have one fetch and one push URL"
-    if any(urlparse(url).username or urlparse(url).password for url in (*fetch_urls, *push_urls)):
+    if any(_has_embedded_credential(url) for url in (*fetch_urls, *push_urls)):
         return "catalog checkout remote contains embedded credentials"
+    fetch_locator = _github_locator(fetch_urls[0])
+    push_locator = _github_locator(push_urls[0])
     if (
-        _github_locator(fetch_urls[0]) != target.expected_repository
-        or _github_locator(push_urls[0]) != target.expected_repository
+        fetch_locator is None
+        or push_locator is None
+        or fetch_locator.casefold() != target.expected_repository.casefold()
+        or push_locator.casefold() != target.expected_repository.casefold()
     ):
         return f"catalog checkout remote does not match {target.expected_repository!r}"
     return None
+
+
+def _has_embedded_credential(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.password is not None or (
+        parsed.username is not None and (parsed.scheme != "ssh" or parsed.username != "git")
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

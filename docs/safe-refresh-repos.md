@@ -7,6 +7,8 @@ worktree top level and that the checkout is clean and on the expected branch,
 then fetches canonical `main` and fast-forwards only when local `HEAD` is an
 ancestor of fetched `main`. Ordinary branch-cleanup inventory mode also
 requires the expected upstream tracking ref.
+Inventory mode retains its full remote fetch before binding the merge to an
+explicit fetch of `main`.
 
 Use an existing branch-cleanup JSON config as the scope contract:
 
