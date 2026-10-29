@@ -1,0 +1,17 @@
+{
+  "http_network_policy": {
+    "mode": "restricted",
+    "presets": ["package_managers"],
+    "allowed_hosts": [
+      "*.1password.com",
+      "*.agilebits.com",
+      "*.anthropic.com",
+      "*.claude.com",
+      "*.linode.com",
+      "api.github.com",
+      "claude.ai",
+      "github.com",
+      "keyserver.ubuntu.com"
+    ]
+  }
+}
