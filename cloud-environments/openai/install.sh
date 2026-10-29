@@ -110,21 +110,6 @@ terraform version
 kubectl version --client
 shellcheck --version
 
-for repo in knowledge-adapters knowledge-vault linode-backup-lab; do
-  uv venv --seed --allow-existing --python /usr/bin/python3.13 "/workspace/$repo/.venv"
-done
-make -C /workspace/knowledge-adapters dev PYTHON_BIN=python3.13
-make -C /workspace/ai-workflow-playbook v2-setup
-/workspace/knowledge-vault/.venv/bin/pip install --no-deps -r /workspace/knowledge-vault/requirements-source-package.txt
-/workspace/linode-backup-lab/.venv/bin/pip install -e /workspace/linode-backup-lab
-for repo in linode-image-lab trusted-network-registry; do
-  test -x "/workspace/$repo/.venv/bin/python" || python3 -m venv "/workspace/$repo/.venv"
-done
-/workspace/linode-image-lab/.venv/bin/pip install -e /workspace/linode-image-lab
-/workspace/trusted-network-registry/.venv/bin/pip install --require-hashes -r /workspace/trusted-network-registry/requirements-lke.lock
-/workspace/trusted-network-registry/.venv/bin/pip install --no-deps -e /workspace/trusted-network-registry
-make -C /workspace/nexus bootstrap
-
 # 1Password CLI: refresh from stable APT using its fetched signing key.
 # This step requires downloads.1password.com in the applied network policy.
 curl -fLsS https://downloads.1password.com/linux/keys/1password.asc -o "$TOOLS/downloads/1password.asc"

@@ -1,6 +1,5 @@
 """Validate the nonsecret cloud setup inputs without running the installer."""
 
-import json
 import subprocess
 import sys
 import tempfile
@@ -24,18 +23,6 @@ def op_setup_for_fixture(tools):
 class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
     def test_installer_parses_without_running(self):
         subprocess.run(["bash", "-n", str(ROOT / "install.sh")], check=True)
-
-    def test_repository_selection_is_unique(self):
-        selection = json.loads((ROOT / "repository-selection.json").read_text())
-        self.assertTrue(selection)
-        self.assertEqual(len(selection), len({entry["name"] for entry in selection}))
-        self.assertEqual(len(selection), len({entry["mount_path"] for entry in selection}))
-        self.assertIn("ctrl-alt-keith/ai-workflow-enforcement", {entry["name"] for entry in selection})
-        for entry in selection:
-            self.assertEqual(set(entry), {"name", "host", "mount_path", "desired_ref"})
-            self.assertEqual(entry["host"], "github.com")
-            self.assertEqual(entry["desired_ref"], "main")
-            self.assertFalse(Path(entry["mount_path"]).is_absolute())
 
     def test_op_entrypoint_clean_and_repeat_setup(self):
         with tempfile.TemporaryDirectory() as temporary:

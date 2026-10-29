@@ -4,22 +4,21 @@ The Git commit of this directory versions the intended nonsecret setup for the
 saved ctrl-alt-keith OpenAI cloud execution environment.
 The installer supports Linux x86_64 only.
 `install.sh` is the saved build script; `workspace-AGENTS.md` is delivered as
-`/workspace/AGENTS.md`; `repository-selection.json` records the selected set
-and desired `main` channel;
-`configuration.json` records restricted mode, preset, and custom domains.
+`/workspace/AGENTS.md`; `configuration.json` records restricted mode, preset,
+and custom domains. The saved editor owns the explicit repository selection;
+the runtime catalog records its resolved commits.
 The source commit does not identify a saved or published environment version.
 
 ## Apply and verify
 
 1. Run `make check` and ShellCheck. In the saved editor, compare the complete
    installer and workspace AGENTS bytes with this commit. Compare selected
-   repository names and mounts with `repository-selection.json`, and network
-   mode, preset, and custom domains with `configuration.json`. Select `main`
-   where the editor supports a moving ref; otherwise resolve its current
-   commit for this build. Verify editor behavior rather than assuming `main`
-   advances automatically. Stop if an editor value cannot be read back or
-   differs. Runtime status and editor-local prompt previews do not establish
-   saved editor state.
+   selected repositories and refs, then compare network mode, preset, and
+   custom domains with `configuration.json`. Select `main` where the editor
+   supports a moving ref; otherwise resolve its current commit for this build.
+   Verify editor behavior rather than assuming `main` advances automatically.
+   Stop if an editor value cannot be read back or differs. Runtime status and
+   editor-local prompt previews do not establish saved editor state.
 2. For the build, require a clean selected `ai-workflow-enforcement` checkout
    whose `HEAD` matches freshly observed hosted `main`, regardless of its local
    branch name (`work` is valid). Compare `git rev-parse HEAD` with
@@ -29,7 +28,7 @@ The source commit does not identify a saved or published environment version.
    identity, not the post-squash source commit.
    Build and publish with the supported interface. Read exact snapshot pins
    from `/workspace/.onboarding-tools/repositories.json`; stop if it is absent
-   or mismatches the selected set. Store one record per published version
+   or mismatches the editor-selected set. Store one record per published version
    outside this source tree, using this shape:
 
    ```json
@@ -38,7 +37,6 @@ The source commit does not identify a saved or published environment version.
      "source_file_sha256": {
        "install.sh": "<SHA-256>",
        "workspace-AGENTS.md": "<SHA-256>",
-       "repository-selection.json": "<SHA-256>",
        "configuration.json": "<SHA-256>"
      },
      "editor_readback": {
