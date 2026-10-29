@@ -12,7 +12,7 @@ The source commit does not identify a saved or published environment version.
 ## Apply and verify
 
 1. Run `make check` and ShellCheck. In the saved editor, compare the complete
-   installer and workspace AGENTS bytes with this commit. Compare selected
+   installer and workspace AGENTS bytes with this commit. Read back the
    selected repositories and refs, then compare network mode, preset, and
    custom domains with `configuration.json`. Select `main` where the editor
    supports a moving ref; otherwise resolve its current commit for this build.
