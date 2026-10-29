@@ -1,6 +1,7 @@
-# Cloud environment source
+# OpenAI cloud environment source
 
-The Git commit of this directory versions the intended nonsecret setup.
+The Git commit of this directory versions the intended nonsecret setup for the
+saved ctrl-alt-keith OpenAI cloud execution environment.
 `install.sh` is the saved build script; `workspace-AGENTS.md` is delivered as
 `/workspace/AGENTS.md`; `repository-selection.json` records the selected set
 and desired `main` channel;

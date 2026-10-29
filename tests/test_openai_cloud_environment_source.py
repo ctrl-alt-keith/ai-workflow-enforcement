@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1] / "cloud-environment"
+ROOT = Path(__file__).resolve().parents[1] / "cloud-environments" / "openai"
 
 
 def op_setup_for_fixture(tools):
@@ -21,7 +21,7 @@ def op_setup_for_fixture(tools):
     return setup.replace(source_root, f"Path({str(tools)!r})", 1)
 
 
-class CloudEnvironmentSourceTests(unittest.TestCase):
+class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
     def test_installer_parses_without_running(self):
         subprocess.run(["bash", "-n", str(ROOT / "install.sh")], check=True)
 

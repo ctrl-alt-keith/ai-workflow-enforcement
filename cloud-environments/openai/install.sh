@@ -19,7 +19,7 @@ export GOCACHE=/tmp/onboarding-go-cache
 export GOPATH=/workspace/.onboarding-tools/gopath
 EOF
 
-# Build from selected catalog snapshots. Workspace AGENTS handles task-start
+# Build from selected OpenAI cloud catalog snapshots. Workspace AGENTS handles task-start
 # refresh; setup does not move checkout refs.
 
 # Shared npm CLI inventory: use package@version for pins or @latest for stable updates.
