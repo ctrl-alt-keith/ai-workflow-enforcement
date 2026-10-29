@@ -9,16 +9,28 @@ and custom domains. The saved editor owns the explicit repository selection;
 the runtime catalog records its resolved commits.
 The source commit does not identify a saved or published environment version.
 
+## Runtime credential binding
+
+`OP_SERVICE_ACCOUNT_TOKEN` is a required runtime environment variable for the
+`secrets-lifecycle` [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
+[commit signing](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-git-signing.md),
+and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
+helpers. The installer and task-start refresh do not require it.
+
 ## Apply and verify
 
 1. Run `make check` and ShellCheck. In the saved editor, compare the complete
    installer and workspace AGENTS bytes with this commit. Read back the
    selected repositories and refs, then compare network mode, preset, and
-   custom domains with `configuration.json`. Select `main` where the editor
-   supports a moving ref; otherwise resolve its current commit for this build.
+   custom domains with `configuration.json`. Read back the required runtime
+   binding's name, required status, and injection type; record any nonsecret
+   provider source reference. Select `main` where the editor supports a moving
+   ref; otherwise resolve its current commit for this build.
    Verify editor behavior rather than assuming `main` advances automatically.
-   Stop if an editor value cannot be read back or differs. Runtime status and
-   editor-local prompt previews do not establish saved editor state.
+   Stop if a required setting cannot be read back or differs; the binding's
+   provider source reference may be recorded as `unknown` if not exposed.
+   Runtime status and editor-local prompt previews do not establish saved
+   editor state. Never record credential values or hashes.
 2. For the build, require a clean selected `ai-workflow-enforcement` checkout
    whose `HEAD` matches freshly observed hosted `main`, regardless of its local
    branch name (`work` is valid). Compare `git rev-parse HEAD` with
@@ -43,7 +55,13 @@ The source commit does not identify a saved or published environment version.
        "installer_sha256": "<SHA-256>",
        "workspace_agents_sha256": "<SHA-256>",
        "repository_selection": "<comparison evidence>",
-       "http_network_policy": "<comparison evidence>"
+       "http_network_policy": "<comparison evidence>",
+       "required_runtime_binding": {
+         "name": "OP_SERVICE_ACCOUNT_TOKEN",
+         "required": true,
+         "injection_type": "<saved editor readback>",
+         "provider_source_reference": "<nonsecret editor readback or unknown>"
+       }
      },
      "selected_repository_pins": [{"name": "<owner/repo>", "commit": "<SHA>"}],
      "resolved_tool_versions": {"<tool>": "<version>"},
