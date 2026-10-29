@@ -11,22 +11,17 @@ The source commit does not identify a saved or published environment version.
 
 ## Runtime credential binding
 
-The shared credentialed workflow requires `OP_SERVICE_ACCOUNT_TOKEN` as a
-non-optional runtime variable injected into the task environment. It is the
-1Password broker for the [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
+`OP_SERVICE_ACCOUNT_TOKEN` is a required runtime environment variable for the
+`secrets-lifecycle` [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
 [commit signing](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-git-signing.md),
 and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
-helpers owned by `secrets-lifecycle`. Runtime readiness does not identify its
-saved-editor source or qualify a new publication. The installer and task-start
-repository refresh do not consume it. `GH_TOKEN` and the Claude credential are
-scoped helper outputs, not additional saved bindings for these helpers.
+helpers. The installer and task-start refresh do not require it. These helpers
+derive `GH_TOKEN` and the Claude credential for scoped use; neither is a
+separate saved binding.
 
-For a rebuild, read back the saved editor's binding name, required status,
-injection type, and any nonsecret provider source reference it exposes. Record
-`unknown` when the editor does not expose the source reference; do not infer it
-from runtime readiness or record a value, token hash, or authenticated state.
-Verify readiness separately in the fresh published task before credentialed
-helper use.
+Record the saved editor's binding name, required status, injection type, and
+nonsecret provider source reference (`unknown` if unexposed). Never record a
+value, token hash, or authenticated state.
 
 ## Apply and verify
 
