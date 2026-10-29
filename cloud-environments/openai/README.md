@@ -21,9 +21,12 @@ The source commit does not identify a saved or published environment version.
    differs. Runtime status and editor-local prompt previews do not establish
    saved editor state.
 2. For the build, require a clean selected `ai-workflow-enforcement` checkout
-   on integrated `main` containing these source files. Record its exact `HEAD`
-   as `source_commit` and compare file hashes with the saved editor readback.
-   A pre-merge PR head is a review identity, not the post-squash source commit.
+   whose `HEAD` matches freshly observed hosted `main`, regardless of its local
+   branch name (`work` is valid). Compare `git rev-parse HEAD` with
+   `git ls-remote origin refs/heads/main`, not cached `origin/main`. Require
+   these source files at that `HEAD`; record it as `source_commit` and compare
+   file hashes with the saved editor readback. A pre-merge PR head is a review
+   identity, not the post-squash source commit.
    Build and publish with the supported interface. Read exact snapshot pins
    from `/workspace/.onboarding-tools/repositories.json`; stop if it is absent
    or mismatches the selected set. Store one record per published version
