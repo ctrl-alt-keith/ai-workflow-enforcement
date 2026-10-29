@@ -28,12 +28,9 @@ enable auto-merge, or otherwise accept its own change. Hosted Stewardship
 Engine proposals are review-ready evidence; human merge remains the remediation
 boundary.
 
-The inactive exact-tree PR publisher is a separate mechanical delivery
-candidate for caller-reviewed engineering changes. It validates one
-organization-owned destination, one tested source tree, and one App-authored
-draft PR per source PR. It does not choose tasks, execute staged code with
-credentials, merge, or enable auto-merge. Hosted activation and credential
-grants are separate decisions; see [PR publisher](pr-publisher.md).
+The inactive [PR publisher](pr-publisher.md) is a separate delivery candidate:
+one tested tree becomes one App-authored draft PR. It cannot merge or enable
+auto-merge.
 
 <!-- hosted-stewardship-policy:review-ready-human-merge -->
 
