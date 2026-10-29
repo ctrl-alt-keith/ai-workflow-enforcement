@@ -21,7 +21,8 @@ run proves that workflow completed, not that every needed test was selected.
 The cloud worker remains responsible for review, test adequacy, final CI, and
 the merge-ready decision. Human approval remains required for merge.
 
-The hosted entrypoint is `python3 -m enforcement.pr_publisher`. It accepts a
+The CLI intended for a future hosted workflow is
+`python3 -m enforcement.pr_publisher`. It accepts a
 JSON request in `PUBLISH_REQUEST_JSON` with `repository`, `repository_id`,
 `base_sha`, `source_pr`, `source_sha`, `source_tree`, `manifest_sha256`,
 `test_run_id`, and `test_workflow_id`. The runner supplies the short-lived App
@@ -32,7 +33,7 @@ incubator host. Its output contains only repository, branch, PR, commit, tree,
 base, and action. The host revision check binds trusted code; it does not
 establish owner approval for a particular publication.
 
-There is no hosted entrypoint or credential setup in this repository yet. The
+There is no deployed workflow or credential setup for this CLI yet. The
 smallest deployment path is to keep the existing incubator hosted executor and
 broker custody, and check out the **public** Enforcement implementation at a
 reviewed, pinned commit. A future workflow mode must mint the existing

@@ -137,6 +137,38 @@ class PublisherTests(unittest.TestCase):
             check()
         self.assertEqual((len(reads), waits), (4, [1, 1, 1]))
 
+    def test_destination_rejects_orphan_ambiguous_and_changed_pr(self):
+        request = self.request()
+        branch = "automation/publish-pr-7"
+        prior = "f" * 40
+        valid = {"number": 8, "state": "open", "draft": True,
+                 "merged": False, "auto_merge": None,
+                 "body": f"Source: https://github.com/{REPOSITORY}/pull/7",
+                 "user": {"login": publisher.APP_LOGIN},
+                 "base": {"ref": "main"},
+                 "head": {"ref": branch, "sha": prior,
+                          "repo": {"full_name": REPOSITORY}}}
+
+        def classify(listing, detail=None):
+            def api(method, path, token):
+                self.assertEqual(method, "GET")
+                return listing if "/pulls?" in path else detail
+
+            return publisher._destination(api, "synthetic", request,
+                                          "main", branch, prior)
+
+        with self.assertRaisesRegex(publisher.PublicationError, "branch exists without PR"):
+            classify([])
+        with self.assertRaisesRegex(publisher.PublicationError, "listing ambiguous"):
+            classify([{"number": 8}, {"number": 9}])
+        for field, value in (("state", "closed"), ("draft", False),
+                             ("auto_merge", {"enabled": True}),
+                             ("user", {"login": "other"})):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(publisher.PublicationError,
+                                            "PR or branch changed"):
+                    classify([{"number": 8}], {**valid, field: value})
+
     def test_local_create_noop_update_uses_one_signed_branch(self):
         with tempfile.TemporaryDirectory(prefix="publisher-test-") as temporary:
             root = Path(temporary)
@@ -164,6 +196,7 @@ class PublisherTests(unittest.TestCase):
             lag_once = False
             previous = None
             run_head_override = None
+            create_error_after_post = False
 
             def stage(content):
                 nonlocal source, tree
@@ -240,6 +273,8 @@ class PublisherTests(unittest.TestCase):
                           "base": {"ref": "main"},
                           "head": {"ref": "automation/publish-pr-7",
                                    "repo": {"full_name": REPOSITORY}}}
+                    if create_error_after_post:
+                        raise publisher.PublicationError("synthetic lost PR response")
                     return {"number": 8}
                 raise AssertionError(f"unexpected API operation: {method} {path}")
 
@@ -295,6 +330,26 @@ class PublisherTests(unittest.TestCase):
 
                 run_id = 35
                 uncertain_request = stage("third\n")
+                concurrent_pushes = []
+
+                def concurrent_git(args, **kwargs):
+                    if args and args[0] == "push":
+                        concurrent_pushes.append(args)
+                        git("-C", str(work), "push", "--quiet", "--force", "origin",
+                            f"{source}:refs/heads/automation/publish-pr-7")
+                    return real_git(args, **kwargs)
+
+                with patch.object(publisher, "_git", side_effect=concurrent_git):
+                    with self.assertRaisesRegex(publisher.PublicationError,
+                                                "push outcome uncertain"):
+                        publisher.publish(uncertain_request, "synthetic", signer,
+                                          api=api, clone_url=str(remote))
+                self.assertEqual(len(concurrent_pushes), 1)
+                self.assertEqual(git("-C", str(remote), "rev-parse",
+                                     "refs/heads/automation/publish-pr-7"), source)
+                git("-C", str(remote), "update-ref",
+                    "refs/heads/automation/publish-pr-7", updated.commit, source)
+
                 uncertain_pushes = []
 
                 def uncertain_git(args, **kwargs):
@@ -313,6 +368,28 @@ class PublisherTests(unittest.TestCase):
                 self.assertNotEqual(git("-C", str(remote), "rev-parse",
                                         "refs/heads/automation/publish-pr-7"),
                                     updated.commit)
+
+                git("-C", str(remote), "update-ref", "-d",
+                    "refs/heads/automation/publish-pr-7")
+                pr = None
+                create_error_after_post = True
+                pushes.clear()
+                with patch.object(publisher, "_git", side_effect=count_git):
+                    with self.assertRaisesRegex(publisher.PublicationError,
+                                                "PR creation outcome uncertain"):
+                        publisher.publish(uncertain_request, "synthetic", signer,
+                                          api=api, clone_url=str(remote))
+                created_head = git("-C", str(remote), "rev-parse",
+                                   "refs/heads/automation/publish-pr-7")
+                self.assertEqual((len(pushes), posts), (1, 2))
+                create_error_after_post = False
+                with patch.object(publisher, "_git", side_effect=count_git):
+                    recovered = publisher.publish(uncertain_request, "synthetic",
+                                                  signer, api=api,
+                                                  clone_url=str(remote))
+                self.assertEqual((recovered.action, recovered.commit),
+                                 ("noop", created_head))
+                self.assertEqual((len(pushes), posts), (1, 2))
 
 
 if __name__ == "__main__":
