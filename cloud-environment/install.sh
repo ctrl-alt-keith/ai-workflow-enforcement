@@ -19,22 +19,8 @@ export GOCACHE=/tmp/onboarding-go-cache
 export GOPATH=/workspace/.onboarding-tools/gopath
 EOF
 
-# Refresh eligible existing checkouts before setup; preserve all local work.
-# Owner: ai-workflow-playbook/docs/source-first-retrieval.md,
-# "Existing Checkout Freshness And Bounded Recovery".
-for repo in ai-workflow-playbook secrets-lifecycle; do
-  if test -n "$(git -C "/workspace/$repo" status --porcelain)"; then
-    echo "Preserving dirty checkout; refresh blocked: $repo" >&2
-    exit 1
-  fi
-  git -C "/workspace/$repo" fetch --prune origin main
-  if git -C "/workspace/$repo" merge-base --is-ancestor HEAD origin/main; then
-    git -C "/workspace/$repo" merge --ff-only origin/main
-  elif ! git -C "/workspace/$repo" merge-base --is-ancestor origin/main HEAD; then
-    echo "Preserving divergent checkout; refresh blocked: $repo" >&2
-    exit 1
-  fi
-done
+# Build from selected catalog snapshots. Workspace AGENTS handles task-start
+# refresh; setup does not move checkout refs.
 
 # Shared npm CLI inventory: use package@version for pins or @latest for stable updates.
 # Keep tools outside repository manifests and lockfiles.
@@ -148,12 +134,16 @@ python3 - <<'OP_WRAPPER_SETUP'
 from pathlib import Path
 tools = Path('/workspace/.onboarding-tools')
 link = tools / 'bin/op'
-if not link.is_symlink() or str(link.readlink()) not in ('../sysroot/usr/bin/op', '../op-runtime.py'):
+if link.is_symlink():
+    if str(link.readlink()) not in ('../sysroot/usr/bin/op', '../op-runtime.py'):
+        raise SystemExit('Refusing to replace an unrelated op entrypoint')
+elif link.exists():
     raise SystemExit('Refusing to replace an unrelated op entrypoint')
 runtime = tools / 'op-runtime.py'
 runtime.write_text("#!/usr/bin/python3\n\"\"\"Managed 1Password entrypoint: task-local state, no credential persistence here.\"\"\"\nimport os\nimport stat\nimport sys\nfrom pathlib import Path\n\nconfig = Path('/tmp/1password-cli')\ntry:\n    config.mkdir(mode=0o700)\nexcept FileExistsError:\n    pass\ninfo = config.lstat()\nif not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():\n    raise SystemExit('Unsafe 1Password config directory')\nos.chmod(config, 0o700)\nos.environ['OP_CONFIG_DIR'] = str(config)\nos.environ['OP_CACHE'] = 'false'\nos.execv('/workspace/.onboarding-tools/sysroot/usr/bin/op', ['op', *sys.argv[1:]])\n")
 runtime.chmod(0o755)
-link.unlink()
+if link.is_symlink():
+    link.unlink()
 link.symlink_to('../op-runtime.py')
 OP_WRAPPER_SETUP
 command -v op

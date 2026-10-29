@@ -3,90 +3,90 @@
     "name": "ctrl-alt-keith/.github",
     "host": "github.com",
     "mount_path": ".github",
-    "commit": "19f1523a36263e26e4245060d8072f2fbfe5d6fe"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/ai-workflow-enforcement",
     "host": "github.com",
     "mount_path": "ai-workflow-enforcement",
-    "commit": "c6ad0d0682053aa67d56ab105ee3d12e3d04bd49"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/ai-workflow-incubator",
     "host": "github.com",
     "mount_path": "ai-workflow-incubator",
-    "commit": "212f60c643212aa805398611675eb830fc9b9d70"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/ai-workflow-playbook",
     "host": "github.com",
     "mount_path": "ai-workflow-playbook",
-    "commit": "ea44e4a98f1ed047901102f81b8f80a4d22cc91e"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/gitlab-linode-lab",
     "host": "github.com",
     "mount_path": "gitlab-linode-lab",
-    "commit": "7119d96a6496948a76543b4f9c875ecc123001dd"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/knowledge-adapters",
     "host": "github.com",
     "mount_path": "knowledge-adapters",
-    "commit": "cf1df79112d2c4021cf97f7191fef095a3996336"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/knowledge-vault",
     "host": "github.com",
     "mount_path": "knowledge-vault",
-    "commit": "20b6404388d7f4cc792d854875bdfdde057e9fae"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/leadership-workbench",
     "host": "github.com",
     "mount_path": "leadership-workbench",
-    "commit": "09521eba009a04519c30a0ecfc399b2566840c79"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/linode-backup-lab",
     "host": "github.com",
     "mount_path": "linode-backup-lab",
-    "commit": "f9f2e6e1f17bed9c15d2d8eccb48319bd7d7a5dd"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/linode-image-lab",
     "host": "github.com",
     "mount_path": "linode-image-lab",
-    "commit": "d7fc797cfc0e47ae3093b60acfea58b23b600d87"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/lke-image-lab",
     "host": "github.com",
     "mount_path": "lke-image-lab",
-    "commit": "7c3e3fedaf500151d96c0374fad4a6ba05f8bacc"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/nexus",
     "host": "github.com",
     "mount_path": "nexus",
-    "commit": "8cdff728ef6e2af09079b4993c096bf59d2266a2"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/secrets-lifecycle",
     "host": "github.com",
     "mount_path": "secrets-lifecycle",
-    "commit": "5aa697f9d830efd62be59cd792077a7611fbee83"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/trusted-ai-environment",
     "host": "github.com",
     "mount_path": "trusted-ai-environment",
-    "commit": "d85032e62f435619627d7782e202844c5bd973ce"
+    "desired_ref": "main"
   },
   {
     "name": "ctrl-alt-keith/trusted-network-registry",
     "host": "github.com",
     "mount_path": "trusted-network-registry",
-    "commit": "c2f123722b27c258c996d68c5a37bbba4533b262"
+    "desired_ref": "main"
   }
 ]

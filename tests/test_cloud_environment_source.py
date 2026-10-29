@@ -1,30 +1,65 @@
 """Validate the nonsecret cloud setup inputs without running the installer."""
 
 import json
-import re
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1] / "cloud-environment"
-SHA = re.compile(r"[0-9a-f]{40}\Z")
+
+
+def op_setup_for_fixture(tools):
+    installer = (ROOT / "install.sh").read_text()
+    marker = "python3 - <<'OP_WRAPPER_SETUP'\n"
+    setup = installer.split(marker, 1)[1].split("\nOP_WRAPPER_SETUP", 1)[0]
+    source_root = "Path('/workspace/.onboarding-tools')"
+    if setup.count(source_root) != 1:
+        raise ValueError("Cannot isolate op setup from the live tools directory")
+    return setup.replace(source_root, f"Path({str(tools)!r})", 1)
 
 
 class CloudEnvironmentSourceTests(unittest.TestCase):
     def test_installer_parses_without_running(self):
         subprocess.run(["bash", "-n", str(ROOT / "install.sh")], check=True)
 
-    def test_catalog_is_commit_pinned_and_unique(self):
-        catalog = json.loads((ROOT / "repositories.json").read_text())
-        self.assertTrue(catalog)
-        self.assertEqual(len(catalog), len({entry["name"] for entry in catalog}))
-        self.assertEqual(len(catalog), len({entry["mount_path"] for entry in catalog}))
-        for entry in catalog:
-            self.assertEqual(set(entry), {"name", "host", "mount_path", "commit"})
+    def test_repository_selection_is_unique(self):
+        selection = json.loads((ROOT / "repository-selection.json").read_text())
+        self.assertTrue(selection)
+        self.assertEqual(len(selection), len({entry["name"] for entry in selection}))
+        self.assertEqual(len(selection), len({entry["mount_path"] for entry in selection}))
+        self.assertIn("ctrl-alt-keith/ai-workflow-enforcement", {entry["name"] for entry in selection})
+        for entry in selection:
+            self.assertEqual(set(entry), {"name", "host", "mount_path", "desired_ref"})
             self.assertEqual(entry["host"], "github.com")
-            self.assertTrue(SHA.fullmatch(entry["commit"]))
+            self.assertEqual(entry["desired_ref"], "main")
             self.assertFalse(Path(entry["mount_path"]).is_absolute())
+
+    def test_op_entrypoint_clean_and_repeat_setup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tools = Path(temporary)
+            (tools / "bin").mkdir()
+            setup = op_setup_for_fixture(tools)
+            for _ in range(2):
+                subprocess.run([sys.executable, "-c", setup], check=True)
+                self.assertEqual(
+                    (tools / "bin/op").readlink(), Path("../op-runtime.py")
+                )
+                self.assertTrue((tools / "op-runtime.py").is_file())
+
+    def test_op_entrypoint_refuses_unrelated_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tools = Path(temporary)
+            (tools / "bin").mkdir()
+            (tools / "bin/op").write_text("unrelated")
+            setup = op_setup_for_fixture(tools)
+            result = subprocess.run(
+                [sys.executable, "-c", setup], capture_output=True, text=True
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((tools / "bin/op").read_text(), "unrelated")
 
 if __name__ == "__main__":
     unittest.main()
