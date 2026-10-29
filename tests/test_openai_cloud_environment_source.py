@@ -61,5 +61,15 @@ class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((tools / "bin/op").read_text(), "unrelated")
 
+    def test_op_entrypoint_replaces_legacy_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tools = Path(temporary)
+            (tools / "bin").mkdir()
+            (tools / "bin/op").symlink_to("../sysroot/usr/bin/op")
+            subprocess.run(
+                [sys.executable, "-c", op_setup_for_fixture(tools)], check=True
+            )
+            self.assertEqual((tools / "bin/op").readlink(), Path("../op-runtime.py"))
+
 if __name__ == "__main__":
     unittest.main()

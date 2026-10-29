@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
+  echo "OpenAI cloud setup requires Linux x86_64" >&2
+  exit 1
+fi
 TOOLS=/workspace/.onboarding-tools
 export PIP_CACHE_DIR=/tmp/onboarding-pip-cache
 export UV_CACHE_DIR=/tmp/onboarding-uv-cache
@@ -19,8 +23,8 @@ export GOCACHE=/tmp/onboarding-go-cache
 export GOPATH=/workspace/.onboarding-tools/gopath
 EOF
 
-# Build from selected OpenAI cloud catalog snapshots. Workspace AGENTS handles task-start
-# refresh; setup does not move checkout refs.
+# Build from selected OpenAI cloud catalog snapshots. Workspace AGENTS handles
+# task-start refresh; setup does not move checkout refs.
 
 # Shared npm CLI inventory: use package@version for pins or @latest for stable updates.
 # Keep tools outside repository manifests and lockfiles.
@@ -37,11 +41,7 @@ claude --version
 gh_tag=$(curl -fLsS https://api.github.com/repos/cli/cli/releases/latest | python3 -c 'import json, re, sys; r=json.load(sys.stdin); t=r["tag_name"]; assert not r["draft"] and not r["prerelease"] and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", t); print(t)')
 gh_version=${gh_tag#v}
 dpkg --compare-versions "$gh_version" ge 2.82.1
-case "$(uname -m)" in
-  x86_64) gh_arch=amd64 ;;
-  aarch64|arm64) gh_arch=arm64 ;;
-  *) echo "Unsupported GitHub CLI architecture" >&2; exit 1 ;;
-esac
+gh_arch=amd64
 gh_archive="gh_${gh_version}_linux_${gh_arch}.tar.gz"
 gh_base="https://github.com/cli/cli/releases/download/$gh_tag"
 curl -fLsS "$gh_base/$gh_archive" -o "$TOOLS/downloads/$gh_archive"
@@ -65,18 +65,24 @@ if ! test -x "$TOOLS/go/bin/go"; then
   echo "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40  $TOOLS/downloads/go1.27.3.linux-amd64.tar.gz" | sha256sum -c -
   tar -xzf "$TOOLS/downloads/go1.27.3.linux-amd64.tar.gz" -C "$TOOLS"
 fi
+if [[ $("$TOOLS/go/bin/go" version) != 'go version go1.27.3 linux/amd64' ]]; then
+  echo "Managed Go version differs from pinned go1.27.3 linux/amd64" >&2
+  exit 1
+fi
 if ! test -x "$TOOLS/bin/terraform"; then
   curl -fLsS https://releases.hashicorp.com/terraform/1.16.4/terraform_1.16.4_SHA256SUMS -o "$TOOLS/downloads/terraform_SHA256SUMS"
   curl -fLsS https://releases.hashicorp.com/terraform/1.16.4/terraform_1.16.4_linux_amd64.zip -o "$TOOLS/downloads/terraform_1.16.4_linux_amd64.zip"
   (cd "$TOOLS/downloads" && sha256sum -c --ignore-missing terraform_SHA256SUMS)
   unzip -o "$TOOLS/downloads/terraform_1.16.4_linux_amd64.zip" terraform -d "$TOOLS/bin"
 fi
+"$TOOLS/bin/terraform" version -json | python3 -c 'import json, sys; v=json.load(sys.stdin); sys.exit(0 if (v.get("terraform_version"), v.get("platform")) == ("1.16.4", "linux_amd64") else "Managed Terraform version differs from pinned 1.16.4 linux_amd64")'
 if ! test -x "$TOOLS/bin/kubectl"; then
   curl -fLsS https://dl.k8s.io/release/v1.37.1/bin/linux/amd64/kubectl -o "$TOOLS/downloads/kubectl"
   curl -fLsS https://dl.k8s.io/release/v1.37.1/bin/linux/amd64/kubectl.sha256 -o "$TOOLS/downloads/kubectl.sha256"
   (cd "$TOOLS/downloads" && echo "$(cat kubectl.sha256)  kubectl" | sha256sum -c -)
   install -m 755 "$TOOLS/downloads/kubectl" "$TOOLS/bin/kubectl"
 fi
+"$TOOLS/bin/kubectl" version --client --output=json | python3 -c 'import json, sys; v=json.load(sys.stdin).get("clientVersion", {}); sys.exit(0 if (v.get("gitVersion"), v.get("platform")) == ("v1.37.1", "linux/amd64") else "Managed kubectl version differs from pinned v1.37.1 linux/amd64")'
 
 # Use authenticated APT metadata, downloading and extracting without root.
 cat > "$TOOLS/apt/sources.list" <<'EOF'
@@ -84,8 +90,12 @@ deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://deb.debia
 EOF
 APT_ARGS=(-o "Dir::Etc::sourcelist=$TOOLS/apt/sources.list" -o "Dir::Etc::sourceparts=$TOOLS/apt/sourceparts" -o "Dir::State::lists=$TOOLS/apt/lists" -o "Dir::Cache::archives=$TOOLS/apt/archives" -o Debug::NoLocking=1)
 apt-get "${APT_ARGS[@]}" update
+rm -f "$TOOLS"/apt/archives/*.deb
 apt-get "${APT_ARGS[@]}" --download-only -y install ruby ruby-minitest shellcheck
-for package in "$TOOLS"/apt/archives/*.deb; do dpkg-deb -x "$package" "$TOOLS/sysroot"; done
+for package in "$TOOLS"/apt/archives/*.deb; do
+  test -f "$package" || continue
+  dpkg-deb -x "$package" "$TOOLS/sysroot"
+done
 ln -sf ../sysroot/usr/bin/shellcheck "$TOOLS/bin/shellcheck"
 cat > "$TOOLS/bin/ruby" <<'EOF'
 #!/bin/sh
@@ -115,7 +125,7 @@ done
 /workspace/trusted-network-registry/.venv/bin/pip install --no-deps -e /workspace/trusted-network-registry
 make -C /workspace/nexus bootstrap
 
-# 1Password CLI: refresh from the signed stable repository; no authentication.
+# 1Password CLI: refresh from stable APT using its fetched signing key.
 # This step requires downloads.1password.com in the applied network policy.
 curl -fLsS https://downloads.1password.com/linux/keys/1password.asc -o "$TOOLS/downloads/1password.asc"
 mkdir -p "$TOOLS/gnupg"

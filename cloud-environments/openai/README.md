@@ -2,6 +2,7 @@
 
 The Git commit of this directory versions the intended nonsecret setup for the
 saved ctrl-alt-keith OpenAI cloud execution environment.
+The installer supports Linux x86_64 only.
 `install.sh` is the saved build script; `workspace-AGENTS.md` is delivered as
 `/workspace/AGENTS.md`; `repository-selection.json` records the selected set
 and desired `main` channel;
@@ -19,12 +20,14 @@ The source commit does not identify a saved or published environment version.
    advances automatically. Stop if an editor value cannot be read back or
    differs. Runtime status and editor-local prompt previews do not establish
    saved editor state.
-2. Before build, verify in the selected `ai-workflow-enforcement` checkout that
-   `git merge-base --is-ancestor <source_commit> HEAD` succeeds. Stop if it
-   does not. Build and publish with the
-   supported interface. Read exact snapshot pins from the build's runtime
-   catalog, `/workspace/.onboarding-tools/repositories.json`. Store one record
-   per published version outside this source tree, using this shape:
+2. For the build, require a clean selected `ai-workflow-enforcement` checkout
+   on integrated `main` containing these source files. Record its exact `HEAD`
+   as `source_commit` and compare file hashes with the saved editor readback.
+   A pre-merge PR head is a review identity, not the post-squash source commit.
+   Build and publish with the supported interface. Read exact snapshot pins
+   from `/workspace/.onboarding-tools/repositories.json`; stop if it is absent
+   or mismatches the selected set. Store one record per published version
+   outside this source tree, using this shape:
 
    ```json
    {
@@ -53,8 +56,10 @@ The source commit does not identify a saved or published environment version.
    writable private `op` config, repository availability, and workspace AGENTS
    delivery. Run the task-start refresh once and record its result separately,
    including fetched-main alignment and actual advancement when applicable.
+   Catalog pins are the startup floor; refresh targets fetched `main`.
 
 The installer-generated `op` launcher, executor PATH settings, runtime
 credential bindings, and authenticated state are not source files. Rebuilding
 an old source commit resolves then-current stable packages; exact replay needs
 prior package versions and integrity inputs plus fresh-runtime verification.
+Existing Go, Terraform, or kubectl version mismatches stop the build.
