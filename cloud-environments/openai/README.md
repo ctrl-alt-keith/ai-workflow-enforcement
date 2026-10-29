@@ -15,13 +15,7 @@ The source commit does not identify a saved or published environment version.
 `secrets-lifecycle` [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
 [commit signing](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-git-signing.md),
 and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
-helpers. The installer and task-start refresh do not require it. These helpers
-derive `GH_TOKEN` and the Claude credential for scoped use; neither is a
-separate saved binding.
-
-Record the saved editor's binding name, required status, injection type, and
-nonsecret provider source reference (`unknown` if unexposed). Never record a
-value, token hash, or authenticated state.
+helpers. The installer and task-start refresh do not require it.
 
 ## Apply and verify
 
@@ -29,13 +23,14 @@ value, token hash, or authenticated state.
    installer and workspace AGENTS bytes with this commit. Read back the
    selected repositories and refs, then compare network mode, preset, and
    custom domains with `configuration.json`. Read back the required runtime
-   binding as described above. Select `main` where the editor
-   supports a moving ref; otherwise resolve its current commit for this build.
+   binding's name, required status, and injection type; record any nonsecret
+   provider source reference. Select `main` where the editor supports a moving
+   ref; otherwise resolve its current commit for this build.
    Verify editor behavior rather than assuming `main` advances automatically.
    Stop if a required setting cannot be read back or differs; the binding's
    provider source reference may be recorded as `unknown` if not exposed.
    Runtime status and editor-local prompt previews do not establish saved
-   editor state.
+   editor state. Never record credential values or hashes.
 2. For the build, require a clean selected `ai-workflow-enforcement` checkout
    whose `HEAD` matches freshly observed hosted `main`, regardless of its local
    branch name (`work` is valid). Compare `git rev-parse HEAD` with
