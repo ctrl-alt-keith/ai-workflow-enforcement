@@ -29,7 +29,7 @@ Engine proposals are review-ready evidence; human merge remains the remediation
 boundary.
 
 The inactive exact-tree PR publisher is a separate mechanical delivery
-candidate for already reviewed engineering changes. It validates one
+candidate for caller-reviewed engineering changes. It validates one
 organization-owned destination, one tested source tree, and one App-authored
 draft PR per source PR. It does not choose tasks, execute staged code with
 credentials, merge, or enable auto-merge. Hosted activation and credential

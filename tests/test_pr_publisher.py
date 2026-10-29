@@ -86,6 +86,9 @@ class PublisherTests(unittest.TestCase):
         digest = publisher.manifest("1" * 40, "2" * 40, "3" * 40,
                                     "4" * 40, old, new)
         self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertNotEqual(digest, publisher.manifest(
+            "1" * 40, "2" * 40, "3" * 40, "4" * 40, old,
+            {"src/a.py": ("100644", "5" * 40, 4)}))
         for path, item in ((".github/workflows/check.yml", ("100644", "2" * 40, 4)),
                            ("src/link", ("120000", "2" * 40, 4))):
             with self.subTest(path=path), self.assertRaisesRegex(
@@ -137,6 +140,33 @@ class PublisherTests(unittest.TestCase):
             check()
         self.assertEqual((len(reads), waits), (4, [1, 1, 1]))
 
+    def test_commit_rejects_wrong_identity_signature_tree_and_parent(self):
+        sha, tree, parent = "1" * 40, "2" * 40, "3" * 40
+        valid = {"sha": sha, "tree": {"sha": tree},
+                 "parents": [{"sha": parent}],
+                 "verification": {"verified": True},
+                 "author": {"name": publisher.SIGNER_NAME,
+                            "email": publisher.SIGNER_EMAIL},
+                 "committer": {"name": publisher.SIGNER_NAME,
+                               "email": publisher.SIGNER_EMAIL}}
+
+        def check(commit):
+            return publisher._commit(lambda *args: commit, "synthetic",
+                                     f"/repos/{REPOSITORY}", sha,
+                                     tree=tree, parent=parent)
+
+        self.assertEqual(check(valid), valid)
+        wrong = ({**valid, "verification": {"verified": False}},
+                 {**valid, "author": {**valid["author"], "email": "other@invalid"}},
+                 {**valid, "committer": {**valid["committer"], "name": "other"}},
+                 {**valid, "tree": {"sha": "4" * 40}},
+                 {**valid, "parents": [{"sha": "4" * 40}]},
+                 {**valid, "parents": [{"sha": parent}, {"sha": "4" * 40}]})
+        for commit in wrong:
+            with self.subTest(commit=commit), self.assertRaisesRegex(
+                    publisher.PublicationError, "identity mismatch"):
+                check(commit)
+
     def test_destination_rejects_orphan_ambiguous_and_changed_pr(self):
         request = self.request()
         branch = "automation/publish-pr-7"
@@ -163,7 +193,8 @@ class PublisherTests(unittest.TestCase):
             classify([{"number": 8}, {"number": 9}])
         for field, value in (("state", "closed"), ("draft", False),
                              ("auto_merge", {"enabled": True}),
-                             ("user", {"login": "other"})):
+                             ("user", {"login": "other"}),
+                             ("body", f"Source: https://github.com/{REPOSITORY}/pull/70")):
             with self.subTest(field=field):
                 with self.assertRaisesRegex(publisher.PublicationError,
                                             "PR or branch changed"):
@@ -197,6 +228,7 @@ class PublisherTests(unittest.TestCase):
             previous = None
             run_head_override = None
             create_error_after_post = False
+            bad_commit_readback = False
 
             def stage(content):
                 nonlocal source, tree
@@ -260,7 +292,7 @@ class PublisherTests(unittest.TestCase):
                                                         "rev-parse", f"{sha}^{{tree}}")},
                             "parents": [{"sha": git("-C", str(remote),
                                                        "rev-parse", f"{sha}^")}],
-                            "verification": {"verified": True},
+                            "verification": {"verified": not bad_commit_readback},
                             "author": {"name": publisher.SIGNER_NAME,
                                        "email": publisher.SIGNER_EMAIL},
                             "committer": {"name": publisher.SIGNER_NAME,
@@ -372,11 +404,26 @@ class PublisherTests(unittest.TestCase):
                 git("-C", str(remote), "update-ref", "-d",
                     "refs/heads/automation/publish-pr-7")
                 pr = None
+                bad_commit_readback = True
+                pushes.clear()
+                with patch.object(publisher, "_git", side_effect=count_git):
+                    with self.assertRaisesRegex(publisher.PublicationError,
+                                                "publication outcome uncertain") as failure:
+                        publisher.publish(uncertain_request, "synthetic", signer,
+                                          api=api, clone_url=str(remote))
+                published_head = git("-C", str(remote), "rev-parse",
+                                     "refs/heads/automation/publish-pr-7")
+                self.assertIn(published_head, str(failure.exception))
+                self.assertIn("branch=automation/publish-pr-7", str(failure.exception))
+                self.assertEqual((len(pushes), posts), (1, 1))
+                bad_commit_readback = False
+                git("-C", str(remote), "update-ref", "-d",
+                    "refs/heads/automation/publish-pr-7")
                 create_error_after_post = True
                 pushes.clear()
                 with patch.object(publisher, "_git", side_effect=count_git):
                     with self.assertRaisesRegex(publisher.PublicationError,
-                                                "PR creation outcome uncertain"):
+                                                "publication outcome uncertain"):
                         publisher.publish(uncertain_request, "synthetic", signer,
                                           api=api, clone_url=str(remote))
                 created_head = git("-C", str(remote), "rev-parse",

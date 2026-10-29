@@ -1,7 +1,7 @@
 # Exact-tree PR publisher candidate
 
 `enforcement/pr_publisher.py` is an inactive delivery component. It can take a
-reviewed staging PR in one `ctrl-alt-keith` repository, verify the current
+caller-reviewed staging PR in one `ctrl-alt-keith` repository, verify the current
 default branch, exact source commit and tree, a complete changed-file manifest,
 and a successful pull-request workflow run bound to that source. It signs the
 source tree with the pinned bot identity and creates or updates one App-authored
@@ -14,10 +14,12 @@ The target boundary is the `ctrl-alt-keith` organization, verified against
 GitHub's repository owner, numeric repository ID, and an installation token
 whose visible repository scope is exactly the target. No central list of
 repository names is maintained. The current candidate limits each change to
-128 regular-file paths and 8 MiB of new bytes, and excludes workflow-file
-changes. The source test run must belong to the same PR, repository, branch,
-and exact source SHA. The caller selects the relevant workflow ID; a successful
-run proves that workflow completed, not that every needed test was selected.
+128 regular-file paths and 8 MiB of new bytes, and excludes changes under
+`.github/workflows/` only. Other automation paths remain eligible and require
+caller review. The source test run must belong to the same PR, repository,
+branch, and exact source SHA. The caller selects the relevant workflow ID; a
+successful run proves that workflow completed, not that every needed test was
+selected.
 The cloud worker remains responsible for review, test adequacy, final CI, and
 the merge-ready decision. Human approval remains required for merge.
 
@@ -27,11 +29,17 @@ JSON request in `PUBLISH_REQUEST_JSON` with `repository`, `repository_id`,
 `base_sha`, `source_pr`, `source_sha`, `source_tree`, `manifest_sha256`,
 `test_run_id`, and `test_workflow_id`. The runner supplies the short-lived App
 token as `PUBLISH_TOKEN` and the private signer file path as
-`PUBLISH_SIGNER_KEY`. `PUBLISH_HOST_SHA` must equal the executing main SHA;
+`PUBLISH_SIGNER_KEY`. `PUBLISH_HOST_SHA` must equal the host workflow's main
+SHA;
 the entrypoint also requires a first-attempt GitHub Actions run in the existing
 incubator host. Its output contains only repository, branch, PR, commit, tree,
-base, and action. The host revision check binds trusted code; it does not
-establish owner approval for a particular publication.
+base, and action. This environment check catches accidental host revision
+mismatches; it does not authenticate the runner or verify the Enforcement code
+revision. The future host workflow must pin and verify that checkout
+separately.
+It does not establish owner approval for a particular publication. Closed or
+merged destination PRs require manual resolution, and only first-attempt test
+runs qualify; a rerun cannot be published through this candidate.
 
 There is no deployed workflow or credential setup for this CLI yet. The
 smallest deployment path is to keep the existing incubator hosted executor and

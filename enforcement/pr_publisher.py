@@ -311,7 +311,8 @@ def _destination(api: Api, token: str, request: Request, base_ref: str,
             _object(pr.get("base")).get("ref") != base_ref or
             head.get("sha") != remote_sha or head.get("ref") != branch or
             _object(head.get("repo")).get("full_name") != request.repository or
-            not isinstance(pr.get("body"), str) or marker not in pr["body"] or
+            not isinstance(pr.get("body"), str) or
+            marker not in pr["body"].splitlines() or
             not remote_sha):
         raise PublicationError("destination PR or branch changed")
     prior = _commit(api, token, root, remote_sha)
@@ -369,14 +370,16 @@ def publish(request: Request, token: str, signer_key: Path, *,
         env = _git_env(token, scratch)
         allowed = _signer(signer_key, scratch)
         repo = scratch / "repository"
-        _git(["clone", "--quiet", "--no-tags", "--no-checkout",
+        _git(["-c", "transfer.fsckObjects=true", "clone", "--quiet",
+              "--no-tags", "--no-checkout",
               f"--branch={base_ref}",
               clone_url or f"https://github.com/{request.repository}.git",
               str(repo)], cwd=None, env=env)
         if _git(["rev-parse", f"refs/remotes/origin/{base_ref}"],
                 cwd=repo, env=env).decode().strip() != request.base_sha:
             raise PublicationError("publisher base checkout changed")
-        _git(["fetch", "--quiet", "--no-tags", "origin",
+        _git(["-c", "transfer.fsckObjects=true", "fetch", "--quiet",
+              "--no-tags", "origin",
               f"pull/{request.source_pr}/head"], cwd=repo, env=env)
         if (_git(["rev-parse", "FETCH_HEAD"], cwd=repo, env=env).decode().strip()
                 != request.source_sha or
@@ -407,7 +410,8 @@ def publish(request: Request, token: str, signer_key: Path, *,
             _source(api, token, request, base_ref)
             if _destination(api, token, request, base_ref, branch, prior) != ("noop", number):
                 raise PublicationError("destination changed during no-op")
-            assert number is not None and prior is not None
+            if number is None or prior is None:
+                raise PublicationError("destination PR identity invalid")
             _branch_ref(api, token, root, branch, prior)
             return Result("noop", request.repository, branch, number, prior,
                           request.source_tree, request.base_sha)
@@ -421,7 +425,7 @@ def publish(request: Request, token: str, signer_key: Path, *,
             "-c", f"user.name={SIGNER_NAME}", "-c", f"user.email={SIGNER_EMAIL}",
             "commit-tree", "-S", request.source_tree, "-p", request.base_sha,
         ], cwd=repo, env=env,
-           input_bytes=f"Publish reviewed PR #{request.source_pr}\n".encode()).decode().strip()
+            input_bytes=f"Publish staging PR #{request.source_pr}\n".encode()).decode().strip()
         if not _sha(commit):
             raise PublicationError("signed commit identity invalid")
         if (_git(["rev-list", "--parents", "-n", "1", commit], cwd=repo, env=env
@@ -439,21 +443,26 @@ def publish(request: Request, token: str, signer_key: Path, *,
                   "origin", f"{commit}:refs/heads/{branch}"], cwd=repo, env=env)
         except PublicationError:
             raise PublicationError("push outcome uncertain; inspect branch") from None
-    _commit(api, token, root, commit, tree=request.source_tree, parent=request.base_sha)
-    if action == "create":
-        try:
+    try:
+        _commit(api, token, root, commit, tree=request.source_tree,
+                parent=request.base_sha)
+        if action == "create":
             created = _object(api("POST", f"{root}/pulls", token,
-                                  {"title": f"Publish reviewed PR #{request.source_pr}",
+                                  {"title": f"Publish staging PR #{request.source_pr}",
                                    "head": branch, "base": base_ref, "draft": True,
                                    "body": (f"Source: https://github.com/{request.repository}/pull/"
                                             f"{request.source_pr}\nHuman merge decision required.")}))
-        except PublicationError:
-            raise PublicationError("PR creation outcome uncertain; inspect branch") from None
-        number = created.get("number")
-    if type(number) is not int or number <= 0:
-        raise PublicationError("destination PR identity uncertain; inspect branch")
-    _readback(api, token, request, base_ref, number, branch, commit, prior, wait)
-    _branch_ref(api, token, root, branch, commit)
+            number = created.get("number")
+        if type(number) is not int or number <= 0:
+            raise PublicationError("destination PR identity invalid")
+        _readback(api, token, request, base_ref, number, branch, commit, prior,
+                  wait)
+        _branch_ref(api, token, root, branch, commit)
+    except PublicationError as error:
+        raise PublicationError(
+            f"publication outcome uncertain; branch={branch} commit={commit}; "
+            f"{error}; inspect remote before retry"
+        ) from None
     return Result(action, request.repository, branch, number, commit,
                   request.source_tree, request.base_sha)
 
