@@ -29,7 +29,8 @@ fills them from `ai-automation-private/k2-cloud-github/token` and
 publishing. This source records names and references; it does not sync values.
 Absent bindings use 1Password; empty or malformed present bindings stop the
 helper, so do not publish incomplete entries. On rotation, update the
-1Password field and saved copy, then verify before retiring the old credential.
+1Password field and saved copy, republish, then verify in a fresh task before
+retiring the old credential.
 Add other copies only when measured usage justifies the wider exposure. The
 hosted GitHub App key stays outside this set. Keep values out of Git, saved
 source, output, and logs.
