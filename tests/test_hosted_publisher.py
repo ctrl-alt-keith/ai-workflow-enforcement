@@ -325,11 +325,15 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
 
         self.assertEqual(HOST.mint_target_token(api, "jwt", request), "synthetic")
         self.assertEqual(calls[1][2], {"repositories": ["example"],
-                                       "permissions": HOST.TOKEN_PERMISSIONS})
+                                       "permissions": {"contents": "write",
+                                                       "pull_requests": "write",
+                                                       "actions": "read", "checks": "read"}})
         self.assertEqual(HOST.mint_target_token(
-            api, "jwt", request, HOST.FINALIZE_TOKEN_PERMISSIONS), "synthetic")
+            api, "jwt", request, HOST.TOKEN_PERMISSIONS), "synthetic")
         self.assertEqual(calls[4][2], {"repositories": ["example"],
-                                       "permissions": HOST.TOKEN_PERMISSIONS})
+                                       "permissions": {"contents": "write",
+                                                       "pull_requests": "write",
+                                                       "actions": "read", "checks": "read"}})
 
         def broad_api(method, path, token, payload=None):
             if path.endswith("/installation"):
@@ -354,7 +358,9 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
             self.assertEqual(HOST.run(env, CORE, publication(), proof),
                              {"action": "ready"})
         self.assertEqual(read.call_count, 1)
-        self.assertEqual(mint.call_args.args[-1], HOST.TOKEN_PERMISSIONS)
+        self.assertEqual(mint.call_args.args[-1],
+                         {"contents": "write", "pull_requests": "write",
+                          "actions": "read", "checks": "read"})
 
     def test_finalize_requires_all_named_checks_and_current_draft(self):
         request = publication()

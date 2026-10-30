@@ -18,7 +18,6 @@ APP_CLIENT_ID = "Iv23li3PNJgEEd6o4WcN"
 APP_KEY_FINGERPRINT = "SHA256:cRVy5Uas99yEFYv/Wk3vBbLb2Uon52kgTwl4nNS6Ifw="
 TOKEN_PERMISSIONS = {"contents": "write", "pull_requests": "write",
                      "actions": "read", "checks": "read"}
-FINALIZE_TOKEN_PERMISSIONS = dict(TOKEN_PERMISSIONS)
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 CHECK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,99}\Z")
 
@@ -346,9 +345,7 @@ def run(env, publisher, request, evidence, *, api=None):
         if _app_fingerprint(app_key) != APP_KEY_FINGERPRINT:
             raise HostError("App key fingerprint mismatch")
         jwt = _app_jwt(app_key)
-        permissions = (TOKEN_PERMISSIONS if evidence is None
-                       else FINALIZE_TOKEN_PERMISSIONS)
-        token = mint_target_token(api, jwt, request, permissions)
+        token = mint_target_token(api, jwt, request, TOKEN_PERMISSIONS)
         if evidence is None:
             signer_key = scratch / "signer-key"
             _private_file(signer_key, _broker_read(env["PUBLISH_SIGNER_KEY_REF"],
