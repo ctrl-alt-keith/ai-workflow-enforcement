@@ -17,6 +17,17 @@ The source commit does not identify a saved or published environment version.
 and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
 helpers. The installer and task-start refresh do not require it.
 
+Optional runtime bindings supported by those helpers are
+`CAK_CLOUD_GITHUB_PAT`, `CAK_CLOUD_SIGNING_KEY`, and
+`CAK_CLOUD_CLAUDE_OAUTH_TOKEN`. Each mirrors an existing 1Password field through
+the saved environment's configuration management. Absent bindings use
+1Password; invalid present bindings stop the helper. The PAT is the first
+useful mirror for repeated GitHub calls; bounded `gh` batches reduce reads
+without any mirror. Add other mirrors only if measured usage justifies their
+wider runtime exposure. The hosted GitHub App key stays outside this cloud
+binding set. Review binding names, injection types, expiry, and rotation owners
+before activation; keep values out of Git, saved source, output, and logs.
+
 ## Apply and verify
 
 1. Run `make check` and ShellCheck. In the saved editor, compare the complete
