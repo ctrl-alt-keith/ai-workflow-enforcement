@@ -17,6 +17,17 @@ The source commit does not identify a saved or published environment version.
 and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
 helpers. The installer and task-start refresh do not require it.
 
+The reviewed `secrets-lifecycle` helpers can also accept
+`CAK_CLOUD_GITHUB_PAT`, `CAK_CLOUD_SIGNING_KEY`, and
+`CAK_CLOUD_CLAUDE_OAUTH_TOKEN`. None is provisioned by this source. Each is a
+separate, owner-managed copy of an authoritative 1Password field, injected as
+a secret-type variable by the saved editor and available to task processes.
+Absent bindings use 1Password; invalid present bindings stop the helper. The
+owner updates each copy when its field rotates and verifies the new binding
+before retiring the old value. Add a copy only when measured usage justifies
+the wider exposure. The hosted GitHub App key stays outside this set. Keep
+values out of Git, saved source, output, and logs.
+
 ## Apply and verify
 
 1. Run `make check` and ShellCheck. In the saved editor, compare the complete
@@ -24,7 +35,8 @@ helpers. The installer and task-start refresh do not require it.
    selected repositories and refs, then compare network mode, preset, and
    custom domains with `configuration.json`. Read back the required runtime
    binding's name, required status, and injection type; record any nonsecret
-   provider source reference. Select `main` where the editor supports a moving
+   provider source reference. Record which optional bindings are present and
+   their injection types, or an empty list. Select `main` where the editor supports a moving
    ref; otherwise resolve its current commit for this build.
    Verify editor behavior rather than assuming `main` advances automatically.
    Stop if a required setting cannot be read back or differs; the binding's
@@ -61,7 +73,8 @@ helpers. The installer and task-start refresh do not require it.
          "required": true,
          "injection_type": "<saved editor readback>",
          "provider_source_reference": "<nonsecret editor readback or unknown>"
-       }
+       },
+       "optional_runtime_bindings": []
      },
      "selected_repository_pins": [{"name": "<owner/repo>", "commit": "<SHA>"}],
      "resolved_tool_versions": {"<tool>": "<version>"},
