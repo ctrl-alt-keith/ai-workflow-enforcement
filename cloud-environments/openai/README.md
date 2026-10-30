@@ -21,12 +21,18 @@ The reviewed `secrets-lifecycle` helpers can also accept
 `CAK_CLOUD_GITHUB_PAT`, `CAK_CLOUD_SIGNING_KEY`, and
 `CAK_CLOUD_CLAUDE_OAUTH_TOKEN`. None is provisioned by this source. Each is a
 separate, owner-managed copy of an authoritative 1Password field, injected as
-a secret-type variable by the saved editor and available to task processes.
-Absent bindings use 1Password; invalid present bindings stop the helper. The
-owner updates each copy when its field rotates and verifies the new binding
-before retiring the old value. Add a copy only when measured usage justifies
-the wider exposure. The hosted GitHub App key stays outside this set. Keep
-values out of Git, saved source, output, and logs.
+a direct environment variable and available to task processes. To stage the
+PAT and Claude copies, prompt the saved editor to create empty entries for
+`CAK_CLOUD_GITHUB_PAT` and `CAK_CLOUD_CLAUDE_OAUTH_TOKEN`. The owner
+fills them from the helpers' authoritative 1Password fields before publishing.
+The helpers own those field references; this source does not sync values.
+Absent bindings use 1Password; empty or malformed present bindings stop the
+helper, so do not publish incomplete entries. On rotation, update the
+1Password field and saved copy, republish, then verify in a fresh task before
+retiring the old credential.
+Add other copies only when measured usage justifies the wider exposure. The
+hosted GitHub App key stays outside this set. Keep values out of Git, saved
+source, output, and logs.
 
 ## Apply and verify
 
@@ -35,9 +41,9 @@ values out of Git, saved source, output, and logs.
    selected repositories and refs, then compare network mode, preset, and
    custom domains with `configuration.json`. Read back the required runtime
    binding's name, required status, and injection type; record any nonsecret
-   provider source reference. Record which optional bindings are present and
-   their injection types, or an empty list. Select `main` where the editor supports a moving
-   ref; otherwise resolve its current commit for this build.
+   provider source reference. Record selected optional binding names and
+   injection types, or none, without values. Select `main` where the editor
+   supports a moving ref; otherwise resolve its current commit for this build.
    Verify editor behavior rather than assuming `main` advances automatically.
    Stop if a required setting cannot be read back or differs; the binding's
    provider source reference may be recorded as `unknown` if not exposed.
@@ -88,6 +94,7 @@ values out of Git, saved source, output, and logs.
    writable private `op` config, repository availability, and workspace AGENTS
    delivery. Run the task-start refresh once and record its result separately,
    including fetched-main alignment and actual advancement when applicable.
+   Verify selected binding readiness and helper operation.
    Catalog pins are the startup floor; refresh targets fetched `main`.
 
 The installer-generated `op` launcher, executor PATH settings, runtime
