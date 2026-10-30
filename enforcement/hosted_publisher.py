@@ -267,19 +267,25 @@ def finalize(publisher, api, token, request, evidence, *, wait=time.sleep):
         raise HostError("destination PR changed before finalize")
     mutation = ("mutation($id:ID!){markPullRequestReadyForReview(input:"
                 "{pullRequestId:$id}){pullRequest{id isDraft headRefOid}}}")
+    stage = "mutation_request"
     try:
         result = api("POST", "/graphql", token,
                      {"query": mutation, "variables": {"id": node_id}})
+        stage = "mutation_response"
+        if isinstance(result, dict) and result.get("errors"):
+            stage = "mutation_graphql_errors"
+            raise HostError("GraphQL mutation returned errors")
         data = result.get("data") if isinstance(result, dict) else None
         payload = (data.get("markPullRequestReadyForReview")
                    if isinstance(data, dict) else None)
         ready = payload.get("pullRequest") if isinstance(payload, dict) else None
-        if (not isinstance(result, dict) or result.get("errors") or
+        if (not isinstance(result, dict) or
                 not isinstance(ready, dict) or ready.get("id") != node_id or
                 ready.get("isDraft") is not False or
                 ready.get("headRefOid") != evidence.commit):
             raise HostError("finalize response mismatch")
         marker = f"Source: https://github.com/{request.repository}/pull/{request.source_pr}"
+        stage = "readback"
         for attempt in range(4):
             pr = api("GET", f"/repos/{request.repository}/pulls/{evidence.destination_pr}",
                      token)
@@ -306,8 +312,14 @@ def finalize(publisher, api, token, request, evidence, *, wait=time.sleep):
             if pr.get("draft") is not True or attempt == 3:
                 raise HostError("finalize readback mismatch")
             wait(1)
-    except Exception:
-        raise HostError("finalize outcome uncertain; inspect destination PR") from None
+    except Exception as error:
+        diagnostic = f"finalize outcome uncertain; stage={stage}"
+        if isinstance(error, publisher.GitHubApiStatusError):
+            if error.http_status is not None:
+                diagnostic += f"; http_status={error.http_status}"
+            if error.request_id is not None:
+                diagnostic += f"; request_id={error.request_id}"
+        raise HostError(diagnostic + "; inspect destination PR") from None
     return {"action": "ready", "repository": request.repository,
             "pull_request": evidence.destination_pr, "commit": evidence.commit,
             "review_record_sha256": evidence.review_record_sha256}
