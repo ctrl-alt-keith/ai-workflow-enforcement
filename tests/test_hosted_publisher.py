@@ -81,6 +81,71 @@ def evidence(**changes):
 
 
 class HostedPublisherTests(unittest.TestCase):
+    def test_pinned_checkout_validates_then_runs_in_clean_subprocesses(self):
+        repo = Path(__file__).resolve().parents[1]
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        request = CORE.Request(REPOSITORY, 19, "a" * 40, 7, "b" * 40,
+                               "c" * 40, "d" * 64, 33, 44)
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            checkout = workspace / "trusted-enforcement"
+            subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout",
+                            str(repo), str(checkout)], check=True, timeout=30)
+            subprocess.run(["git", "-C", str(checkout), "checkout", "--quiet",
+                            "--detach", head], check=True, timeout=30)
+            env = {"PATH": os.environ.get("PATH", os.defpath),
+                   "GITHUB_ACTIONS": "true",
+                   "GITHUB_REPOSITORY": HOST.HOST_REPOSITORY,
+                   "GITHUB_REF": "refs/heads/main",
+                   "GITHUB_RUN_ATTEMPT": "1",
+                   "GITHUB_RUN_ID": "123",
+                   "GITHUB_SHA": "a" * 40,
+                   "PUBLISH_HOST_SHA": "a" * 40,
+                   "PUBLISH_ENGINE_SHA": head,
+                   "GITHUB_WORKSPACE": str(workspace),
+                   "PUBLISH_MODE": "hosted-publish",
+                   "PUBLISH_LANE": "19-7",
+                   "PUBLISH_REQUEST_JSON": json.dumps({"publication": request.__dict__}),
+                   "OP_SERVICE_ACCOUNT_TOKEN": "synthetic-broker",
+                   "PUBLISH_APP_KEY_REF": "op://synthetic/app/key",
+                   "PUBLISH_SIGNER_KEY_REF": "op://synthetic/signer/key",
+                   "PYTHONPATH": str(checkout)}
+            adapter = checkout / "enforcement" / "hosted_publisher.py"
+            validated = subprocess.run([sys.executable, "-B", str(adapter),
+                                        "--validate"], env=env,
+                                       capture_output=True, text=True, timeout=30)
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+            self.assertEqual(json.loads(validated.stdout)["mode"], "hosted-publish")
+            synthetic_run = """
+import sys
+import os
+from pathlib import Path
+from unittest.mock import patch
+from enforcement import hosted_publisher as host
+core = host.pinned_publisher(Path(os.environ['GITHUB_WORKSPACE']),
+                             os.environ['PUBLISH_ENGINE_SHA'])
+result = core.Result('created', 'ctrl-alt-keith/example',
+                     'automation/publish-pr-7', 8, 'e' * 40, 'c' * 40, 'a' * 40)
+with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
+     patch.object(host, '_app_fingerprint', return_value=host.APP_KEY_FINGERPRINT), \\
+     patch.object(host, '_app_jwt', return_value='synthetic-jwt'), \\
+     patch.object(host, 'mint_target_token', return_value='synthetic-token'), \\
+     patch.object(core, 'publish', return_value=result):
+    sys.argv = ['hosted_publisher.py']
+    raise SystemExit(host.main())
+"""
+            executed = subprocess.run([sys.executable, "-B", "-c", synthetic_run],
+                                      cwd=checkout, env=env, capture_output=True,
+                                      text=True, timeout=30)
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+            self.assertEqual(json.loads(executed.stdout)["action"], "created")
+            status = subprocess.run(["git", "-C", str(checkout), "status",
+                                     "--porcelain", "--untracked-files=all",
+                                     "--ignored=matching"],
+                                    capture_output=True, text=True, check=True).stdout
+            self.assertEqual(status, "")
+
     def test_actual_core_request_contract_and_synthetic_custody(self):
         request = CORE.Request(REPOSITORY, 19, "a" * 40, 7, "b" * 40,
                                "c" * 40, "d" * 64, 33, 44)

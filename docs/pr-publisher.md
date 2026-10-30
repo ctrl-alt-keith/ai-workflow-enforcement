@@ -16,9 +16,18 @@ them. It accepts up to 128 regular-file paths and 8 MiB of new bytes;
 checks a reviewed Enforcement checkout, reads the existing App and signer keys
 on the private runner, and mints a token for only the destination repository.
 The token requires Contents and Pull requests write plus Actions and Checks
-read. Finalize rechecks the exact output commit, review evidence, current
-successful required checks, and draft state before marking it ready. Neither
-operation merges or enables auto-merge.
+read. Finalize checks the exact output, draft state, and success of caller-named
+checks; the GO verdict, review digest, and check names are caller attestations,
+not fetched review evidence or discovered repository policy. Neither operation
+merges or enables auto-merge.
+
+Dispatch `pr-publisher.yml` on the private host's reviewed `main` with
+`approved_sha` equal to that host SHA, `publisher_lane` set to
+`<repository_id>-<source_pr>`, and `mode` set to `hosted-publish` or
+`hosted-finalize`. Set `publisher_request_json` to `{"publication": ...}`
+using `pr_publisher.Request` fields; for finalize add `"finalize": ...` using
+`hosted_publisher.Finalize` fields. Request `return_run_details: true` at the
+workflow-dispatch API top level and use its run ID for readback.
 
 The thin private workflow in `secrets-lifecycle` supplies the protected runner,
 exact host and Enforcement revisions, per-source serialization, and 1Password
