@@ -13,7 +13,8 @@ repository-specific behavior.
   exception may create one validated, review-ready pull request through its
   fixed strategies; it must not merge, enable auto-merge, update a proposal, or
   otherwise accept its own change. Human merge remains the remediation boundary.
-- The exact-tree PR publisher is inactive; see `docs/pr-publisher.md` before use.
+- The exact-tree PR publisher's private host and activation contract are in
+  `docs/pr-publisher.md`.
 - Keep staging material, canonical playbook guidance, and repo-local execution
   guidance distinct.
 

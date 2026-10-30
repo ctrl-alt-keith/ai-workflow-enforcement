@@ -1,4 +1,4 @@
-"""Inactive, repository-scoped publisher for exact tested Git trees.
+"""Repository-scoped publisher for exact tested Git trees.
 
 The hosted caller owns App-token minting and signer-key custody. This module
 never executes files from the staged tree and never merges a pull request.
@@ -24,7 +24,7 @@ import urllib.request
 
 
 ORG = "ctrl-alt-keith"
-HOST_REPOSITORY = "ctrl-alt-keith/ai-workflow-incubator"
+HOST_REPOSITORY = "ctrl-alt-keith/secrets-lifecycle"
 APP_LOGIN = "ctrl-alt-keith-automation[bot]"
 SIGNER_NAME = "ctrl-alt-keith-bot"
 SIGNER_EMAIL = "342684449+ctrl-alt-keith-bot@users.noreply.github.com"

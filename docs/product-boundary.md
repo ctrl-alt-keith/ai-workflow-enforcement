@@ -28,7 +28,7 @@ enable auto-merge, or otherwise accept its own change. Hosted Stewardship
 Engine proposals are review-ready evidence; human merge remains the remediation
 boundary.
 
-The inactive [PR publisher](pr-publisher.md) is a separate delivery candidate:
+The [PR publisher](pr-publisher.md) is a separate delivery path:
 one tested tree becomes one App-authored draft PR. It cannot merge or enable
 auto-merge.
 
