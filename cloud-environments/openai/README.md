@@ -41,8 +41,8 @@ source, output, and logs.
    selected repositories and refs, then compare network mode, preset, and
    custom domains with `configuration.json`. Read back the required runtime
    binding's name, required status, and injection type; record any nonsecret
-   provider source reference. Read back the two selected direct-variable names
-   and injection types without their values. Select `main` where the editor
+   provider source reference. Record selected optional binding names and
+   injection types, or none, without values. Select `main` where the editor
    supports a moving ref; otherwise resolve its current commit for this build.
    Verify editor behavior rather than assuming `main` advances automatically.
    Stop if a required setting cannot be read back or differs; the binding's
