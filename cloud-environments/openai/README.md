@@ -24,9 +24,8 @@ separate, owner-managed copy of an authoritative 1Password field, injected as
 a direct environment variable and available to task processes. To stage the
 PAT and Claude copies, prompt the saved editor to create empty entries for
 `CAK_CLOUD_GITHUB_PAT` and `CAK_CLOUD_CLAUDE_OAUTH_TOKEN`. The owner
-fills them from `ai-automation-private/k2-cloud-github/token` and
-`ai-automation-private/claude-code-review/token`, respectively, before
-publishing. This source records names and references; it does not sync values.
+fills them from the helpers' authoritative 1Password fields before publishing.
+The helpers own those field references; this source does not sync values.
 Absent bindings use 1Password; empty or malformed present bindings stop the
 helper, so do not publish incomplete entries. On rotation, update the
 1Password field and saved copy, republish, then verify in a fresh task before
