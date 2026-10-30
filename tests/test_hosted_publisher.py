@@ -480,6 +480,7 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
         request = publication()
         proof = HOST.Finalize(**evidence())
         calls = []
+        failure = None
         pr = {"number": 8, "state": "open", "merged": False, "draft": True,
               "auto_merge": None, "node_id": "PR_8", "user": {"login": Publisher.APP_LOGIN},
               "base": {"ref": "main"}, "head": {"sha": proof.commit, "ref": BRANCH,
@@ -491,7 +492,7 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                 return {"tree": {"sha": request.source_tree}}
             if path == "/graphql":
                 calls.append(path)
-                raise CORE.GitHubApiStatusError(422, "ABC:123")
+                raise failure
             if path.endswith("/check-runs?filter=latest&per_page=100"):
                 return {"total_count": 2, "check_runs": [
                     {"head_sha": proof.commit, "name": name,
@@ -499,11 +500,16 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                     for name in ("test", "lint")]}
             return pr
 
-        with self.assertRaisesRegex(
-                HOST.HostError,
-                "stage=mutation_request; http_status=422; request_id=ABC:123"):
-            HOST.finalize(Publisher, api, "synthetic", request, proof)
-        self.assertEqual(calls, ["/graphql"])
+        for failure, expected in (
+                (Publisher.PublicationError("synthetic lost response"),
+                 "stage=mutation_request; inspect destination PR"),
+                (CORE.GitHubApiStatusError(422, "ABC:123"),
+                 "stage=mutation_request; http_status=422; request_id=ABC:123")):
+            with self.subTest(expected=expected):
+                calls.clear()
+                with self.assertRaisesRegex(HOST.HostError, expected):
+                    HOST.finalize(Publisher, api, "synthetic", request, proof)
+                self.assertEqual(calls, ["/graphql"])
 
 
 if __name__ == "__main__":
