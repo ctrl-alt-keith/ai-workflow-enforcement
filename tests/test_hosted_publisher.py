@@ -27,6 +27,7 @@ BRANCH = "automation/publish-pr-7"
 class Publisher:
     APP_LOGIN = "ctrl-alt-keith-automation[bot]"
     PublicationError = RuntimeError
+    GitHubApiStatusError = CORE.GitHubApiStatusError
 
     @dataclass(frozen=True)
     class Request:
@@ -374,6 +375,7 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
         post_mutation_drafts = []
         post_mutation_override = {}
         post_mutation_error = False
+        graphql_error = False
 
         def api(method, path, token, payload=None):
             if path.endswith(f"/git/commits/{request.source_sha}"):
@@ -382,6 +384,8 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                 return checks
             if path == "/graphql":
                 mutations.append(payload)
+                if graphql_error:
+                    return {"errors": [{"message": "provider body must stay private"}]}
                 return {"data": {"markPullRequestReadyForReview":
                         {"pullRequest": {"id": "PR_8", "isDraft": False,
                                          "headRefOid": proof.commit}}}}
@@ -398,6 +402,14 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                                        proof)["action"], "ready")
         self.assertEqual(len(mutations), 1)
         mutations.clear()
+        graphql_error = True
+        with self.assertRaisesRegex(HOST.HostError,
+                                    "stage=mutation_graphql_errors") as caught:
+            HOST.finalize(Publisher, api, "synthetic", request, proof)
+        self.assertNotIn("provider body", str(caught.exception))
+        self.assertEqual(len(mutations), 1)
+        mutations.clear()
+        graphql_error = False
         post_mutation_drafts[:] = [True, True, False]
         self.assertEqual(HOST.finalize(Publisher, api, "synthetic", request,
                                        proof, wait=lambda _seconds: None)["action"], "ready")
@@ -454,7 +466,7 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                 mutations.clear()
         post_mutation_override.clear()
         post_mutation_error = True
-        with self.assertRaisesRegex(HOST.HostError, "outcome uncertain"):
+        with self.assertRaisesRegex(HOST.HostError, "stage=readback"):
             HOST.finalize(Publisher, api, "synthetic", request, proof)
         self.assertEqual(len(mutations), 1)
         mutations.clear()
@@ -468,6 +480,7 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
         request = publication()
         proof = HOST.Finalize(**evidence())
         calls = []
+        failure = None
         pr = {"number": 8, "state": "open", "merged": False, "draft": True,
               "auto_merge": None, "node_id": "PR_8", "user": {"login": Publisher.APP_LOGIN},
               "base": {"ref": "main"}, "head": {"sha": proof.commit, "ref": BRANCH,
@@ -479,7 +492,7 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                 return {"tree": {"sha": request.source_tree}}
             if path == "/graphql":
                 calls.append(path)
-                raise Publisher.PublicationError("synthetic lost response")
+                raise failure
             if path.endswith("/check-runs?filter=latest&per_page=100"):
                 return {"total_count": 2, "check_runs": [
                     {"head_sha": proof.commit, "name": name,
@@ -487,9 +500,16 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                     for name in ("test", "lint")]}
             return pr
 
-        with self.assertRaisesRegex(HOST.HostError, "outcome uncertain"):
-            HOST.finalize(Publisher, api, "synthetic", request, proof)
-        self.assertEqual(calls, ["/graphql"])
+        for failure, expected in (
+                (Publisher.PublicationError("synthetic lost response"),
+                 "stage=mutation_request; inspect destination PR"),
+                (CORE.GitHubApiStatusError(422, "ABC:123"),
+                 "stage=mutation_request; http_status=422; request_id=ABC:123")):
+            with self.subTest(expected=expected):
+                calls.clear()
+                with self.assertRaisesRegex(HOST.HostError, expected):
+                    HOST.finalize(Publisher, api, "synthetic", request, proof)
+                self.assertEqual(calls, ["/graphql"])
 
 
 if __name__ == "__main__":

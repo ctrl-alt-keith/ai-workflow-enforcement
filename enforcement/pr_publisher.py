@@ -40,6 +40,16 @@ class PublicationError(RuntimeError):
     """A bounded publication precondition or readback failed."""
 
 
+class GitHubApiStatusError(PublicationError):
+    """Only safe HTTP metadata from a failed GitHub API request."""
+
+    def __init__(self, status, request_id):
+        self.http_status = status if type(status) is int and 100 <= status <= 599 else None
+        self.request_id = (request_id if isinstance(request_id, str) and
+                           re.fullmatch(r"[A-Za-z0-9:-]{1,80}", request_id) else None)
+        super().__init__("GitHub API HTTP failure")
+
+
 @dataclass(frozen=True)
 class Request:
     repository: str
@@ -87,6 +97,9 @@ def github_api(method: str, path: str, token: str, payload: dict | None = None):
     try:
         with urllib.request.build_opener(_NoRedirect).open(request, timeout=30) as response:
             return json.load(response)
+    except urllib.error.HTTPError as error:
+        request_id = error.headers.get("X-GitHub-Request-Id") if error.headers else None
+        raise GitHubApiStatusError(error.code, request_id) from None
     except (urllib.error.URLError, OSError, ValueError):
         raise PublicationError("GitHub API operation failed") from None
 

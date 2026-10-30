@@ -2,12 +2,14 @@
 
 from dataclasses import replace
 from contextlib import redirect_stderr
+from email.message import Message
 import io
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from enforcement import pr_publisher as publisher
@@ -23,6 +25,22 @@ def git(*args, cwd=None):
 
 
 class PublisherTests(unittest.TestCase):
+    def test_github_http_failure_exposes_only_safe_metadata(self):
+        headers = Message()
+        headers["X-GitHub-Request-Id"] = "ABC:123"
+        failure = urllib.error.HTTPError("https://api.github.com/graphql", 422,
+                                         "provider secret text", headers,
+                                         io.BytesIO(b"provider secret body"))
+        with patch.object(publisher.urllib.request, "build_opener") as opener:
+            opener.return_value.open.side_effect = failure
+            with self.assertRaises(publisher.GitHubApiStatusError) as caught:
+                publisher.github_api("POST", "/graphql", "synthetic",
+                                     {"query": "mutation { dummy }"})
+        self.assertEqual(caught.exception.http_status, 422)
+        self.assertEqual(caught.exception.request_id, "ABC:123")
+        self.assertEqual(str(caught.exception), "GitHub API HTTP failure")
+        self.assertIsNone(publisher.GitHubApiStatusError(422, "unsafe secret\n").request_id)
+
     def request(self, **changes):
         request = publisher.Request(REPOSITORY, 19, "1" * 40, 7, "2" * 40,
                                     "3" * 40, "a" * 64, 33, 4)
