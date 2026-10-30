@@ -18,6 +18,7 @@ APP_CLIENT_ID = "Iv23li3PNJgEEd6o4WcN"
 APP_KEY_FINGERPRINT = "SHA256:cRVy5Uas99yEFYv/Wk3vBbLb2Uon52kgTwl4nNS6Ifw="
 TOKEN_PERMISSIONS = {"contents": "write", "pull_requests": "write",
                      "actions": "read", "checks": "read"}
+FINALIZE_TOKEN_PERMISSIONS = {**TOKEN_PERMISSIONS, "contents": "read"}
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 CHECK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,99}\Z")
 
@@ -101,16 +102,24 @@ def host_gate(env):
 
 def pinned_publisher(workspace, expected_sha):
     checkout = workspace / "trusted-enforcement"
+    git_env = {"PATH": os.environ.get("PATH", os.defpath),
+               "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_NO_REPLACE_OBJECTS": "1", "GIT_OPTIONAL_LOCKS": "0"}
+    command = ["git", "-c", "core.fsmonitor=false", "-C", str(checkout)]
     try:
-        head = subprocess.run(["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        head = subprocess.run([*command, "rev-parse", "HEAD"], env=git_env,
                               capture_output=True, check=True, timeout=15).stdout
-        status = subprocess.run(["git", "-C", str(checkout), "status", "--porcelain",
+        status = subprocess.run([*command, "status", "--porcelain",
                                  "--untracked-files=all", "--ignored=matching"],
-                                capture_output=True, check=True, timeout=15).stdout
+                                env=git_env, capture_output=True, check=True,
+                                timeout=15).stdout
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         raise HostError("pinned publisher checkout unavailable") from None
     if head.decode("ascii", errors="replace").strip() != expected_sha or status:
         raise HostError("pinned publisher checkout mismatch")
+    if Path(__file__).resolve() != (checkout / "enforcement" /
+                                   "hosted_publisher.py").resolve():
+        raise HostError("pinned publisher adapter mismatch")
     sys.path.insert(0, str(checkout))
     try:
         module = importlib.import_module("enforcement.pr_publisher")
@@ -167,7 +176,7 @@ def request_from_env(env, publisher):
     return request, evidence
 
 
-def mint_target_token(api, jwt, request):
+def mint_target_token(api, jwt, request, permissions=TOKEN_PERMISSIONS):
     repository = request.repository
     name = repository.split("/", 1)[1]
     installation = api("GET", f"/repos/{repository}/installation", jwt)
@@ -175,14 +184,14 @@ def mint_target_token(api, jwt, request):
     if type(installation_id) is not int or installation_id <= 0:
         raise HostError("target App installation missing")
     grant = api("POST", f"/app/installations/{installation_id}/access_tokens", jwt,
-                {"repositories": [name], "permissions": TOKEN_PERMISSIONS})
+                {"repositories": [name], "permissions": permissions})
     token = grant.get("token") if isinstance(grant, dict) else None
-    permissions = grant.get("permissions") if isinstance(grant, dict) else None
+    granted = grant.get("permissions") if isinstance(grant, dict) else None
     if (not isinstance(token, str) or not token or
-            not isinstance(permissions, dict) or
-            any(permissions.get(key) != value for key, value in TOKEN_PERMISSIONS.items()) or
-            any(key not in (*TOKEN_PERMISSIONS, "metadata") for key in permissions) or
-            permissions.get("metadata", "read") != "read"):
+            not isinstance(granted, dict) or
+            any(granted.get(key) != value for key, value in permissions.items()) or
+            any(key not in (*permissions, "metadata") for key in granted) or
+            granted.get("metadata", "read") != "read"):
         raise HostError("target App token scope invalid")
     accessible = api("GET", "/installation/repositories?per_page=2", token)
     repositories = accessible.get("repositories") if isinstance(accessible, dict) else None
@@ -308,7 +317,8 @@ def run(env, publisher, request, evidence, *, api=None):
     api = publisher.github_api if api is None else api
     if not env.get("OP_SERVICE_ACCOUNT_TOKEN"):
         raise HostError("broker credential unavailable")
-    if not env.get("PUBLISH_APP_KEY_REF") or not env.get("PUBLISH_SIGNER_KEY_REF"):
+    if not env.get("PUBLISH_APP_KEY_REF") or (evidence is None and
+                                               not env.get("PUBLISH_SIGNER_KEY_REF")):
         raise HostError("credential reference unavailable")
     with tempfile.TemporaryDirectory(prefix="hosted-publisher-") as temporary:
         scratch = Path(temporary)
@@ -319,7 +329,9 @@ def run(env, publisher, request, evidence, *, api=None):
         if _app_fingerprint(app_key) != APP_KEY_FINGERPRINT:
             raise HostError("App key fingerprint mismatch")
         jwt = _app_jwt(app_key)
-        token = mint_target_token(api, jwt, request)
+        permissions = (TOKEN_PERMISSIONS if evidence is None
+                       else FINALIZE_TOKEN_PERMISSIONS)
+        token = mint_target_token(api, jwt, request, permissions)
         if evidence is None:
             signer_key = scratch / "signer-key"
             _private_file(signer_key, _broker_read(env["PUBLISH_SIGNER_KEY_REF"],
@@ -333,6 +345,7 @@ def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--validate", action="store_true")
     args = parser.parse_args()
+    publisher = None
     try:
         env = os.environ
         host_gate(env)
@@ -352,8 +365,11 @@ def main():
                    else "hosted publisher failed")
         print(f"hosted publisher stopped: {message}", file=sys.stderr)
         return 1
-    except Exception:
-        print("hosted publisher stopped: unexpected internal error", file=sys.stderr)
+    except Exception as error:
+        message = (str(error) if publisher is not None and
+                   isinstance(error, publisher.PublicationError)
+                   else "unexpected internal error")
+        print(f"hosted publisher stopped: {message}", file=sys.stderr)
         return 1
     return 0
 

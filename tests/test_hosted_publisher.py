@@ -258,6 +258,31 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                 Result(b"!! enforcement/__pycache__/\n")]):
             with self.assertRaisesRegex(HOST.HostError, "checkout mismatch"):
                 HOST.pinned_publisher(Path("/tmp/fixture"), "e" * 40)
+        with patch.object(HOST.subprocess, "run", side_effect=[
+                Result(("e" * 40).encode() + b"\n"), Result(b"")]):
+            with self.assertRaisesRegex(HOST.HostError, "adapter mismatch"):
+                HOST.pinned_publisher(Path("/tmp/fixture"), "e" * 40)
+
+    def test_main_preserves_core_uncertain_write_diagnostic(self):
+        request = CORE.Request(REPOSITORY, 19, "a" * 40, 7, "b" * 40,
+                               "c" * 40, "d" * 64, 33, 44)
+        env = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": HOST.HOST_REPOSITORY,
+               "GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ATTEMPT": "1",
+               "GITHUB_RUN_ID": "123", "GITHUB_SHA": "a" * 40,
+               "PUBLISH_HOST_SHA": "a" * 40, "PUBLISH_ENGINE_SHA": "e" * 40,
+               "GITHUB_WORKSPACE": "/tmp/synthetic-workspace",
+               "PUBLISH_MODE": "hosted-publish", "PUBLISH_LANE": "19-7",
+               "PUBLISH_REQUEST_JSON": json.dumps({"publication": request.__dict__})}
+        output = io.StringIO()
+        diagnostic = "push outcome uncertain; inspect branch"
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(sys, "argv", ["hosted_publisher.py"]), \
+             patch.object(HOST, "pinned_publisher", return_value=CORE), \
+             patch.object(HOST, "run", side_effect=CORE.PublicationError(diagnostic)), \
+             redirect_stderr(output):
+            self.assertEqual(HOST.main(), 1)
+        self.assertEqual(output.getvalue().strip(),
+                         f"hosted publisher stopped: {diagnostic}")
 
     def test_request_binds_review_to_source_and_requires_check_set(self):
         env = {"PUBLISH_MODE": "hosted-publish",
@@ -293,13 +318,17 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                 return {"id": 55}
             if path.endswith("/access_tokens"):
                 return {"token": "synthetic", "permissions":
-                        {**HOST.TOKEN_PERMISSIONS, "metadata": "read"}}
+                        {**payload["permissions"], "metadata": "read"}}
             return {"total_count": 1, "repositories":
                     [{"id": 19, "full_name": REPOSITORY}]}
 
         self.assertEqual(HOST.mint_target_token(api, "jwt", request), "synthetic")
         self.assertEqual(calls[1][2], {"repositories": ["example"],
                                        "permissions": HOST.TOKEN_PERMISSIONS})
+        self.assertEqual(HOST.mint_target_token(
+            api, "jwt", request, HOST.FINALIZE_TOKEN_PERMISSIONS), "synthetic")
+        self.assertEqual(calls[4][2]["permissions"],
+                         HOST.FINALIZE_TOKEN_PERMISSIONS)
 
         def broad_api(method, path, token, payload=None):
             if path.endswith("/installation"):
@@ -311,6 +340,20 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
 
         with self.assertRaisesRegex(HOST.HostError, "repository mismatch"):
             HOST.mint_target_token(broad_api, "jwt", request)
+
+    def test_finalize_uses_narrow_token_without_signer_read(self):
+        env = {"OP_SERVICE_ACCOUNT_TOKEN": "synthetic-broker",
+               "PUBLISH_APP_KEY_REF": "op://synthetic/app/key"}
+        proof = HOST.Finalize(**evidence())
+        with patch.object(HOST, "_broker_read", return_value=b"synthetic-key") as read, \
+             patch.object(HOST, "_app_fingerprint", return_value=HOST.APP_KEY_FINGERPRINT), \
+             patch.object(HOST, "_app_jwt", return_value="synthetic-jwt"), \
+             patch.object(HOST, "mint_target_token", return_value="synthetic-token") as mint, \
+             patch.object(HOST, "finalize", return_value={"action": "ready"}):
+            self.assertEqual(HOST.run(env, CORE, publication(), proof),
+                             {"action": "ready"})
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(mint.call_args.args[-1], HOST.FINALIZE_TOKEN_PERMISSIONS)
 
     def test_finalize_requires_all_named_checks_and_current_draft(self):
         request = publication()

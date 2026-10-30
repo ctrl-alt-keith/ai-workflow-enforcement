@@ -29,8 +29,8 @@ Engine proposals are review-ready evidence; human merge remains the remediation
 boundary.
 
 The [PR publisher](pr-publisher.md) is a separate delivery path:
-one tested tree becomes one App-authored draft PR. It cannot merge or enable
-auto-merge.
+one tested tree becomes one App-authored draft PR; finalize can mark it ready
+from caller-attested review evidence. It cannot merge or enable auto-merge.
 
 <!-- hosted-stewardship-policy:review-ready-human-merge -->
 
