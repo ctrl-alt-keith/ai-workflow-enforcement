@@ -325,11 +325,15 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
 
         self.assertEqual(HOST.mint_target_token(api, "jwt", request), "synthetic")
         self.assertEqual(calls[1][2], {"repositories": ["example"],
-                                       "permissions": HOST.TOKEN_PERMISSIONS})
+                                       "permissions": {"contents": "write",
+                                                       "pull_requests": "write",
+                                                       "actions": "read", "checks": "read"}})
         self.assertEqual(HOST.mint_target_token(
-            api, "jwt", request, HOST.FINALIZE_TOKEN_PERMISSIONS), "synthetic")
-        self.assertEqual(calls[4][2]["permissions"],
-                         HOST.FINALIZE_TOKEN_PERMISSIONS)
+            api, "jwt", request, HOST.TOKEN_PERMISSIONS), "synthetic")
+        self.assertEqual(calls[4][2], {"repositories": ["example"],
+                                       "permissions": {"contents": "write",
+                                                       "pull_requests": "write",
+                                                       "actions": "read", "checks": "read"}})
 
         def broad_api(method, path, token, payload=None):
             if path.endswith("/installation"):
@@ -342,7 +346,7 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
         with self.assertRaisesRegex(HOST.HostError, "repository mismatch"):
             HOST.mint_target_token(broad_api, "jwt", request)
 
-    def test_finalize_uses_narrow_token_without_signer_read(self):
+    def test_finalize_uses_target_token_without_signer_read(self):
         env = {"OP_SERVICE_ACCOUNT_TOKEN": "synthetic-broker",
                "PUBLISH_APP_KEY_REF": "op://synthetic/app/key"}
         proof = HOST.Finalize(**evidence())
@@ -354,7 +358,9 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
             self.assertEqual(HOST.run(env, CORE, publication(), proof),
                              {"action": "ready"})
         self.assertEqual(read.call_count, 1)
-        self.assertEqual(mint.call_args.args[-1], HOST.FINALIZE_TOKEN_PERMISSIONS)
+        self.assertEqual(mint.call_args.args[-1],
+                         {"contents": "write", "pull_requests": "write",
+                          "actions": "read", "checks": "read"})
 
     def test_finalize_requires_all_named_checks_and_current_draft(self):
         request = publication()
@@ -375,7 +381,7 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
         post_mutation_drafts = []
         post_mutation_override = {}
         post_mutation_error = False
-        graphql_error = False
+        graphql_error = None
 
         def api(method, path, token, payload=None):
             if path.endswith(f"/git/commits/{request.source_sha}"):
@@ -384,8 +390,9 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                 return checks
             if path == "/graphql":
                 mutations.append(payload)
-                if graphql_error:
-                    return {"errors": [{"message": "provider body must stay private"}]}
+                if graphql_error is not None:
+                    return {"errors": [{"type": graphql_error,
+                                        "message": "provider body must stay private"}]}
                 return {"data": {"markPullRequestReadyForReview":
                         {"pullRequest": {"id": "PR_8", "isDraft": False,
                                          "headRefOid": proof.commit}}}}
@@ -402,14 +409,20 @@ with patch.object(host, '_broker_read', return_value=b'synthetic-key'), \\
                                        proof)["action"], "ready")
         self.assertEqual(len(mutations), 1)
         mutations.clear()
-        graphql_error = True
+        graphql_error = "FORBIDDEN"
         with self.assertRaisesRegex(HOST.HostError,
-                                    "stage=mutation_graphql_errors") as caught:
+                                    "stage=mutation_graphql_errors_forbidden") as caught:
             HOST.finalize(Publisher, api, "synthetic", request, proof)
         self.assertNotIn("provider body", str(caught.exception))
         self.assertEqual(len(mutations), 1)
         mutations.clear()
-        graphql_error = False
+        graphql_error = "FORBIDDEN; provider body"
+        with self.assertRaisesRegex(HOST.HostError,
+                                    "stage=mutation_graphql_errors") as caught:
+            HOST.finalize(Publisher, api, "synthetic", request, proof)
+        self.assertNotIn("provider body", str(caught.exception))
+        mutations.clear()
+        graphql_error = None
         post_mutation_drafts[:] = [True, True, False]
         self.assertEqual(HOST.finalize(Publisher, api, "synthetic", request,
                                        proof, wait=lambda _seconds: None)["action"], "ready")

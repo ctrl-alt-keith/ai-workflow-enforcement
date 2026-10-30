@@ -18,7 +18,6 @@ APP_CLIENT_ID = "Iv23li3PNJgEEd6o4WcN"
 APP_KEY_FINGERPRINT = "SHA256:cRVy5Uas99yEFYv/Wk3vBbLb2Uon52kgTwl4nNS6Ifw="
 TOKEN_PERMISSIONS = {"contents": "write", "pull_requests": "write",
                      "actions": "read", "checks": "read"}
-FINALIZE_TOKEN_PERMISSIONS = {**TOKEN_PERMISSIONS, "contents": "read"}
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 CHECK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,99}\Z")
 
@@ -274,6 +273,11 @@ def finalize(publisher, api, token, request, evidence, *, wait=time.sleep):
         stage = "mutation_response"
         if isinstance(result, dict) and result.get("errors"):
             stage = "mutation_graphql_errors"
+            errors = result["errors"]
+            if isinstance(errors, list) and len(errors) == 1 and isinstance(errors[0], dict):
+                kind = errors[0].get("type")
+                if kind in ("FORBIDDEN", "NOT_FOUND", "UNPROCESSABLE"):
+                    stage += "_" + kind.lower()
             raise HostError("GraphQL mutation returned errors")
         data = result.get("data") if isinstance(result, dict) else None
         payload = (data.get("markPullRequestReadyForReview")
@@ -341,9 +345,7 @@ def run(env, publisher, request, evidence, *, api=None):
         if _app_fingerprint(app_key) != APP_KEY_FINGERPRINT:
             raise HostError("App key fingerprint mismatch")
         jwt = _app_jwt(app_key)
-        permissions = (TOKEN_PERMISSIONS if evidence is None
-                       else FINALIZE_TOKEN_PERMISSIONS)
-        token = mint_target_token(api, jwt, request, permissions)
+        token = mint_target_token(api, jwt, request, TOKEN_PERMISSIONS)
         if evidence is None:
             signer_key = scratch / "signer-key"
             _private_file(signer_key, _broker_read(env["PUBLISH_SIGNER_KEY_REF"],
