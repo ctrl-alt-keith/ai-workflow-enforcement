@@ -24,7 +24,7 @@ def workflow_run(step_id: str) -> str:
     return textwrap.dedent(run)
 
 
-def report(*, skipped: int = 0, findings: int = 0) -> dict[str, object]:
+def report(*, skipped: int = 0, findings: int = 0, candidates: int = 0) -> dict[str, object]:
     return {
         "schema_version": 1,
         "report_type": "notes_playbook_drift_scan",
@@ -34,10 +34,22 @@ def report(*, skipped: int = 0, findings: int = 0) -> dict[str, object]:
             "playbook_files_scanned": 1,
             "ignored_path_count": 0,
             "skipped_path_count": skipped,
-            "candidate_count": 0,
+            "candidate_count": candidates,
             "advisory_finding_count": findings,
         },
-        "candidates": [],
+        "candidates": [
+            {
+                "note_path": "notes/good.md",
+                "playbook_path": "playbook/base.md",
+                "repeated_headings": [],
+                "repeated_phrases": [],
+                "similarity": 0.8,
+                "canonical_reference_present": False,
+                "reasons": ["similarity"],
+                "suggested_direction": "Review the overlap.",
+            }
+            for _ in range(candidates)
+        ],
         "advisory_findings": [
             {
                 "kind": "workflow_policy_example",
@@ -57,7 +69,9 @@ def report(*, skipped: int = 0, findings: int = 0) -> dict[str, object]:
 
 
 class WorkflowDriftCoverageTests(unittest.TestCase):
-    def classify(self, data: dict[str, object]) -> tuple[int, str, str]:
+    def classify(
+        self, data: dict[str, object], *, expected_invalid_count: str | None = None
+    ) -> tuple[int, str, str]:
         with tempfile.TemporaryDirectory() as directory:
             evidence = Path(directory)
             report_path = evidence / "workflow-drift-audit.json"
@@ -67,8 +81,12 @@ class WorkflowDriftCoverageTests(unittest.TestCase):
                 [sys.executable, "-", str(report_path)], input=extractor,
                 text=True, capture_output=True, check=False,
             )
-            if counts.returncode == 0:
-                (evidence / "workflow-drift-counts.txt").write_text(counts.stdout, encoding="utf-8")
+            (evidence / "workflow-drift-counts.txt").write_text(counts.stdout, encoding="utf-8")
+            if expected_invalid_count is not None:
+                self.assertNotEqual(0, counts.returncode)
+                self.assertIn(
+                    f"invalid or inconsistent {expected_invalid_count}", counts.stderr
+                )
             (evidence / "tested-sha.txt").write_text("tested_sha=synthetic\n", encoding="utf-8")
             (evidence / "inventory-summary.txt").write_text(
                 "installation_repository_count=1\nactive_repository_count=1\narchived_repository_count=0\n",
@@ -144,6 +162,51 @@ class WorkflowDriftCoverageTests(unittest.TestCase):
         _, result, summary = self.classify(report(findings=1))
         self.assertEqual("Drift detected", result)
         self.assertIn("| Advisory workflow-policy findings | `1` |", summary)
+
+    def test_valid_candidate_remains_advisory_drift(self) -> None:
+        _, result, summary = self.classify(report(candidates=1))
+        self.assertEqual("Drift detected", result)
+        self.assertIn("| Overlap candidates | `1` |", summary)
+
+    def test_missing_malformed_and_inconsistent_finding_counts_fail(self) -> None:
+        for count_name, items_name in (
+            ("candidate_count", "candidates"),
+            ("advisory_finding_count", "advisory_findings"),
+        ):
+            for value in (None, "1", -1, True, 1):
+                with self.subTest(count=count_name, value=value):
+                    data = report()
+                    if value is None:
+                        del data["summary"][count_name]
+                    else:
+                        data["summary"][count_name] = value
+                    _, result, summary = self.classify(
+                        data, expected_invalid_count=count_name
+                    )
+                    self.assertEqual("Failed", result)
+                    self.assertNotIn("**Result:** Clean", summary)
+                    self.assertNotIn("**Result:** Drift detected", summary)
+                    self.assertIn("| Skipped paths | `0` |", summary)
+                    if count_name == "advisory_finding_count":
+                        self.assertIn("| Overlap candidates | `0` |", summary)
+
+            with self.subTest(count=count_name, items="not a list"):
+                data = report()
+                data[items_name] = "invalid"
+                _, result, _ = self.classify(data, expected_invalid_count=count_name)
+                self.assertEqual("Failed", result)
+
+            with self.subTest(count=count_name, items="missing"):
+                data = report()
+                del data[items_name]
+                _, result, _ = self.classify(data, expected_invalid_count=count_name)
+                self.assertEqual("Failed", result)
+
+            with self.subTest(count=count_name, items="nonempty at zero count"):
+                data = report(candidates=1) if count_name == "candidate_count" else report(findings=1)
+                data["summary"][count_name] = 0
+                _, result, _ = self.classify(data, expected_invalid_count=count_name)
+                self.assertEqual("Failed", result)
 
     def test_review_packet_shows_skip_details_and_keeps_candidate_section(self) -> None:
         packet = render_review_packet(report(skipped=1))

@@ -309,8 +309,15 @@ jobs:
           if not isinstance(report.get("skipped_paths"), list) or skipped_path_count != len(report["skipped_paths"]):
               raise SystemExit("skipped_path_count does not match skipped_paths in workflow drift report")
           print(f"skipped_path_count={skipped_path_count}")
-          print(f"candidate_count={summary['candidate_count']}")
-          print(f"advisory_finding_count={summary['advisory_finding_count']}")
+          for count_name, items_name in (
+              ("candidate_count", "candidates"),
+              ("advisory_finding_count", "advisory_findings"),
+          ):
+              count = summary.get(count_name)
+              items = report.get(items_name)
+              if type(count) is not int or count < 0 or not isinstance(items, list) or count != len(items):
+                  raise SystemExit(f"invalid or inconsistent {count_name} in workflow drift report")
+              print(f"{count_name}={count}")
           PY
 
       - name: Run canonical repository validation
