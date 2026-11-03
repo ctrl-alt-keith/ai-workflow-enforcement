@@ -57,6 +57,15 @@ def render_review_packet(scan: dict[str, Any]) -> str:
     summary = scan["summary"]
     candidates = scan["candidates"]
     candidate_count = _int_field(summary, "candidate_count")
+    skipped_paths = scan.get("skipped_paths")
+    skipped_path_count = _int_field(summary, "skipped_path_count")
+    if (
+        type(skipped_path_count) is not int
+        or skipped_path_count < 0
+        or not isinstance(skipped_paths, list)
+        or skipped_path_count != len(skipped_paths)
+    ):
+        raise ValueError("summary skipped_path_count must match skipped_paths length")
     if candidate_count != len(candidates):
         raise ValueError("summary candidate_count must match candidates length")
 
@@ -77,11 +86,26 @@ def render_review_packet(scan: dict[str, Any]) -> str:
         f"- Notes files scanned: {_int_field(summary, 'notes_files_scanned')}",
         f"- Playbook files scanned: {_int_field(summary, 'playbook_files_scanned')}",
         f"- Ignored paths: {_int_field(summary, 'ignored_path_count')}",
+        f"- Skipped paths: {skipped_path_count}",
         f"- Candidate count: {candidate_count}",
+        "",
+        "## Skipped Path Evidence",
+        "",
+    ]
+
+    if not skipped_paths:
+        lines.append("No paths were skipped.")
+    else:
+        for skipped in skipped_paths:
+            if not isinstance(skipped, dict):
+                raise ValueError("each skipped path must be an object")
+            lines.append(f"- {_str_field(skipped, 'path')}: {_str_field(skipped, 'reason')}")
+
+    lines.extend([
         "",
         "## Candidate Evidence",
         "",
-    ]
+    ])
 
     if not candidates:
         lines.append("No overlap candidates were present in the scan JSON.")

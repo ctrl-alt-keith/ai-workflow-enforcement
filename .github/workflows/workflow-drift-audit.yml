@@ -303,6 +303,12 @@ jobs:
           if report.get("report_type") != "notes_playbook_drift_scan" or report.get("advisory") is not True:
               raise SystemExit("unexpected workflow drift report contract")
           summary = report["summary"]
+          skipped_path_count = summary.get("skipped_path_count")
+          if type(skipped_path_count) is not int or skipped_path_count < 0:
+              raise SystemExit("invalid or missing skipped_path_count in workflow drift report")
+          if not isinstance(report.get("skipped_paths"), list) or skipped_path_count != len(report["skipped_paths"]):
+              raise SystemExit("skipped_path_count does not match skipped_paths in workflow drift report")
+          print(f"skipped_path_count={skipped_path_count}")
           print(f"candidate_count={summary['candidate_count']}")
           print(f"advisory_finding_count={summary['advisory_finding_count']}")
           PY
@@ -360,8 +366,10 @@ jobs:
           reason="One or more required hosted execution steps failed."
 
           counts_file="$EVIDENCE_DIR/workflow-drift-counts.txt"
+          skipped_path_count="$(sed -n 's/^skipped_path_count=//p' "$counts_file" 2>/dev/null || true)"
           candidate_count="$(sed -n 's/^candidate_count=//p' "$counts_file" 2>/dev/null || true)"
           advisory_finding_count="$(sed -n 's/^advisory_finding_count=//p' "$counts_file" 2>/dev/null || true)"
+          skipped_path_count="${skipped_path_count:-unknown}"
           candidate_count="${candidate_count:-unknown}"
           advisory_finding_count="${advisory_finding_count:-unknown}"
 
@@ -381,6 +389,11 @@ jobs:
             reason="Canonical validation or repository-state verification failed."
           elif [[ "$DRIFT_OUTCOME" != "success" ]]; then
             reason="The repository-owned workflow drift validation command failed."
+          elif [[ "$skipped_path_count" == "unknown" ]]; then
+            reason="The workflow drift report did not provide a valid skipped-path count."
+          elif [[ "$skipped_path_count" != "0" ]]; then
+            result="Unable to verify"
+            reason="The advisory scanner skipped one or more paths; reported findings may be incomplete."
           elif [[ "$candidate_count" != "0" || "$advisory_finding_count" != "0" ]]; then
             result="Drift detected"
             reason="The advisory scanner completed and reported one or more review candidates."
@@ -418,6 +431,7 @@ jobs:
             printf '| Workflow drift command | `%s` — %s |\n' "$SCAN_COMMAND" "$DRIFT_OUTCOME"
             printf '| Canonical validation | `%s` — %s |\n' "$CANONICAL_COMMAND" "$CANONICAL_OUTCOME"
             printf '| Repository state | %s |\n' "$REPOSITORY_STATE_OUTCOME"
+            printf '| Skipped paths | `%s` |\n' "$skipped_path_count"
             printf '| Overlap candidates | `%s` |\n' "$candidate_count"
             printf '| Advisory workflow-policy findings | `%s` |\n' "$advisory_finding_count"
             printf '\nThe complete evidence artifact contains GitHub App authentication metadata, installation and organization inventories, completeness counts, exclusions, exact hydrated revisions, raw scanner JSON and stderr, setup and validation logs, and repository-state evidence.\n'
