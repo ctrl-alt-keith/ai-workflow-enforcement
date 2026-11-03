@@ -110,6 +110,14 @@ class WorkflowDriftCoverageTests(unittest.TestCase):
         self.assertEqual((0, "Clean"), (status, result))
         self.assertIn("| Skipped paths | `0` |", summary)
 
+    def test_zero_findings_with_one_skipped_path_is_unable_to_verify(self) -> None:
+        status, result, summary = self.classify(report(skipped=1))
+        self.assertEqual((0, "Unable to verify"), (status, result))
+        self.assertIn("| Skipped paths | `1` |", summary)
+        self.assertIn("| Overlap candidates | `0` |", summary)
+        self.assertIn("| Advisory workflow-policy findings | `0` |", summary)
+        self.assertIn("reported findings may be incomplete", summary)
+
     def test_skipped_path_prevents_clean_and_retains_finding_count(self) -> None:
         status, result, summary = self.classify(report(skipped=1, findings=1))
         self.assertEqual((0, "Unable to verify"), (status, result))
