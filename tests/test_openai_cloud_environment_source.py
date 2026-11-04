@@ -1,5 +1,6 @@
 """Validate the nonsecret cloud setup inputs without running the installer."""
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,18 @@ def op_setup_for_fixture(tools):
 class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
     def test_installer_parses_without_running(self):
         subprocess.run(["bash", "-n", str(ROOT / "install.sh")], check=True)
+
+    def test_grafana_state_endpoints_are_in_saved_network_policy(self):
+        policy = json.loads((ROOT / "configuration.json").read_text())["http_network_policy"]
+        self.assertTrue({"awscli.amazonaws.com", "*.linodeobjects.com",
+                         "cak.grafana.net"}.issubset(set(policy["allowed_hosts"])))
+
+    def test_aws_cli_install_requires_pinned_signer_and_archive_signature(self):
+        installer = (ROOT / "install.sh").read_text()
+        self.assertIn("FB5DB77FD5C118B80511ADA8A6310ACC4672475C", installer)
+        self.assertIn('gpg --homedir "$TOOLS/aws-gnupg" --batch --verify', installer)
+        self.assertIn('"$TOOLS/downloads/aws-cli-installer/aws/install"', installer)
+        self.assertNotIn("--skip-signature-verification", installer)
 
     def test_op_entrypoint_clean_and_repeat_setup(self):
         with tempfile.TemporaryDirectory() as temporary:

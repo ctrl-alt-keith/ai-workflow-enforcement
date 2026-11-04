@@ -76,6 +76,32 @@ if ! test -x "$TOOLS/bin/terraform"; then
   unzip -o "$TOOLS/downloads/terraform_1.16.4_linux_amd64.zip" terraform -d "$TOOLS/bin"
 fi
 "$TOOLS/bin/terraform" version -json | python3 -c 'import json, sys; v=json.load(sys.stdin); sys.exit(0 if (v.get("terraform_version"), v.get("platform")) == ("1.16.4", "linux_amd64") else "Managed Terraform version differs from pinned 1.16.4 linux_amd64")'
+
+# Verify the official AWS CLI v2 archive with AWS's pinned signing key.
+if ! test -x "$TOOLS/bin/aws"; then
+  curl -fLsS https://awscli.amazonaws.com/v2/install.sh -o "$TOOLS/downloads/aws-install.sh"
+  python3 - "$TOOLS/downloads/aws-install.sh" "$TOOLS/downloads/aws-cli-signing-key.asc" <<'AWS_KEY'
+from pathlib import Path
+import re
+import sys
+source = Path(sys.argv[1]).read_text()
+match = re.search(r"readonly AWS_CLI_PGP_KEY='(-----BEGIN PGP PUBLIC KEY BLOCK-----.*?-----END PGP PUBLIC KEY BLOCK-----)'", source, re.S)
+if match is None:
+    raise SystemExit("AWS signing key unavailable")
+Path(sys.argv[2]).write_text(match.group(1) + "\n")
+AWS_KEY
+  mkdir -p "$TOOLS/aws-gnupg"
+  chmod 700 "$TOOLS/aws-gnupg"
+  gpg --homedir "$TOOLS/aws-gnupg" --batch --show-keys --with-colons "$TOOLS/downloads/aws-cli-signing-key.asc" |
+    python3 -c 'import sys; f=[r.split(":")[9] for r in sys.stdin.read().splitlines() if r.startswith("fpr:")]; sys.exit(0 if f == ["FB5DB77FD5C118B80511ADA8A6310ACC4672475C"] else "Unexpected AWS CLI signing key")'
+  gpg --homedir "$TOOLS/aws-gnupg" --batch --import "$TOOLS/downloads/aws-cli-signing-key.asc"
+  curl -fLsS https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o "$TOOLS/downloads/awscliv2.zip"
+  curl -fLsS https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip.sig -o "$TOOLS/downloads/awscliv2.zip.sig"
+  gpg --homedir "$TOOLS/aws-gnupg" --batch --verify "$TOOLS/downloads/awscliv2.zip.sig" "$TOOLS/downloads/awscliv2.zip"
+  unzip -q -o "$TOOLS/downloads/awscliv2.zip" -d "$TOOLS/downloads/aws-cli-installer"
+  "$TOOLS/downloads/aws-cli-installer/aws/install" -i "$TOOLS/aws-cli" -b "$TOOLS/bin"
+fi
+"$TOOLS/bin/aws" --version 2>&1 | python3 -c 'import re, sys; sys.exit(0 if re.match(r"^aws-cli/2\.[0-9]+\.[0-9]+ ", sys.stdin.read()) else "Managed AWS CLI must be version 2")'
 if ! test -x "$TOOLS/bin/kubectl"; then
   curl -fLsS https://dl.k8s.io/release/v1.37.1/bin/linux/amd64/kubectl -o "$TOOLS/downloads/kubectl"
   curl -fLsS https://dl.k8s.io/release/v1.37.1/bin/linux/amd64/kubectl.sha256 -o "$TOOLS/downloads/kubectl.sha256"

@@ -3,6 +3,9 @@
 The Git commit of this directory versions the intended nonsecret setup for the
 saved ctrl-alt-keith OpenAI cloud execution environment.
 The installer supports Linux x86_64 only.
+It installs the signature-verified AWS CLI v2 for the existing Object Storage
+backend; the saved network policy includes its installer and the backend and
+Grafana endpoints.
 `install.sh` is the saved build script; `workspace-AGENTS.md` is delivered as
 `/workspace/AGENTS.md`; `configuration.json` records restricted mode, preset,
 and custom domains. The saved editor owns the explicit repository selection;

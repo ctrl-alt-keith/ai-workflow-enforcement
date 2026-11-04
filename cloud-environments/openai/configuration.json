@@ -8,7 +8,10 @@
       "*.anthropic.com",
       "*.claude.com",
       "*.linode.com",
+      "*.linodeobjects.com",
       "api.github.com",
+      "awscli.amazonaws.com",
+      "cak.grafana.net",
       "claude.ai",
       "github.com",
       "keyserver.ubuntu.com"
