@@ -98,7 +98,10 @@ AWS_KEY
   curl -fLsS https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o "$TOOLS/downloads/awscliv2.zip"
   curl -fLsS https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip.sig -o "$TOOLS/downloads/awscliv2.zip.sig"
   gpg --homedir "$TOOLS/aws-gnupg" --batch --verify "$TOOLS/downloads/awscliv2.zip.sig" "$TOOLS/downloads/awscliv2.zip"
+  rm -rf -- "$TOOLS/downloads/aws-cli-installer"
   unzip -q -o "$TOOLS/downloads/awscliv2.zip" -d "$TOOLS/downloads/aws-cli-installer"
+  # An interrupted install can leave aws-cli/v2/current but no bin/aws.
+  rm -rf -- "$TOOLS/aws-cli"
   "$TOOLS/downloads/aws-cli-installer/aws/install" -i "$TOOLS/aws-cli" -b "$TOOLS/bin"
 fi
 "$TOOLS/bin/aws" --version 2>&1 | python3 -c 'import re, sys; sys.exit(0 if re.match(r"^aws-cli/2\.[0-9]+\.[0-9]+ ", sys.stdin.read()) else "Managed AWS CLI must be version 2")'
