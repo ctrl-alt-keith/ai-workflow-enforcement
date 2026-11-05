@@ -101,4 +101,7 @@ The installer-generated `op` launcher, executor PATH settings, runtime
 credential bindings, and authenticated state are not source files. Rebuilding
 an old source commit resolves then-current stable packages; exact replay needs
 prior package versions and integrity inputs plus fresh-runtime verification.
+AWS CLI v2 downloads from `awscli.amazonaws.com`; its archive signature must
+verify against the pinned AWS CLI Team key before extraction. A missing managed
+`aws` executable triggers a clean reinstall of its managed directory.
 Existing Go, Terraform, or kubectl version mismatches stop the build.
