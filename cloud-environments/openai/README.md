@@ -36,6 +36,10 @@ source, output, and logs.
 
 ## Apply and verify
 
+During [environment onboarding](https://learn.chatgpt.com/docs/environments/cloud-environments#create-and-publish-an-environment),
+commands executed in the setup session prepare the filesystem that publication
+snapshots for later tasks.
+
 1. Run `make check` and ShellCheck. In the saved editor, compare the complete
    installer and workspace AGENTS bytes with this commit. Read back the
    selected repositories and refs, then compare network mode, preset, and
@@ -56,9 +60,24 @@ source, output, and logs.
    these source files at that `HEAD`; record it as `source_commit` and compare
    file hashes with the saved editor readback. A pre-merge PR head is a review
    identity, not the post-squash source commit.
-   Build and publish with the supported interface. Read exact snapshot pins
+   Through the supported setup-session filesystem execution interface, install
+   the complete `workspace-AGENTS.md` from `source_commit` at
+   `/workspace/AGENTS.md`, preserving appropriate ownership and permissions
+   so the task agent can read it. The saved `start_skill` field is a separate
+   agent-instruction surface: saving it does not establish that
+   `/workspace/AGENTS.md` changed.
+   Verify both independently; record the `start_skill` readback against the
+   intended text specified by the owning environment setup task, including a
+   reference to that exact text, separately from the workspace file's editor hash.
+   Complete the build with the supported interface. Read exact snapshot pins
    from `/workspace/.onboarding-tools/repositories.json`; stop if it is absent
-   or mismatches the editor-selected set. Store one record per published version
+   or mismatches the editor-selected set. After the final setup or build
+   filesystem change, immediately before publication, read the installed file
+   back and verify exact byte equality with `workspace-AGENTS.md` at
+   `source_commit`; record its SHA-256 separately from the editor readback hashes.
+   Stop on mismatch. Publish with the supported interface. Publication alone
+   does not prove correct file restoration or that future tasks received and
+   followed their injected instructions. Store one record per published version
    outside this source tree, using this shape:
 
    ```json
@@ -72,6 +91,8 @@ source, output, and logs.
      "editor_readback": {
        "installer_sha256": "<SHA-256>",
        "workspace_agents_sha256": "<SHA-256>",
+       "start_skill_source_reference": "<setup task reference to exact intended text>",
+       "start_skill_readback": "<comparison evidence for intended startup guidance>",
        "repository_selection": "<comparison evidence>",
        "http_network_policy": "<comparison evidence>",
        "required_runtime_binding": {
@@ -82,6 +103,7 @@ source, output, and logs.
        },
        "optional_runtime_bindings": []
      },
+     "installed_workspace_agents_sha256": "<SHA-256>",
      "selected_repository_pins": [{"name": "<owner/repo>", "commit": "<SHA>"}],
      "resolved_tool_versions": {"<tool>": "<version>"},
      "saved_config_id": "<provider ID>",
@@ -89,10 +111,13 @@ source, output, and logs.
    }
    ```
 
-3. In a fresh task from that exact published version, verify restored files,
-   network status, tool versions and paths in login and non-login shells,
+3. In a separately authorized fresh-task qualification from that exact published
+   version, verify restored files. Require `/workspace/AGENTS.md` to be readable
+   by the task agent and its SHA-256 to match `installed_workspace_agents_sha256`.
+   Verify network status, tool versions and paths in login and non-login shells,
    writable private `op` config, repository availability, and workspace AGENTS
-   delivery. Run the task-start refresh once and record its result separately,
+   delivery and normal startup behavior, including injected instructions.
+   Run the task-start refresh once and record its result separately,
    including fetched-main alignment and actual advancement when applicable.
    Verify selected binding readiness and helper operation.
    Catalog pins are the startup floor; refresh targets fetched `main`.
