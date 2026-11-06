@@ -35,7 +35,7 @@ class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
     def test_published_domains_are_in_saved_network_policy(self):
         policy = json.loads((ROOT / "configuration.json").read_text())["http_network_policy"]
         self.assertTrue({"awscli.amazonaws.com", "*.linodelke.net",
-                         "*.linodeobjects.com", "cak.grafana.net",
+                         "*.linodeobjects.com", "*.grafana.com", "cak.grafana.net",
                          "openai.com"}.issubset(set(policy["allowed_hosts"])))
 
     def test_aws_cli_install_requires_pinned_signer_and_archive_signature(self):
