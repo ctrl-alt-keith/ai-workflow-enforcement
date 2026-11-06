@@ -2,6 +2,15 @@
 
 Only at the beginning of a new isolated task, after checkouts are available and before repository work, run:
 
+Before invoking the refresh, select a supported network-enabled command execution
+path and obtain any required permission grant. Where the exposed interface
+supports them, use `sandbox_permissions="with_additional_permissions"` with
+`additional_permissions.network.enabled=true`; an already authorized
+network-enabled task context or another supported equivalent is also valid.
+Do not invent arguments, bypass approval, or attempt the refresh through a known
+network-restricted execution path. If no permitted path is available, stop and
+report the blocker.
+
 ```sh
 PYTHONPATH=/workspace/ai-workflow-enforcement python3 -m enforcement.safe_refresh_repos --startup-catalog /workspace/.onboarding-tools/repositories.json --workspace-root /workspace --checkout-branch work --output-format json
 ```
