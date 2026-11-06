@@ -62,15 +62,19 @@ snapshots for later tasks.
    identity, not the post-squash source commit.
    Through the supported setup-session filesystem execution interface, install
    the complete `workspace-AGENTS.md` from `source_commit` at
-   `/workspace/AGENTS.md`, preserving appropriate ownership and permissions.
-   Read the installed file back and verify exact byte equality with that source
-   before publication; record its SHA-256 alongside the editor readback hashes.
-   Stop on mismatch. The saved `start_skill` field is a separate agent-instruction
-   surface: saving it does not establish that `/workspace/AGENTS.md` changed.
-   Verify both independently.
-   Build and publish with the supported interface. Publication alone does not
-   prove correct file restoration or that future tasks received and followed
-   their injected instructions. Read exact snapshot pins
+   `/workspace/AGENTS.md`, preserving appropriate ownership and permissions
+   so the task agent can read it. The saved `start_skill` field is a separate
+   agent-instruction surface: saving it does not establish that
+   `/workspace/AGENTS.md` changed.
+   Verify both independently; record the `start_skill` readback against the
+   intended startup guidance separately from the workspace file's editor hash.
+   Complete the build with the supported interface. After the final setup or
+   build filesystem change, immediately before publication, read the installed
+   file back and verify exact byte equality with `workspace-AGENTS.md` at
+   `source_commit`; record its SHA-256 separately from the editor readback hashes.
+   Stop on mismatch. Publish with the supported interface. Publication alone
+   does not prove correct file restoration or that future tasks received and
+   followed their injected instructions. Read exact snapshot pins
    from `/workspace/.onboarding-tools/repositories.json`; stop if it is absent
    or mismatches the editor-selected set. Store one record per published version
    outside this source tree, using this shape:
@@ -86,6 +90,7 @@ snapshots for later tasks.
      "editor_readback": {
        "installer_sha256": "<SHA-256>",
        "workspace_agents_sha256": "<SHA-256>",
+       "start_skill_readback": "<comparison evidence for intended startup guidance>",
        "repository_selection": "<comparison evidence>",
        "http_network_policy": "<comparison evidence>",
        "required_runtime_binding": {
@@ -96,6 +101,7 @@ snapshots for later tasks.
        },
        "optional_runtime_bindings": []
      },
+     "installed_workspace_agents_sha256": "<SHA-256>",
      "selected_repository_pins": [{"name": "<owner/repo>", "commit": "<SHA>"}],
      "resolved_tool_versions": {"<tool>": "<version>"},
      "saved_config_id": "<provider ID>",
@@ -104,8 +110,9 @@ snapshots for later tasks.
    ```
 
 3. In a separately authorized fresh-task qualification from that exact published
-   version, verify restored files,
-   network status, tool versions and paths in login and non-login shells,
+   version, verify restored files. Require `/workspace/AGENTS.md` to be readable
+   by the task agent and its SHA-256 to match `installed_workspace_agents_sha256`.
+   Verify network status, tool versions and paths in login and non-login shells,
    writable private `op` config, repository availability, and workspace AGENTS
    delivery and normal startup behavior, including injected instructions.
    Run the task-start refresh once and record its result separately,
