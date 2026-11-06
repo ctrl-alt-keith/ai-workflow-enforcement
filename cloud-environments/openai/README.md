@@ -67,16 +67,17 @@ snapshots for later tasks.
    agent-instruction surface: saving it does not establish that
    `/workspace/AGENTS.md` changed.
    Verify both independently; record the `start_skill` readback against the
-   intended startup guidance separately from the workspace file's editor hash.
-   Complete the build with the supported interface. After the final setup or
-   build filesystem change, immediately before publication, read the installed
-   file back and verify exact byte equality with `workspace-AGENTS.md` at
+   intended text specified by the owning environment setup task, including a
+   reference to that exact text, separately from the workspace file's editor hash.
+   Complete the build with the supported interface. Read exact snapshot pins
+   from `/workspace/.onboarding-tools/repositories.json`; stop if it is absent
+   or mismatches the editor-selected set. After the final setup or build
+   filesystem change, immediately before publication, read the installed file
+   back and verify exact byte equality with `workspace-AGENTS.md` at
    `source_commit`; record its SHA-256 separately from the editor readback hashes.
    Stop on mismatch. Publish with the supported interface. Publication alone
    does not prove correct file restoration or that future tasks received and
-   followed their injected instructions. Read exact snapshot pins
-   from `/workspace/.onboarding-tools/repositories.json`; stop if it is absent
-   or mismatches the editor-selected set. Store one record per published version
+   followed their injected instructions. Store one record per published version
    outside this source tree, using this shape:
 
    ```json
@@ -90,6 +91,7 @@ snapshots for later tasks.
      "editor_readback": {
        "installer_sha256": "<SHA-256>",
        "workspace_agents_sha256": "<SHA-256>",
+       "start_skill_source_reference": "<setup task reference to exact intended text>",
        "start_skill_readback": "<comparison evidence for intended startup guidance>",
        "repository_selection": "<comparison evidence>",
        "http_network_policy": "<comparison evidence>",
