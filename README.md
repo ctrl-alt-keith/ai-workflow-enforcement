@@ -21,6 +21,7 @@ scope.
 | Inventory explicitly enrolled local agent configuration and instructions | `python3 -m enforcement.agent_review_cli --help` | [Local agent review](docs/local-agent-review.md) |
 | Render scanner JSON for review | `python3 -m enforcement.review_packet --help` | [Review packet](docs/review-packet.md) |
 | Refresh resolved local repositories safely | `python3 -m enforcement.safe_refresh_repos --help` | [Safe repository refresh](docs/safe-refresh-repos.md) |
+| Validate weekly cloud maintenance definitions | `python3 -m enforcement.maintenance_jobs --help` | [Weekly cloud maintenance](docs/weekly-cloud-maintenance.md) |
 | Review or apply branch cleanup | `python3 -m enforcement.branch_cleanup --help` | [Branch cleanup](docs/branch-cleanup.md) |
 | List current organization pull requests and issues | `python3 -m enforcement.org_pr_issue_scan --help` | [Organization PR and issue scan](docs/org-pr-issue-scan.md) |
 | Compose hosted and local work-state evidence | `python3 -m enforcement.work_state_index --help` | [Work-state index](docs/work-state-index.md) |
