@@ -113,7 +113,7 @@ def load_startup_catalog(path: Path, workspace_root: Path, checkout_branch: str 
     """Use the managed environment's selected, commit-pinned repository catalog."""
     if not re.fullmatch(r"[A-Za-z0-9._/-]+", checkout_branch) or checkout_branch.startswith("-"):
         raise ValueError("invalid checkout branch")
-    entries = json.loads(path.read_text(encoding="utf-8"))
+    entries = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=branch_cleanup._unique_object)
     if not isinstance(entries, list) or not entries:
         raise ValueError("startup catalog must be a nonempty repository array")
     targets: list[RepoTarget] = []

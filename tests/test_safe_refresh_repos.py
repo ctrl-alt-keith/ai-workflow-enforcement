@@ -186,6 +186,19 @@ class SafeRefreshReposTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_startup_catalog(catalog, root)
 
+    def test_startup_catalog_rejects_duplicate_pin_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog = root / "repositories.json"
+            catalog.write_text(
+                '[{"name":"ctrl-alt-keith/sample","host":"github.com",'
+                '"mount_path":"sample","commit":"' + "a" * 40 + '",'
+                '"commit":"' + "b" * 40 + '"}]',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(json.JSONDecodeError, "duplicate object key: commit"):
+                load_startup_catalog(catalog, root)
+
     def test_catalog_locator_mismatch_blocks_before_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _make_repo(Path(tmp))
