@@ -13,6 +13,7 @@
       "*.linodeobjects.com",
       "api.github.com",
       "api.meraki.com",
+      "api.porkbun.com",
       "api.tailscale.com",
       "awscli.amazonaws.com",
       "cak.grafana.net",
