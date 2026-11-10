@@ -12,6 +12,7 @@
       "*.linodelke.net",
       "*.linodeobjects.com",
       "api.github.com",
+      "api.meraki.com",
       "api.tailscale.com",
       "awscli.amazonaws.com",
       "cak.grafana.net",
