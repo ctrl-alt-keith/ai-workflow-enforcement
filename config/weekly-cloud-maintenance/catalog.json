@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "jobs": [
+    {
+      "id": "staff-engineer-rounds",
+      "title": "Staff Engineer Rounds",
+      "cadence": "weekly",
+      "prompt_file": "staff-engineer-rounds.md"
+    },
+    {
+      "id": "test-gap-sweep",
+      "title": "Test Gap Sweep",
+      "cadence": "weekly",
+      "prompt_file": "test-gap-sweep.md"
+    },
+    {
+      "id": "docs-drift-sweep",
+      "title": "Docs Drift Sweep",
+      "cadence": "weekly",
+      "prompt_file": "docs-drift-sweep.md"
+    },
+    {
+      "id": "dead-surface-sweep",
+      "title": "Dead Surface Sweep",
+      "cadence": "weekly",
+      "prompt_file": "dead-surface-sweep.md"
+    }
+  ]
+}
