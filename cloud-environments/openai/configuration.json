@@ -4,6 +4,7 @@
     "presets": ["package_managers"],
     "allowed_hosts": [
       "*.1password.com",
+      "*.1passwordusercontent.com",
       "*.agilebits.com",
       "*.anthropic.com",
       "*.claude.com",
