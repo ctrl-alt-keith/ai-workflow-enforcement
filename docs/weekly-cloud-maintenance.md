@@ -22,9 +22,12 @@ timing changes need no PR. The saved environment selector is a launch constraint
 not proof of a published version. Execution follows the current
 [Playbook maintenance contract](https://github.com/ctrl-alt-keith/ai-workflow-playbook/blob/main/docs/maintenance-automations.md).
 
-For run records, keep repository proposals in their owning PRs. Recommend a
-workspace-owned hosted operational destination outside this source tree for
-aggregate/report-only records. Its locator and retention rule remain undecided;
-no store is created here. Existing local-agent enrollment, workflow-drift Actions
-artifacts and issue-scoped capture do not declare that destination. Affected
-runs must stop until the required destination is declared and verified.
+Keep repository proposals and their validation evidence in their owning PRs.
+Report each run's inspected and unattempted scope, skips, blockers, findings,
+exact known run and child identities, and actionable follow-up to the operator.
+Do not infer a clean result from missing output or rely on scheduler history
+without verifying its exact run identity and contents. Routine summaries need
+no separate permanent archive. Retain an artifact only when its exact identity
+materially supports review or recovery or an explicit owning contract requires
+it; apply the owning storage and verification rules. Stop the dependent action
+if required evidence cannot be retained or verified.

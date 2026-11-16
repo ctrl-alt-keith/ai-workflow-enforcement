@@ -29,11 +29,14 @@ resumes this same child for applicable independent review and disposition before
 continuing. Never merge or enable auto-merge.
 
 Do not absorb unrelated failures, deploy, perform live provider operations,
-change access/credentials, publish environments, or alter schedules. Use declared
-evidence destinations; stop if a required destination is unavailable rather than
-inventing storage or retention.
+change access/credentials, publish environments, or alter schedules. Retain an
+artifact only when its exact identity materially supports review or recovery or
+an explicit owning contract requires it. Use its owner's storage and
+verification rules; stop if required evidence lacks a permitted destination.
+Do not create a routine per-run archive.
 
 Return each repository's outcome, inspected revision/scope, reason, validation,
 and review status. The coordinator observes terminal child outcomes and reports
-material findings, PR links, blockers and cloud/run identity; unattempted or sampled
-scope is not a clean result.
+material findings, PR links, blockers, actionable follow-up, and exact known
+cloud/run and child identities. Missing results and unattempted or sampled scope
+are not clean results; mark unverified identities unknown.
