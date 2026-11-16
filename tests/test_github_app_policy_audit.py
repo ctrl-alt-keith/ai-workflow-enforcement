@@ -60,10 +60,16 @@ class GitHubAppPolicyAuditTests(unittest.TestCase):
 
     def test_malformed_installation_repository_never_produces_scope_evidence(self) -> None:
         valid = [{"full_name": "ctrl-alt-keith/a"}, {"full_name": "ctrl-alt-keith/b"}]
-        for malformed in (None, {}, {"full_name": None}, {"full_name": 7},
-                          {"full_name": " "}, {"full_name": " ctrl-alt-keith/c"}):
+        for malformed in (None, {}, {"full_name": None}, {"full_name": 7}, {"full_name": " "}):
             with self.subTest(malformed=malformed):
                 pages = json.dumps([{"total_count": 2, "repositories": [*valid, malformed]}])
+                with self.assertRaises(ValueError):
+                    fetch_installation_repositories(lambda argv: pages)
+
+    def test_whitespace_padded_name_is_rejected_even_when_count_matches(self) -> None:
+        for name in (" ctrl-alt-keith/a", "ctrl-alt-keith/a "):
+            with self.subTest(name=name):
+                pages = json.dumps([{"total_count": 1, "repositories": [{"full_name": name}]}])
                 with self.assertRaises(ValueError):
                     fetch_installation_repositories(lambda argv: pages)
 
