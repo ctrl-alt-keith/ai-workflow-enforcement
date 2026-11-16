@@ -29,9 +29,10 @@ resumes this same child for applicable independent review and disposition before
 continuing. Never merge or enable auto-merge.
 
 Do not absorb unrelated failures, deploy, perform live provider operations,
-change access/credentials, publish environments, or alter schedules. Use declared
-evidence destinations; stop if a required destination is unavailable rather than
-inventing storage or retention.
+change access/credentials, publish environments, or alter schedules. Keep
+required review or recovery evidence with its owning surface; stop if a required
+destination is unavailable. Do not create a routine per-run archive or invent
+storage or retention.
 
 Return each repository's outcome, inspected revision/scope, reason, validation,
 and review status. The coordinator observes terminal child outcomes and reports
