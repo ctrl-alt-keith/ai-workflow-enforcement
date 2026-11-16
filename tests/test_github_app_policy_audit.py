@@ -60,7 +60,8 @@ class GitHubAppPolicyAuditTests(unittest.TestCase):
 
     def test_malformed_installation_repository_never_produces_scope_evidence(self) -> None:
         valid = [{"full_name": "ctrl-alt-keith/a"}, {"full_name": "ctrl-alt-keith/b"}]
-        for malformed in (None, {}, {"full_name": None}, {"full_name": 7}, {"full_name": " "}):
+        for malformed in (None, {}, {"full_name": None}, {"full_name": 7},
+                          {"full_name": " "}, {"full_name": " ctrl-alt-keith/c"}):
             with self.subTest(malformed=malformed):
                 pages = json.dumps([{"total_count": 2, "repositories": [*valid, malformed]}])
                 with self.assertRaises(ValueError):

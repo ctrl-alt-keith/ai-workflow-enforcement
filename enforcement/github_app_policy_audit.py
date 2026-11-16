@@ -84,7 +84,7 @@ def fetch_installation_repositories(runner: Callable[[tuple[str, ...]], str] | N
         totals.add(page["total_count"])
         for repo in page["repositories"]:
             if (not isinstance(repo, dict) or not isinstance(repo.get("full_name"), str)
-                    or not repo["full_name"].strip()):
+                    or not repo["full_name"].strip() or repo["full_name"] != repo["full_name"].strip()):
                 raise ValueError("installation repository pagination is incomplete")
             names.append(repo["full_name"])
     if len(totals) != 1 or len(names) != totals.pop() or len(set(names)) != len(names):
