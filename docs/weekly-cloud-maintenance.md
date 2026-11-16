@@ -27,7 +27,7 @@ Report each run's inspected and unattempted scope, skips, blockers, findings,
 exact known run and child identities, and actionable follow-up to the operator.
 Do not infer a clean result from missing output or rely on scheduler history
 without verifying its exact run identity and contents. Routine summaries need
-no separate permanent archive or Dropbox destination. Retain an artifact only
-when it materially supports review or recovery or an explicit owning contract
-requires it; apply that contract's destination and verification rules. Stop the
-dependent action if required evidence cannot be retained or verified.
+no separate permanent archive. Retain an artifact only when its exact identity
+materially supports review or recovery or an explicit owning contract requires
+it; apply the owning storage and verification rules. Stop the dependent action
+if required evidence cannot be retained or verified.
