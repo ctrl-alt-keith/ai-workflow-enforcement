@@ -58,6 +58,23 @@ class GitHubAppPolicyAuditTests(unittest.TestCase):
         live = fetch_installation_repositories(lambda argv: pages)
         self.assertEqual(["ctrl-alt-keith/a", "ctrl-alt-keith/b"], live["installation"]["visible_repositories"])
 
+    def test_malformed_installation_repository_never_produces_scope_evidence(self) -> None:
+        valid = [{"full_name": "ctrl-alt-keith/a"}, {"full_name": "ctrl-alt-keith/b"}]
+        for malformed in (None, {}, {"full_name": None}, {"full_name": 7}, {"full_name": " "}):
+            with self.subTest(malformed=malformed):
+                pages = json.dumps([{"total_count": 2, "repositories": [*valid, malformed]}])
+                with self.assertRaises(ValueError):
+                    fetch_installation_repositories(lambda argv: pages)
+
+    def test_malformed_page_and_duplicate_repository_never_produce_scope_evidence(self) -> None:
+        valid_page = {"total_count": 2, "repositories": [{"full_name": "ctrl-alt-keith/a"}, {"full_name": "ctrl-alt-keith/b"}]}
+        for later_page in ({"total_count": 2}, {"total_count": 2, "repositories": {}},
+                           {"total_count": 2, "repositories": [{"full_name": "ctrl-alt-keith/a"}]}):
+            with self.subTest(later_page=later_page):
+                pages = json.dumps([valid_page, later_page])
+                with self.assertRaises(ValueError):
+                    fetch_installation_repositories(lambda argv: pages)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,10 +75,21 @@ def fetch_installation_repositories(runner: Callable[[tuple[str, ...]], str] | N
     pages = json.loads(run(("gh", "api", "--paginate", "--slurp", "/installation/repositories?per_page=100")))
     if not isinstance(pages, list) or not pages:
         raise ValueError("installation repository API returned no pages")
-    totals = {page.get("total_count") for page in pages if isinstance(page, dict)}
-    names = sorted({repo.get("full_name") for page in pages if isinstance(page, dict) for repo in page.get("repositories", []) if isinstance(repo, dict) and isinstance(repo.get("full_name"), str)})
-    if len(totals) != 1 or None in totals or len(names) != totals.pop():
+    totals: set[int] = set()
+    names: list[str] = []
+    for page in pages:
+        if (not isinstance(page, dict) or type(page.get("total_count")) is not int
+                or page["total_count"] < 0 or not isinstance(page.get("repositories"), list)):
+            raise ValueError("installation repository pagination is incomplete")
+        totals.add(page["total_count"])
+        for repo in page["repositories"]:
+            if (not isinstance(repo, dict) or not isinstance(repo.get("full_name"), str)
+                    or not repo["full_name"].strip()):
+                raise ValueError("installation repository pagination is incomplete")
+            names.append(repo["full_name"])
+    if len(totals) != 1 or len(names) != totals.pop() or len(set(names)) != len(names):
         raise ValueError("installation repository pagination is incomplete")
+    names.sort()
     return {"installation": {"visible_repositories": names, "scope_sha256": _scope_hash(names)}}
 
 
