@@ -1,14 +1,15 @@
 """Synthetic Git fixtures; no cloud settings, credentials or provider calls."""
 
-import io
 import contextlib
+import io
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -196,37 +197,91 @@ class CloudSetupSourceTests(unittest.TestCase):
             self.assertEqual(status, expected)
             self.assertEqual(json.loads(output.getvalue())["status"], "aligned" if expected == 0 else "blocked")
 
-    def test_archived_procedure_runs_without_changing_old_mount_or_catalog(self):
+    def prepare_procedure(self, *, merged=True):
         package = Path(source.__file__).parent
         shutil.copytree(package, self.seed / "enforcement",
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         procedure = self.commit()
-        self.git(self.seed, "push", "-q", str(self.remote), "HEAD:refs/heads/main")
+        destination = "main" if merged else "procedure-not-merged"
+        self.git(self.seed, "push", "-q", str(self.remote), f"HEAD:refs/heads/{destination}")
+        return procedure
+
+    def acquisition_blocks(self, procedure, reviewed_main):
+        # Execute the owning guide's actual commands, not a second implementation.
+        guide = (Path(source.__file__).parents[1] /
+                 "cloud-environments/openai/README.md").read_text()
+        section = guide.split("### Acquire a newer procedure from an older mount", 1)[1]
+        blocks = re.findall(r"```bash\n(.*?)```", section, re.S)
+        replacements = {
+            "<selected-enforcement-checkout>": str(self.repo),
+            "<reviewed-merged-full-commit>": procedure,
+            "<separately-reviewed-current-main-full-commit>": reviewed_main,
+            "<workspace-root>": str(self.workspace),
+            "<generated-catalog-path>": str(self.catalog),
+            "<saved-editor-full-commit>": self.old,
+            "<reviewed-build-full-commit>": self.old,
+        }
+        for placeholder, value in replacements.items():
+            blocks = [block.replace("'" + placeholder + "'", shlex.quote(value)) for block in blocks]
+        return blocks
+
+    def run_acquisition(self, blocks, env=None):
+        return subprocess.run(["bash", "-c", "\n".join(blocks)],
+                              cwd=self.root, env=env or self.env,
+                              capture_output=True, text=True, timeout=30)
+
+    def test_archived_procedure_runs_without_changing_old_mount_or_catalog(self):
+        procedure = self.prepare_procedure()
         catalog_before = self.catalog.read_bytes()
         inode_before = self.repo.stat().st_ino
-        subprocess.run(["git", "-C", str(self.repo), "fetch", "--no-tags", "origin", procedure],
-                       env=self.env, check=True, capture_output=True)
-        self.assertEqual(self.git(self.repo, "rev-parse", f"{procedure}^{{commit}}"), procedure)
-        self.git(self.repo, "merge-base", "--is-ancestor", procedure, procedure)
-        archive = subprocess.check_output(
-            ["git", "-C", str(self.repo), "archive", "--format=tar", procedure, "enforcement"], env=self.env)
-        exported = self.root / "procedure"
-        exported.mkdir(mode=0o700)
-        with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
-            bundle.extractall(exported, filter="data")
-        result = subprocess.run(
-            [sys.executable, "-B", "-m", "enforcement.cloud_setup_source",
-             "--catalog", str(self.catalog), "--workspace-root", str(self.workspace),
-             "--selection-mode", "pinned", "--selected-commit", self.old,
-             "--reviewed-commit", self.old, "--reviewed-main", procedure],
-            cwd=exported, env=self.env, capture_output=True, text=True,
-        )
+        # An inherited import path must not select another copy of enforcement,
+        # even with Python's safe-path mode enabled. Nothing touches the mount.
+        shadow = self.root / "shadow"
+        (shadow / "enforcement").mkdir(parents=True)
+        (shadow / "enforcement/__init__.py").write_text("")
+        marker = self.root / "wrong-module-loaded"
+        (shadow / "enforcement/cloud_setup_source.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).touch()\nraise SystemExit(99)\n")
+        scratch = self.root / "private exports"
+        scratch.mkdir()
+        env = {**self.env, "PYTHONSAFEPATH": "1", "PYTHONPATH": str(shadow), "TMPDIR": str(scratch)}
+        result = self.run_acquisition(self.acquisition_blocks(procedure, procedure), env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["source_commit"], self.old)
+        self.assertFalse(marker.exists())
         self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), self.old)
         self.assertEqual(self.git(self.repo, "status", "--porcelain"), "")
         self.assertEqual(self.repo.stat().st_ino, inode_before)
         self.assertEqual(self.catalog.read_bytes(), catalog_before)
+
+    def test_acquisition_stops_before_module_execution_for_unmerged_procedure(self):
+        procedure = self.prepare_procedure(merged=False)
+        scratch = self.root / "exports"
+        scratch.mkdir()
+        result = self.run_acquisition(self.acquisition_blocks(procedure, self.old),
+                                      {**self.env, "TMPDIR": str(scratch)})
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(self.git(self.repo, "rev-parse", f"{procedure}^{{commit}}"), procedure)
+        self.assertTrue(any(scratch.glob("*/enforcement/cloud_setup_source.py")))
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), self.old)
+        self.assertEqual(self.git(self.repo, "status", "--porcelain"), "")
+
+    def test_second_block_rejects_missing_or_empty_retained_shell_values(self):
+        second = self.acquisition_blocks(self.old, self.old)[1]
+        values = {"setup_checkout": str(self.repo), "setup_procedure_commit": self.old,
+                  "setup_procedure_dir": str(self.root)}
+        for name in values:
+            for empty in (False, True):
+                env = {**self.env, **values}
+                if empty:
+                    env[name] = ""
+                else:
+                    env.pop(name)
+                with self.subTest(variable=name, empty=empty):
+                    result = self.run_acquisition([second], env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":

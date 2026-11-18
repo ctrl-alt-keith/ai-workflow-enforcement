@@ -150,8 +150,9 @@ selection blocks the build: report the platform limitation; do not move checkout
 refs, hand-edit the catalog or repeatedly retarget an already-running Setup.
 
 Record `procedure_commit` separately: it identifies the exact reviewed procedure
-being applied, which can be newer than the pinned build inputs. Neither identity
-changes a saved selection or authorizes publication.
+being applied, which can be newer than the pinned build inputs. Without newer
+procedure acquisition, record `procedure_commit = source_commit`. Neither
+identity changes a saved selection or authorizes publication.
 
 Read current main with `git ls-remote origin refs/heads/main` through the existing
 authorized Git route; cached `origin/main` is insufficient. Fetch that exact
@@ -161,9 +162,10 @@ dispositions outside Git. Unresolved changes or a required safeguard that the
 pinned build would lose block the build. Main is a separate review target,
 not an automatic replacement for the pin. If main advances after review, review
 the new delta before continuing.
-Differences in settings or installed-file sources require owner disposition;
-do not silently change settings to match either revision. Any resulting build
-must still pass the source and readback requirements in steps 1 and 2.
+For settings or installed-file differences, the owner may accept the complete
+reviewed pin as-is only if it loses no required safeguard, advance to a reviewed
+pin, or choose main-tracking. Mixed-source builds are invalid. Do not silently
+change settings to match either revision; all outcomes must pass steps 1 and 2.
 
 `python3 -m enforcement.cloud_setup_source` checks these enforcement-entry
 identities read-only. Supply `--selection-mode main` and `--selected-commit`
@@ -201,16 +203,19 @@ git --no-replace-objects -C "$setup_checkout" archive --format=tar "$setup_proce
   python3 -c 'import sys,tarfile; tarfile.open(fileobj=sys.stdin.buffer,mode="r|").extractall(sys.argv[1],filter="data")' "$setup_procedure_dir"
 ```
 
-Stop if fetching, identity verification or extraction fails. Run the module from
-the exported directory so the older mounted package cannot shadow it:
+Run both blocks in the same retained Bash shell. Stop if fetching, identity
+verification, extraction or ancestry verification fails. Run the module from
+the export with its import path explicitly selected:
 
 ```bash
+set -euo pipefail
+: "${setup_checkout:?}" "${setup_procedure_commit:?}" "${setup_procedure_dir:?}"
 setup_reviewed_main='<separately-reviewed-current-main-full-commit>'
 git --no-replace-objects -C "$setup_checkout" fetch --no-tags origin "$setup_reviewed_main"
 git --no-replace-objects -C "$setup_checkout" merge-base --is-ancestor "$setup_procedure_commit" "$setup_reviewed_main"
 (
   cd "$setup_procedure_dir" || exit
-  python3 -B -m enforcement.cloud_setup_source \
+  env -u PYTHONSAFEPATH PYTHONPATH="$setup_procedure_dir" python3 -B -m enforcement.cloud_setup_source \
     --workspace-root '<workspace-root>' --catalog '<generated-catalog-path>' \
     --selection-mode pinned --selected-commit '<saved-editor-full-commit>' \
     --reviewed-commit '<reviewed-build-full-commit>' \
