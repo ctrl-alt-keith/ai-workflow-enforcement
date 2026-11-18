@@ -1,0 +1,233 @@
+"""Synthetic Git fixtures; no cloud settings, credentials or provider calls."""
+
+import io
+import contextlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from enforcement import cloud_setup_source as source
+
+
+@unittest.skipUnless(shutil.which("git"), "Git required for source alignment fixtures")
+class CloudSetupSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.seed = self.root / "seed"
+        self.seed.mkdir()
+        self.remote = self.root / "remote.git"
+        self.workspace = self.root / "workspace"
+        self.workspace.mkdir()
+        self.repo = self.workspace / "ai-workflow-enforcement"
+        self.git_binary = shutil.which("git")
+        self.env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(self.root),
+                    "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_TERMINAL_PROMPT": "0"}
+        self.git(self.seed, "init", "-q", "-b", "main")
+        (self.seed / "input").write_text("old build\n")
+        self.old = self.commit()
+        self.git(self.root, "clone", "-q", "--bare", str(self.seed), str(self.remote))
+        self.git(self.root, "clone", "-q", str(self.remote), str(self.repo))
+        self.git(self.repo, "remote", "set-url", "origin",
+                 "https://github.com/ctrl-alt-keith/ai-workflow-enforcement.git")
+        self.catalog = self.workspace / "catalog.json"
+        self.write_catalog(self.old)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        # Substitute transport only. Repository status, identity readback, object
+        # access, archive and ref operations still use actual Git.
+        wrapper = self.bin / "git"
+        wrapper.write_text(
+            f"#!{sys.executable}\nimport os,sys\nargs=sys.argv[1:]\n"
+            "if 'ls-remote' in args or 'fetch' in args:\n"
+            f" args=[{str(self.remote)!r} if x=='origin' else x for x in args]\n"
+            f"os.execv({self.git_binary!r},[{self.git_binary!r},*args])\n")
+        wrapper.chmod(0o755)
+        self.env["PATH"] = str(self.bin) + os.pathsep + self.env["PATH"]
+
+    def git(self, repo, *args):
+        return subprocess.check_output(
+            [self.git_binary, "-c", "core.hooksPath=/dev/null", *args],
+            cwd=repo, env=self.env, stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+
+    def commit(self):
+        self.git(self.seed, "add", ".")
+        self.git(self.seed, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+        return self.git(self.seed, "rev-parse", "HEAD")
+
+    def advance(self):
+        (self.seed / "input").write_text("new build\n")
+        head = self.commit()
+        self.git(self.seed, "push", "-q", str(self.remote), "HEAD:refs/heads/main")
+        self.git(self.repo, "fetch", "-q", str(self.remote), head)
+        return head
+
+    def write_catalog(self, commit):
+        self.catalog.write_text(json.dumps([{
+            "name": source.REPOSITORY, "host": "github.com",
+            "mount_path": "ai-workflow-enforcement", "commit": commit,
+        }]))
+
+    def verify(self, mode="pinned", selected=None, reviewed=None, main=None):
+        args = dict(catalog=self.catalog, workspace_root=self.workspace,
+                    selection_mode=mode, selected_commit=selected or self.old)
+        if mode == "pinned":
+            args.update(reviewed_commit=reviewed or self.old, reviewed_main=main or self.old)
+        with patch.dict(os.environ, self.env, clear=True):
+            return source.verify_source(**args)
+
+    def test_explicit_pin_remains_authoritative_after_main_advances(self):
+        current = self.advance()
+        before = self.catalog.read_bytes()
+        report = self.verify(main=current)
+        self.assertEqual(report["source_commit"], self.old)
+        self.assertEqual(report["current_main"], current)
+        self.assertEqual(report["main_changes"], ["M\tinput"])
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), self.old)
+        self.assertEqual(self.catalog.read_bytes(), before)
+
+    def test_saved_selection_must_match_explicit_reviewed_pin(self):
+        with self.assertRaisesRegex(source.SetupSourceError, "saved selection differs"):
+            self.verify(reviewed="a" * 40)
+
+    def test_unmerged_or_divergent_pin_blocks_despite_matching_local_identities(self):
+        (self.repo / "unmerged").write_text("not on main\n")
+        self.git(self.repo, "add", ".")
+        self.git(self.repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "-qm", "unmerged fixture")
+        pin = self.git(self.repo, "rev-parse", "HEAD")
+        self.write_catalog(pin)
+        for diverged in (False, True):
+            current = self.advance() if diverged else self.old
+            with self.subTest(main=current), self.assertRaisesRegex(
+                source.SetupSourceError, "not verified as merged"
+            ):
+                self.verify(selected=pin, reviewed=pin, main=current)
+
+    def test_catalog_mismatch_blocks_even_with_matching_checkout_and_selection(self):
+        self.write_catalog("a" * 40)
+        with self.assertRaisesRegex(source.SetupSourceError, "selection and generated catalog differ"):
+            self.verify()
+
+    def test_checkout_mismatch_and_dirty_checkout_block(self):
+        current = self.advance()
+        self.git(self.repo, "checkout", "-q", "--detach", current)
+        with self.assertRaisesRegex(source.SetupSourceError, "catalog and checkout commit differ"):
+            self.verify(main=current)
+        self.git(self.repo, "checkout", "-q", "--detach", self.old)
+        (self.repo / "unrelated-edit").write_text("preserve this\n")
+        with self.assertRaisesRegex(source.SetupSourceError, "contains changes"):
+            self.verify(main=current)
+        self.assertEqual((self.repo / "unrelated-edit").read_text(), "preserve this\n")
+
+    def test_main_mode_requires_current_main_and_aligned_catalog(self):
+        self.assertEqual(self.verify(mode="main")["status"], "aligned")
+        current = self.advance()
+        # Cached origin/main is still old; the live ref controls the outcome.
+        self.assertEqual(self.git(self.repo, "rev-parse", "origin/main"), self.old)
+        with self.assertRaisesRegex(source.SetupSourceError, "behind freshly observed"):
+            self.verify(mode="main")
+        self.git(self.repo, "checkout", "-q", "--detach", current)
+        self.write_catalog(current)
+        self.assertEqual(self.verify(mode="main", selected=current)["source_commit"], current)
+
+    def test_main_advancement_invalidates_the_reviewed_comparison(self):
+        self.advance()
+        with self.assertRaisesRegex(source.SetupSourceError, "separately reviewed comparison"):
+            self.verify()
+
+    def test_movement_during_checks_and_catalog_drift_block(self):
+        with patch.object(source, "_main", side_effect=[self.old, "a" * 40]):
+            with self.assertRaisesRegex(source.SetupSourceError, "moved during"):
+                self.verify()
+        original = source._main
+        calls = 0
+        def drift(repo):
+            nonlocal calls
+            calls += 1
+            result = original(repo)
+            if calls == 2:
+                self.catalog.write_text(self.catalog.read_text() + "\n")
+            return result
+        with patch.object(source, "_main", side_effect=drift):
+            with self.assertRaisesRegex(source.SetupSourceError, "catalog changed"):
+                self.verify()
+
+    def test_wrong_origin_and_invalid_catalog_block(self):
+        self.git(self.repo, "remote", "set-url", "origin", "https://github.com/other/repository.git")
+        with self.assertRaisesRegex(source.SetupSourceError, "remote does not match"):
+            self.verify()
+        self.catalog.write_text("[]")
+        with self.assertRaisesRegex(source.SetupSourceError, "catalog unavailable or invalid"):
+            self.verify()
+
+    def test_new_procedure_retains_duplicate_key_rejection_for_old_catalogs(self):
+        text = self.catalog.read_text().replace('"commit":', '"commit": "' + "a" * 40 + '", "commit":')
+        self.catalog.write_text(text)
+        with self.assertRaisesRegex(source.SetupSourceError, "catalog unavailable or invalid"):
+            self.verify()
+
+    def test_modes_do_not_accept_ambiguous_authority(self):
+        common = dict(catalog=self.catalog, workspace_root=self.workspace, selected_commit=self.old)
+        for kwargs in ({"selection_mode": "pinned"},
+                       {"selection_mode": "main", "reviewed_commit": self.old},
+                       {"selection_mode": "other"}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(source.SetupSourceError):
+                source.verify_source(**common, **kwargs)
+
+    def test_CLI_valid_main_and_invalid_pin_have_controlled_JSON_results(self):
+        args = ["--catalog", str(self.catalog), "--workspace-root", str(self.workspace),
+                "--selected-commit", self.old]
+        for mode, expected in (("main", 0), ("pinned", 1)):
+            output = io.StringIO()
+            with patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(output):
+                status = source.main([*args, "--selection-mode", mode])
+            self.assertEqual(status, expected)
+            self.assertEqual(json.loads(output.getvalue())["status"], "aligned" if expected == 0 else "blocked")
+
+    def test_archived_procedure_runs_without_changing_old_mount_or_catalog(self):
+        package = Path(source.__file__).parent
+        shutil.copytree(package, self.seed / "enforcement",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        procedure = self.commit()
+        self.git(self.seed, "push", "-q", str(self.remote), "HEAD:refs/heads/main")
+        catalog_before = self.catalog.read_bytes()
+        inode_before = self.repo.stat().st_ino
+        subprocess.run(["git", "-C", str(self.repo), "fetch", "--no-tags", "origin", procedure],
+                       env=self.env, check=True, capture_output=True)
+        self.assertEqual(self.git(self.repo, "rev-parse", f"{procedure}^{{commit}}"), procedure)
+        self.git(self.repo, "merge-base", "--is-ancestor", procedure, procedure)
+        archive = subprocess.check_output(
+            ["git", "-C", str(self.repo), "archive", "--format=tar", procedure, "enforcement"], env=self.env)
+        exported = self.root / "procedure"
+        exported.mkdir(mode=0o700)
+        with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
+            bundle.extractall(exported, filter="data")
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "enforcement.cloud_setup_source",
+             "--catalog", str(self.catalog), "--workspace-root", str(self.workspace),
+             "--selection-mode", "pinned", "--selected-commit", self.old,
+             "--reviewed-commit", self.old, "--reviewed-main", procedure],
+            cwd=exported, env=self.env, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["source_commit"], self.old)
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), self.old)
+        self.assertEqual(self.git(self.repo, "status", "--porcelain"), "")
+        self.assertEqual(self.repo.stat().st_ino, inode_before)
+        self.assertEqual(self.catalog.read_bytes(), catalog_before)
+
+
+if __name__ == "__main__":
+    unittest.main()
