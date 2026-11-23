@@ -150,7 +150,15 @@ def _github_locator(remote_url: str) -> str | None:
         owner, name = scp.groups()
     else:
         parsed = urlparse(value)
-        if parsed.scheme not in {"https", "ssh"} or (parsed.hostname or "").casefold() != "github.com":
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        if (
+            parsed.scheme not in {"https", "ssh"}
+            or (parsed.hostname or "").casefold() != "github.com"
+            or port is not None
+        ):
             return None
         parts = [part for part in parsed.path.split("/") if part]
         if len(parts) != 2:
