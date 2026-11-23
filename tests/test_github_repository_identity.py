@@ -47,6 +47,17 @@ class RepositoryIdentityTests(unittest.TestCase):
 
         self.assertEqual("unverified", verification.status)
 
+    def test_ported_github_remote_is_unverified_before_provider_lookup(self) -> None:
+        for url in (
+            "https://github.com:8443/ctrl-alt-keith/sample.git",
+            "https://github.com:invalid/ctrl-alt-keith/sample.git",
+        ):
+            with self.subTest(url=url):
+                provider_calls: list[tuple[str, ...]] = []
+                verification = _verify(fetch=url, push=url, provider_calls=provider_calls)
+                self.assertEqual("unverified", verification.status)
+                self.assertEqual([], provider_calls)
+
     def test_different_effective_push_destination_blocks_provider_lookup(self) -> None:
         provider_calls: list[tuple[str, ...]] = []
         verification = _verify(
