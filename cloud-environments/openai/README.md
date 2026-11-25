@@ -86,7 +86,9 @@ private `op` state, network and repositories. Follow
 [task startup](workspace-AGENTS.md) and record the refresh result separately
 from restored catalog pins, including fetched-main alignment and advancement
 when applicable. Verify one approved read through each installed CLI
-entrypoint.
+entrypoint. Verify that each selected binding is ready and the PAT, signing,
+and review helpers work through their intended bindings, including any selected
+mirrors, using the owner guidance in [Runtime credential binding](#runtime-credential-binding).
 
 ## Build source authority
 
