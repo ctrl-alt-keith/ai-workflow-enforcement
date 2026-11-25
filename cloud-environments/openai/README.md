@@ -17,6 +17,17 @@ The source commit does not identify a saved or published environment version.
 and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
 helpers. The installer and task-start refresh do not require it.
 
+The installed `op` entrypoint uses the shared
+[Connect-first routing contract](../../docs/op-routing.md). Set
+`CAK_CONNECT_HOST` to the approved HTTPS origin and inject the existing
+`CAK_CONNECT_TOKEN` as a protected runtime binding. The wrapper selects the
+published TCP proxy for Connect calls only. Keep the independent broker
+binding for explicit direct operations. Select the direct path for existing
+bootstrap and recovery helpers that intentionally isolate their child
+environment before publishing this runtime. Qualify the broker branches of
+the PAT, signing and review helpers with the direct entrypoint. Qualify
+account-pinned recovery callers through the same path.
+
 The reviewed `secrets-lifecycle` helpers can also accept
 `CAK_CLOUD_GITHUB_PAT`, `CAK_CLOUD_SIGNING_KEY`, and
 `CAK_CLOUD_CLAUDE_OAUTH_TOKEN`. None is provisioned by this source. Each is a
@@ -43,9 +54,11 @@ snapshots for later tasks.
 1. Run `make check` and ShellCheck. In the saved editor, compare the complete
    installer and workspace AGENTS bytes with the build commit selected below. Read back the
    selected repositories and refs, then compare network mode, preset, and
-   custom domains with that commit's `configuration.json`. Read back the required runtime
+   custom domains with that commit's `configuration.json`. Read back the broker runtime
    binding's name, required status, and injection type; record any nonsecret
-   provider source reference. Record selected optional binding names and
+   provider source reference. Read back the approved Connect HTTPS origin and
+   the reader binding's name, source and injection type without its value.
+   Record selected optional binding names and
    injection types, or none, without values. Identify whether the saved selection
    tracks `main` or deliberately pins an explicitly reviewed full commit.
    Default to main-tracking unless an owner explicitly authorizes a reviewed pin.
@@ -74,6 +87,8 @@ snapshots for later tasks.
    filesystem change, immediately before publication, read the installed file
    back and verify exact byte equality with `workspace-AGENTS.md` at
    `source_commit`; record its SHA-256 separately from the editor readback hashes.
+   Compare both installed op entrypoints to `enforcement/op_runtime.py` at the
+   same source commit.
    Stop on mismatch. Publish with the supported interface. Publication alone
    does not prove correct file restoration or that future tasks received and
    followed their injected instructions. Store one record per published version
@@ -106,6 +121,10 @@ snapshots for later tasks.
          "injection_type": "<saved editor readback>",
          "provider_source_reference": "<nonsecret editor readback or unknown>"
        },
+       "connect_runtime_bindings": {
+         "CAK_CONNECT_HOST": "<approved HTTPS origin source reference>",
+         "CAK_CONNECT_TOKEN": "<reader source reference and injection type>"
+       },
        "optional_runtime_bindings": []
      },
      "installed_workspace_agents_sha256": "<SHA-256>",
@@ -120,8 +139,9 @@ snapshots for later tasks.
    version, verify restored files. Require `/workspace/AGENTS.md` to be readable
    by the task agent and its SHA-256 to match `installed_workspace_agents_sha256`.
    Verify network status, tool versions and paths in login and non-login shells,
-   writable private `op` config, repository availability, and workspace AGENTS
-   delivery and normal startup behavior, including injected instructions.
+   private `op` config and both approved CLI routes, repository availability,
+   and workspace AGENTS delivery and normal startup behavior, including
+   injected instructions.
    Run the task-start refresh once and record its result separately,
    including fetched-main alignment and actual advancement when applicable.
    Verify selected binding readiness and helper operation.

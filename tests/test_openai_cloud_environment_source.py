@@ -25,7 +25,12 @@ def op_setup_for_fixture(tools):
     source_root = "Path('/workspace/.onboarding-tools')"
     if setup.count(source_root) != 1:
         raise ValueError("Cannot isolate op setup from the live tools directory")
-    return setup.replace(source_root, f"Path({str(tools)!r})", 1)
+    source = "Path('/workspace/ai-workflow-enforcement/enforcement/op_runtime.py')"
+    if setup.count(source) != 1:
+        raise ValueError("Cannot resolve the canonical op runtime source")
+    runtime = ROOT.parents[1] / "enforcement/op_runtime.py"
+    return setup.replace(source_root, f"Path({str(tools)!r})", 1).replace(
+        source, f"Path({str(runtime)!r})", 1)
 
 
 class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
@@ -166,7 +171,9 @@ class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
                 self.assertEqual(
                     (tools / "bin/op").readlink(), Path("../op-runtime.py")
                 )
-                self.assertTrue((tools / "op-runtime.py").is_file())
+                expected = (ROOT.parents[1] / "enforcement/op_runtime.py").read_bytes()
+                self.assertEqual((tools / "op-runtime.py").read_bytes(), expected)
+                self.assertEqual((tools / "direct/bin/op").read_bytes(), expected)
 
     def test_op_entrypoint_refuses_unrelated_file(self):
         with tempfile.TemporaryDirectory() as temporary:
