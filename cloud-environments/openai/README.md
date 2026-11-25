@@ -22,7 +22,8 @@ Configure both required Connect bindings under the saved editor's
   the existing approved reader. Verify the binding's source against the
   [Connect reader custody contract](https://github.com/ctrl-alt-keith/lke-image-lab/blob/main/docs/connect.md#reusable-vault-and-reader)
   and reuse the existing binding when it matches. If the editor omits the
-  reader source, verify it through the custody owner before reuse.
+  reader source, verify it through the custody owner before reuse. Stop if the
+  source differs or cannot be verified.
 
 Keep the required `OP_SERVICE_ACCOUNT_TOKEN` runtime binding for the explicit
 broker route used by `secrets-lifecycle`'s [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
@@ -54,8 +55,8 @@ The saved-environment owner performs the following checks before
    [required runtime bindings](#runtime-credential-binding), the approved
    Connect origin and reader source, and any selected mirror bindings.
    Use saved-editor readback for saved settings. Stop on mismatch or missing
-   required readback. A binding's source reference may be unknown if the
-   editor omits it.
+   required readback. Other bindings' source references may be unknown if the
+   editor omits them.
 2. Apply [build source authority](#build-source-authority) before Setup and
    again immediately before publication. Record the exact build commit as
    `source_commit`. Use the supported Setup filesystem interface to install
