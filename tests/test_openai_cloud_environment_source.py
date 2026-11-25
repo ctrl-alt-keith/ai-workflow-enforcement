@@ -18,14 +18,28 @@ def aws_install_block():
         "\n", 1)[1].split('if ! test -x "$TOOLS/bin/kubectl"', 1)[0]
 
 
-def op_setup_for_fixture(tools):
+def op_setup_for_fixture(tools, probe_passes=True):
     installer = (ROOT / "install.sh").read_text()
     marker = "python3 - <<'OP_WRAPPER_SETUP'\n"
     setup = installer.split(marker, 1)[1].split("\nOP_WRAPPER_SETUP", 1)[0]
     source_root = "Path('/workspace/.onboarding-tools')"
     if setup.count(source_root) != 1:
         raise ValueError("Cannot isolate op setup from the live tools directory")
-    return setup.replace(source_root, f"Path({str(tools)!r})", 1)
+    source = "Path('/workspace/ai-workflow-enforcement/enforcement/op_runtime.py')"
+    if setup.count(source) != 1:
+        raise ValueError("Cannot resolve the canonical op runtime source")
+    runtime = ROOT.parents[1] / "enforcement/op_runtime.py"
+    probe = "Path('/workspace/secrets-lifecycle/scripts/check_cloud_op_compat.py')"
+    if setup.count(probe) != 1:
+        raise ValueError("Cannot isolate the compatibility probe")
+    stub = tools / "startup-probe.py"
+    stub.write_text(
+        "import os, sys\n"
+        "assert 'OP_SERVICE_ACCOUNT_TOKEN' not in os.environ\n"
+        f"assert sys.argv[1] == {str(runtime)!r}\n"
+        f"sys.exit({0 if probe_passes else 1})\n")
+    return setup.replace(source_root, f"Path({str(tools)!r})", 1).replace(
+        source, f"Path({str(runtime)!r})", 1).replace(probe, f"Path({str(stub)!r})", 1)
 
 
 class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
@@ -166,7 +180,9 @@ class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
                 self.assertEqual(
                     (tools / "bin/op").readlink(), Path("../op-runtime.py")
                 )
-                self.assertTrue((tools / "op-runtime.py").is_file())
+                expected = (ROOT.parents[1] / "enforcement/op_runtime.py").read_bytes()
+                self.assertEqual((tools / "op-runtime.py").read_bytes(), expected)
+                self.assertEqual((tools / "direct/bin/op").read_bytes(), expected)
 
     def test_op_entrypoint_refuses_unrelated_file(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -189,6 +205,19 @@ class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
                 [sys.executable, "-c", op_setup_for_fixture(tools)], check=True
             )
             self.assertEqual((tools / "bin/op").readlink(), Path("../op-runtime.py"))
+
+    def test_op_entrypoint_preserves_prior_path_on_compatibility_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tools = Path(temporary)
+            (tools / "bin").mkdir()
+            (tools / "bin/op").symlink_to("../sysroot/usr/bin/op")
+            result = subprocess.run(
+                [sys.executable, "-c", op_setup_for_fixture(tools, probe_passes=False)],
+                capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("stopped before changing", result.stderr)
+            self.assertEqual((tools / "bin/op").readlink(), Path("../sysroot/usr/bin/op"))
+            self.assertFalse((tools / "op-runtime.py").exists())
 
 if __name__ == "__main__":
     unittest.main()

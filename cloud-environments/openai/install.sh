@@ -153,19 +153,31 @@ op_download_dir=$(mktemp -d "$TOOLS/downloads/1password.XXXXXXXX")
 (cd "$op_download_dir" && apt-get "${APT_ARGS[@]}" download 1password-cli)
 for package in "$op_download_dir"/1password-cli_*.deb; do dpkg-deb -x "$package" "$TOOLS/sysroot"; done
 rm -r "$op_download_dir"
-# Use a managed runtime entrypoint with fixed nonsecret settings.
+# Install the same CLI router used by the local entrypoint.
 python3 - <<'OP_WRAPPER_SETUP'
 from pathlib import Path
+from shutil import copyfile
+import subprocess
 tools = Path('/workspace/.onboarding-tools')
+source = Path('/workspace/ai-workflow-enforcement/enforcement/op_runtime.py')
+probe = Path('/workspace/secrets-lifecycle/scripts/check_cloud_op_compat.py')
+if not probe.is_file():
+    raise SystemExit('Cloud op startup requires the compatible secrets-lifecycle checkout')
+if subprocess.run(['/usr/bin/python3', '-I', str(probe), str(source)],
+                  env={'PATH': '/usr/bin:/bin'}, check=False).returncode:
+    raise SystemExit('Cloud op startup stopped before changing the default entrypoint')
 link = tools / 'bin/op'
 if link.is_symlink():
     if str(link.readlink()) not in ('../sysroot/usr/bin/op', '../op-runtime.py'):
         raise SystemExit('Refusing to replace an unrelated op entrypoint')
 elif link.exists():
     raise SystemExit('Refusing to replace an unrelated op entrypoint')
-runtime = tools / 'op-runtime.py'
-runtime.write_text("#!/usr/bin/python3\n\"\"\"Managed 1Password entrypoint: task-local state, no credential persistence here.\"\"\"\nimport os\nimport stat\nimport sys\nfrom pathlib import Path\n\nconfig = Path('/tmp/1password-cli')\ntry:\n    config.mkdir(mode=0o700)\nexcept FileExistsError:\n    pass\ninfo = config.lstat()\nif not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():\n    raise SystemExit('Unsafe 1Password config directory')\nos.chmod(config, 0o700)\nos.environ['OP_CONFIG_DIR'] = str(config)\nos.environ['OP_CACHE'] = 'false'\nos.execv('/workspace/.onboarding-tools/sysroot/usr/bin/op', ['op', *sys.argv[1:]])\n")
-runtime.chmod(0o755)
+for runtime in (tools / 'op-runtime.py', tools / 'direct/bin/op'):
+    if runtime.is_symlink():
+        raise SystemExit('Refusing to replace an unrelated op runtime')
+    runtime.parent.mkdir(parents=True, exist_ok=True)
+    copyfile(source, runtime)
+    runtime.chmod(0o755)
 if link.is_symlink():
     link.unlink()
 link.symlink_to('../op-runtime.py')
