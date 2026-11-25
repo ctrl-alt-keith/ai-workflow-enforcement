@@ -25,8 +25,9 @@ replacing the managed entrypoint.
 If authorized, bind the optional mirrors documented by those helper owners:
 `CAK_CLOUD_GITHUB_PAT`, `CAK_CLOUD_SIGNING_KEY`, and
 `CAK_CLOUD_CLAUDE_OAUTH_TOKEN`. Fill each selected binding from its owning
-field before publication. Omit unused bindings. Approve each additional
-mirror's exposure to task processes and exclude the hosted GitHub App key.
+field before publication. Omit unused bindings. The owner approves
+additional mirrors only when measured usage justifies exposure to task
+processes. Exclude the hosted GitHub App key.
 Verify a rotated mirror in a fresh task before retiring its predecessor.
 
 ## Apply and verify
@@ -39,42 +40,49 @@ The saved-environment owner performs the following checks before
    Verify the selected repositories, refs and selection mode in the editor.
    Use main-tracking unless the owner approves an exact reviewed pin.
    Compare network mode, preset and domains to `configuration.json`.
-   Verify the broker binding's name, required status and injection type, the
-   approved Connect origin and reader, and any selected mirror bindings.
+   Verify the required `OP_SERVICE_ACCOUNT_TOKEN` binding's name, status and
+   injection type, the approved Connect origin and reader, and any selected
+   mirror bindings.
    Use saved-editor readback for saved settings. Stop on mismatch or missing
    required readback. A binding's source reference may be unknown if the
    editor omits it.
 2. Apply [build source authority](#build-source-authority) before Setup and
-   again immediately before publication. Use the supported Setup filesystem
-   interface to install `workspace-AGENTS.md` from `source_commit` at
+   again immediately before publication. Record the exact build commit as
+   `source_commit`. Use the supported Setup filesystem interface to install
+   `workspace-AGENTS.md` from that commit at
    `/workspace/AGENTS.md` with readable ownership and permissions.
    Verify the saved `start_skill` separately against the owning
-   setup task's exact instruction text. After the last Setup change, require
-   the generated catalog to match the editor-selected repositories and refs.
-   Compare the installed workspace instructions and both managed `op`
-   entrypoints byte-for-byte to their files at `source_commit`. Stop on
-   mismatch.
+   setup task's exact instruction text. After the last Setup change and
+   immediately before publication, require
+   `/workspace/.onboarding-tools/repositories.json` to match the editor-selected
+   repositories and refs. Compare the installed `/workspace/AGENTS.md` to
+   `workspace-AGENTS.md` and both installed `op` entrypoints to
+   `enforcement/op_runtime.py` byte-for-byte at `source_commit`. Stop if the
+   catalog is absent or any comparison differs.
 
-Keep a private record per published version containing:
+Keep a private record per published version outside this source tree.
+Retain these identities and checks:
 
 - Saved configuration ID and published version ID.
-- Build source, selection mode, procedure commit, and observed main with any
+- `source_commit`, selection mode, procedure commit, and observed main with any
   safeguard-disposition reference.
 - Source hashes for `install.sh`, `workspace-AGENTS.md`, and
   `configuration.json`. Separately record editor installer and instruction
   hashes, the intended `start_skill` reference and matching readback, and the
   installed workspace instructions hash.
 - Editor repository and network readbacks, exact generated catalog pins,
-  broker compatibility checkout and probe result, and resolved tool versions.
+  the `secrets-lifecycle` checkout commit and PAT, signing and review broker
+  probe result, and resolved tool versions.
 - Verified binding names, required status and injection types as applicable,
   with the approved Connect origin reference and matching editor readback.
-  Record nonsecret binding source references when available. Keep credential
-  values and hashes out of the record, source, output and logs.
+  Record whether any optional bindings were selected. Record nonsecret
+  binding source references when available. Keep credential values and hashes
+  out of the record, source, output and logs.
 
 In a separately authorized task restored from that exact published version,
-verify workspace instruction readability and the recorded installed hash.
-Verify login and non-login tool resolution, private `op` state, network,
-repositories, and delivery of the intended startup instructions. Follow
+verify `/workspace/AGENTS.md` readability and the recorded installed hash.
+Verify delivery of the saved `start_skill`, login and non-login tool resolution,
+private `op` state, network and repositories. Follow
 [task startup](workspace-AGENTS.md) and record the refresh result separately
 from restored catalog pins, including fetched-main alignment and advancement
 when applicable. Verify one approved read through each installed CLI

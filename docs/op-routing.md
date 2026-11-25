@@ -21,7 +21,7 @@ Use `op --direct run` only under the workload's existing authority. Keep
 
 Bind the approved lowercase HTTPS origin on port 443 as `CAK_CONNECT_HOST`.
 Omit the port and path from the URL. Deliver the existing reader through
-`CAK_CONNECT_TOKEN` using the approved
+the protected `CAK_CONNECT_TOKEN` binding using the approved
 [Connect custody and recovery route](https://github.com/ctrl-alt-keith/lke-image-lab/blob/main/docs/connect.md#independent-bootstrap-and-recovery).
 
 For local enrollment, require `/usr/bin/python3`. Resolve the native CLI
@@ -30,11 +30,13 @@ the reviewed `enforcement/op_runtime.py` as executable `op` in the managed
 bin directory. Put that directory first in the task's login and non-login
 `PATH`.
 
-If an enrolled local session lacks the reader binding, load the existing
-reader once into the bounded task environment with
+If an enrolled local session lacks the reader binding, confirm the reader
+vault and field against the custody contract above. Load it once into the
+protected task environment with
 `op --direct read --no-newline` in the authorized native desktop session.
-Complete bootstrap before attempting a Connect read. Keep the reader out of
-output and startup files.
+Complete bootstrap before attempting a Connect read. Never start bootstrap
+in response to a missing or denied read. Keep the reader out of output and
+startup files.
 
 Before selecting the default for real tasks, verify executable resolution, the
 private Connect state directory and the approved Connect and explicit direct
