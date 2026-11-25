@@ -1,42 +1,40 @@
 # Managed 1Password CLI routing
 
-The managed `op` command sends routine `read`, `inject`, and JSON
-`item get` commands to Connect. Bind the approved lowercase HTTPS hostname
-on port 443 as `CAK_CONNECT_HOST`, with no port or path in the URL. Supply the
-existing reader through the protected `CAK_CONNECT_TOKEN` binding. A failed
-Connect read must never be retried through direct credentials.
-See [1Password's supported Connect commands](https://www.1password.dev/connect/connect-cli).
+Use managed `op` for Connect-backed `read`, `inject`, and JSON `item get`.
+Stop on a failed Connect read. Never retry it through direct credentials.
+[1Password Connect CLI reference](https://www.1password.dev/connect/cli)
 
 Select `op --direct ...` for authorized bootstrap, account selection,
 account metadata, recovery, and unsupported native commands.
-`whoami`, `read`, and `item get` with an explicit `--account` use the pinned
-native identity. Use that form only when the workflow requires the original
-account. Unpinned routine reads use Connect.
-`CAK_OP_ROUTE=direct` selects the same route for a bounded caller that
-retains it. For Cloud callers with filtered child environments, prepend
-`/workspace/.onboarding-tools/direct/bin` to the caller's `PATH` or configure
-its explicit `op` path to that entrypoint. For local callers with filtered
-environments, configure the absolute native CLI path or prepend its bin
-directory for that caller.
+Use `--account` on `whoami`, `read`, or `item get` only to pin the
+workflow's required native account.
 
-Run `op --direct run` only under the workload's existing authority. Do not
-export `OP_CONNECT_*` for `op run`, which passes its authentication
-environment to the child.
+Use `CAK_OP_ROUTE=direct` for a bounded caller that preserves it. For a
+filtered child environment, select the absolute native CLI locally or
+`/workspace/.onboarding-tools/direct/bin/op` in Cloud. If the caller resolves
+`op` through `PATH`, prepend the corresponding bin directory for that caller.
 
-## Local entrypoint
+Use `op --direct run` only under the workload's existing authority. Keep
+`OP_CONNECT_*` out of the launch environment.
 
-Verify that `/usr/bin/python3` is available. Resolve the installed native CLI
-before changing `PATH`. Place the reviewed
-`enforcement/op_runtime.py` at `op` in the operator's managed bin directory,
-with executable permissions. Bind `CAK_OP_NATIVE` to the absolute native CLI
-path and put the managed directory first in the local task's login and non-login
-`PATH`. Supply the two Connect bindings through the approved local session
-channel. If the enrolled session lacks the reader binding, use the already
-authorized native desktop session to read the existing reader once via
-`op --direct read --no-newline` into the bounded session's protected
-environment. Confirm the vault and field through the owning Connect contract.
-Keep the value out of terminal output and startup files. A missing or denied
-Connect read never starts this bootstrap.
+## Enrollment
+
+Bind the approved lowercase HTTPS origin on port 443 as `CAK_CONNECT_HOST`.
+Omit the port and path from the URL. Deliver the existing reader through
+`CAK_CONNECT_TOKEN` using the approved
+[Connect custody and recovery route](https://github.com/ctrl-alt-keith/lke-image-lab/blob/main/docs/connect.md#independent-bootstrap-and-recovery).
+
+For local enrollment, require `/usr/bin/python3`. Resolve the native CLI
+before changing `PATH` and set `CAK_OP_NATIVE` to its absolute path. Install
+the reviewed `enforcement/op_runtime.py` as executable `op` in the managed
+bin directory. Put that directory first in the task's login and non-login
+`PATH`.
+
+If an enrolled local session lacks the reader binding, load the existing
+reader once into the bounded task environment with
+`op --direct read --no-newline` in the authorized native desktop session.
+Complete bootstrap before attempting a Connect read. Keep the reader out of
+output and startup files.
 
 Before selecting the default for real tasks, verify executable resolution, the
 private Connect state directory and the approved Connect and explicit direct

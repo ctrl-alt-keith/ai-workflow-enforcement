@@ -11,145 +11,74 @@ The source commit does not identify a saved or published environment version.
 
 ## Runtime credential binding
 
-`OP_SERVICE_ACCOUNT_TOKEN` is a required runtime environment variable for the
-`secrets-lifecycle` [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
+Use the [managed CLI routing and enrollment contract](../../docs/op-routing.md)
+for agent commands and Connect bindings.
+
+Keep the required `OP_SERVICE_ACCOUNT_TOKEN` runtime binding for
+`secrets-lifecycle`'s [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
 [commit signing](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-git-signing.md),
 and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
-helpers. The installer and task-start refresh do not require it.
+helpers. In Setup, select a reviewed `/workspace/secrets-lifecycle` checkout
+containing the broker compatibility probe. Require the probe to pass before
+replacing the managed entrypoint.
 
-The saved-environment owner applies the
-[Connect-first routing contract](../../docs/op-routing.md) before publishing.
-The installer runs the selected `secrets-lifecycle` checkout's credential-free
-probe of its PAT, signing and review broker callers before replacing the
-default entrypoint. Select a checkout containing the compatible callers and
-probe. Record the checked commit and result. Account-pinned target readers
-keep the native route. Launch other approved bootstrap and recovery
-workflows with the explicit direct path for their bounded session.
-
-The reviewed `secrets-lifecycle` helpers can also accept
+If authorized, bind the optional mirrors documented by those helper owners:
 `CAK_CLOUD_GITHUB_PAT`, `CAK_CLOUD_SIGNING_KEY`, and
-`CAK_CLOUD_CLAUDE_OAUTH_TOKEN`. None is provisioned by this source. Each is a
-separate, owner-managed copy of an authoritative 1Password field, injected as
-a direct environment variable and available to task processes. To stage the
-PAT and Claude copies, prompt the saved editor to create empty entries for
-`CAK_CLOUD_GITHUB_PAT` and `CAK_CLOUD_CLAUDE_OAUTH_TOKEN`. The owner
-fills them from the helpers' authoritative 1Password fields before publishing.
-The helpers own those field references; this source does not sync values.
-Absent bindings use 1Password; empty or malformed present bindings stop the
-helper, so do not publish incomplete entries. On rotation, update the
-1Password field and saved copy, republish, then verify in a fresh task before
-retiring the old credential.
-Add other copies only when measured usage justifies the wider exposure. The
-hosted GitHub App key stays outside this set. Keep values out of Git, saved
-source, output, and logs.
+`CAK_CLOUD_CLAUDE_OAUTH_TOKEN`. Fill each selected binding from its owning
+field before publication. Omit unused bindings. Approve each additional
+mirror's exposure to task processes and exclude the hosted GitHub App key.
+Verify a rotated mirror in a fresh task before retiring its predecessor.
 
 ## Apply and verify
 
-During [environment onboarding](https://learn.chatgpt.com/docs/environments/cloud-environments#create-and-publish-an-environment),
-commands executed in the setup session prepare the filesystem that publication
-snapshots for later tasks.
+The saved-environment owner performs the following checks before
+[publishing](https://learn.chatgpt.com/docs/environments/cloud-environments#create-and-publish-an-environment).
 
-1. Run `make check` and ShellCheck. In the saved editor, compare the complete
-   installer and workspace AGENTS bytes with the build commit selected below. Read back the
-   selected repositories and refs, then compare network mode, preset, and
-   custom domains with that commit's `configuration.json`. Read back the broker runtime
-   binding's name, required status, and injection type; record any nonsecret
-   provider source reference. Compare the configured Connect origin to its
-   approved value. Record the origin's source reference and the reader binding
-   name, source and injection type without the token value.
-   Record selected optional binding names and
-   injection types, or none, without values. Identify whether the saved selection
-   tracks `main` or deliberately pins an explicitly reviewed full commit.
-   Default to main-tracking unless an owner explicitly authorizes a reviewed pin.
-   Verify editor behavior rather than inferring the mode from the restored catalog.
-   Stop if a required setting cannot be read back or differs; the binding's
-   provider source reference may be recorded as `unknown` if not exposed.
-   Runtime status and editor-local prompt previews do not establish saved
-   editor state. Never record credential values or hashes.
-2. Apply [build source authority](#build-source-authority) before building and
-   again immediately before publication. Require the source files at the verified
-   build commit; record it as `source_commit` and compare their
-   hashes with the saved editor readback. A pre-merge PR head is a review
-   identity, not the post-squash source commit.
-   Through the supported setup-session filesystem execution interface, install
-   the complete `workspace-AGENTS.md` from `source_commit` at
-   `/workspace/AGENTS.md`, preserving appropriate ownership and permissions
-   so the task agent can read it. The saved `start_skill` field is a separate
-   agent-instruction surface: saving it does not establish that
-   `/workspace/AGENTS.md` changed.
-   Verify both independently; record the `start_skill` readback against the
-   intended text specified by the owning environment setup task, including a
-   reference to that exact text, separately from the workspace file's editor hash.
-   Complete the build with the supported interface. Read exact snapshot pins
-   from `/workspace/.onboarding-tools/repositories.json`; stop if it is absent
-   or mismatches the editor-selected set. After the final setup or build
-   filesystem change, immediately before publication, read the installed file
-   back and verify exact byte equality with `workspace-AGENTS.md` at
-   `source_commit`; record its SHA-256 separately from the editor readback hashes.
-   Compare both installed op entrypoints to `enforcement/op_runtime.py` at the
-   same source commit.
-   Stop on mismatch. Publish with the supported interface. Publication alone
-   does not prove correct file restoration or that future tasks received and
-   followed their injected instructions. Store one record per published version
-   outside this source tree, using this shape:
+1. Run `make check` and ShellCheck. Read back the saved editor's complete
+   installer and workspace instructions and compare them to the build source.
+   Verify the selected repositories, refs and selection mode in the editor.
+   Use main-tracking unless the owner approves an exact reviewed pin.
+   Compare network mode, preset and domains to `configuration.json`.
+   Verify the broker binding's name, required status and injection type, the
+   approved Connect origin and reader, and any selected mirror bindings.
+   Use saved-editor readback for saved settings. Stop on mismatch or missing
+   required readback. A binding's source reference may be unknown if the
+   editor omits it.
+2. Apply [build source authority](#build-source-authority) before Setup and
+   again immediately before publication. Use the supported Setup filesystem
+   interface to install `workspace-AGENTS.md` from `source_commit` at
+   `/workspace/AGENTS.md` with readable ownership and permissions.
+   Verify the saved `start_skill` separately against the owning
+   setup task's exact instruction text. After the last Setup change, require
+   the generated catalog to match the editor-selected repositories and refs.
+   Compare the installed workspace instructions and both managed `op`
+   entrypoints byte-for-byte to their files at `source_commit`. Stop on
+   mismatch.
 
-   ```json
-   {
-     "source_commit": "<full Git SHA>",
-     "selection_mode": "<main or pinned>",
-     "procedure_commit": "<exact reviewed procedure commit>",
-     "main_review": {
-       "commit": "<freshly observed main SHA>",
-       "disposition_reference": "<review of build-input and safeguard differences, or none>"
-     },
-     "source_file_sha256": {
-       "install.sh": "<SHA-256>",
-       "workspace-AGENTS.md": "<SHA-256>",
-       "configuration.json": "<SHA-256>"
-     },
-     "editor_readback": {
-       "installer_sha256": "<SHA-256>",
-       "workspace_agents_sha256": "<SHA-256>",
-       "start_skill_source_reference": "<setup task reference to exact intended text>",
-       "start_skill_readback": "<comparison evidence for intended startup guidance>",
-       "repository_selection": "<comparison evidence>",
-       "http_network_policy": "<comparison evidence>",
-       "required_runtime_binding": {
-         "name": "OP_SERVICE_ACCOUNT_TOKEN",
-         "required": true,
-         "injection_type": "<saved editor readback>",
-         "provider_source_reference": "<nonsecret editor readback or unknown>"
-       },
-       "connect_runtime_bindings": {
-         "CAK_CONNECT_HOST": "<approved HTTPS origin source reference>",
-         "CAK_CONNECT_TOKEN": "<reader source reference and injection type>"
-       },
-       "cloud_op_compatibility": {
-         "secrets_lifecycle_commit": "<full Git SHA>",
-         "offline_probe": "<successful setup result>"
-       },
-       "optional_runtime_bindings": []
-     },
-     "installed_workspace_agents_sha256": "<SHA-256>",
-     "selected_repository_pins": [{"name": "<owner/repo>", "commit": "<SHA>"}],
-     "resolved_tool_versions": {"<tool>": "<version>"},
-     "saved_config_id": "<provider ID>",
-     "published_version_id": "<provider ID>"
-   }
-   ```
+Keep a private record per published version containing:
 
-3. In a separately authorized fresh-task qualification from that exact published
-   version, verify restored files. Require `/workspace/AGENTS.md` to be readable
-   by the task agent and its SHA-256 to match `installed_workspace_agents_sha256`.
-   Verify network status, tool versions and paths in login and non-login shells,
-   private `op` config and both approved CLI routes, repository availability,
-   and workspace AGENTS delivery and normal startup behavior, including
-   injected instructions.
-   Run the task-start refresh once and record its result separately,
-   including fetched-main alignment and actual advancement when applicable.
-   Verify one approved read through the installed default Connect entrypoint
-   and one through the installed direct entrypoint.
-   Catalog pins are the startup floor; refresh targets fetched `main`.
+- Saved configuration ID and published version ID.
+- Build source, selection mode, procedure commit, and observed main with any
+  safeguard-disposition reference.
+- Source hashes for `install.sh`, `workspace-AGENTS.md`, and
+  `configuration.json`. Separately record editor installer and instruction
+  hashes, the intended `start_skill` reference and matching readback, and the
+  installed workspace instructions hash.
+- Editor repository and network readbacks, exact generated catalog pins,
+  broker compatibility checkout and probe result, and resolved tool versions.
+- Verified binding names, required status and injection types as applicable,
+  with the approved Connect origin reference and matching editor readback.
+  Record nonsecret binding source references when available. Keep credential
+  values and hashes out of the record, source, output and logs.
+
+In a separately authorized task restored from that exact published version,
+verify workspace instruction readability and the recorded installed hash.
+Verify login and non-login tool resolution, private `op` state, network,
+repositories, and delivery of the intended startup instructions. Follow
+[task startup](workspace-AGENTS.md) and record the refresh result separately
+from restored catalog pins, including fetched-main alignment and advancement
+when applicable. Verify one approved read through each installed CLI
+entrypoint.
 
 ## Build source authority
 
@@ -252,10 +181,8 @@ the exported procedure's commit. Do not run the installer from the export in
 place of the pinned installer. Retain the procedure identity and source review
 with the publication record; dispose only of the owned private export afterward.
 
-The installer-generated `op` launcher, executor PATH settings, runtime
-credential bindings, and authenticated state are not source files. Rebuilding
-an old source commit resolves then-current stable packages; exact replay needs
-prior package versions and integrity inputs plus fresh-runtime verification.
+Exact build replay requires the prior package versions, integrity inputs and
+fresh-runtime verification.
 AWS CLI v2 downloads from `awscli.amazonaws.com`; its archive signature must
 verify against the pinned AWS CLI Team key before extraction. A missing managed
 `aws` executable triggers a clean reinstall of its managed directory.
