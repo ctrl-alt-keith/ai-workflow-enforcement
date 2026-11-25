@@ -12,10 +12,20 @@ The source commit does not identify a saved or published environment version.
 ## Runtime credential binding
 
 Use the [managed CLI routing and enrollment contract](../../docs/op-routing.md)
-for agent commands and Connect bindings.
+for agent commands and origin requirements.
+Configure both required Connect bindings under the saved editor's
+[Environment variables](https://learn.chatgpt.com/docs/environments/cloud-environments#configure-environment-variables-and-network-secrets).
 
-Keep the required `OP_SERVICE_ACCOUNT_TOKEN` runtime binding for
-`secrets-lifecycle`'s [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
+- `CAK_CONNECT_HOST` is a required direct environment variable for the approved
+  HTTPS origin.
+- `CAK_CONNECT_TOKEN` is a required vault-backed direct environment variable for
+  the existing approved reader. Verify the binding's source against the
+  [Connect reader custody contract](https://github.com/ctrl-alt-keith/lke-image-lab/blob/main/docs/connect.md#reusable-vault-and-reader)
+  and reuse the existing binding when it matches. If the editor omits the
+  reader source, verify it through the custody owner before reuse.
+
+Keep the required `OP_SERVICE_ACCOUNT_TOKEN` runtime binding for the explicit
+broker route used by `secrets-lifecycle`'s [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
 [commit signing](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-git-signing.md),
 and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
 helpers. In Setup, select a reviewed `/workspace/secrets-lifecycle` checkout
@@ -40,9 +50,9 @@ The saved-environment owner performs the following checks before
    Verify the selected repositories, refs and selection mode in the editor.
    Use main-tracking unless the owner approves an exact reviewed pin.
    Compare network mode, preset and domains to `configuration.json`.
-   Verify the required `OP_SERVICE_ACCOUNT_TOKEN` binding's name, status and
-   injection type, the approved Connect origin and reader, and any selected
-   mirror bindings.
+   Verify the names, required status, and injection types of the
+   [required runtime bindings](#runtime-credential-binding), the approved
+   Connect origin and reader source, and any selected mirror bindings.
    Use saved-editor readback for saved settings. Stop on mismatch or missing
    required readback. A binding's source reference may be unknown if the
    editor omits it.
