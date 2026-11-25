@@ -17,16 +17,13 @@ The source commit does not identify a saved or published environment version.
 and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
 helpers. The installer and task-start refresh do not require it.
 
-The installed `op` entrypoint uses the shared
-[Connect-first routing contract](../../docs/op-routing.md). Set
-`CAK_CONNECT_HOST` to the approved HTTPS origin and inject the existing
-`CAK_CONNECT_TOKEN` as a protected runtime binding. The wrapper selects the
-published TCP proxy for Connect calls only. Keep the independent broker
-binding for explicit direct operations. Select the direct path for existing
-bootstrap and recovery helpers that intentionally isolate their child
-environment before publishing this runtime. Qualify the broker branches of
-the PAT, signing and review helpers with the direct entrypoint. Qualify
-account-pinned recovery callers through the same path.
+The saved-environment owner applies the
+[Connect-first routing contract](../../docs/op-routing.md) before publishing.
+The owner qualifies the intended direct entrypoint for each used PAT, signing,
+review, bootstrap and account-pinned recovery helper that isolates its child
+environment. Record the helper commit and selected entrypoint without
+credential values. Stop publication if a required direct caller resolves the
+default `op` entrypoint.
 
 The reviewed `secrets-lifecycle` helpers can also accept
 `CAK_CLOUD_GITHUB_PAT`, `CAK_CLOUD_SIGNING_KEY`, and
@@ -56,8 +53,9 @@ snapshots for later tasks.
    selected repositories and refs, then compare network mode, preset, and
    custom domains with that commit's `configuration.json`. Read back the broker runtime
    binding's name, required status, and injection type; record any nonsecret
-   provider source reference. Read back the approved Connect HTTPS origin and
-   the reader binding's name, source and injection type without its value.
+   provider source reference. Compare the configured Connect origin to its
+   approved value. Record the origin's source reference and the reader binding
+   name, source and injection type without the token value.
    Record selected optional binding names and
    injection types, or none, without values. Identify whether the saved selection
    tracks `main` or deliberately pins an explicitly reviewed full commit.
@@ -125,6 +123,11 @@ snapshots for later tasks.
          "CAK_CONNECT_HOST": "<approved HTTPS origin source reference>",
          "CAK_CONNECT_TOKEN": "<reader source reference and injection type>"
        },
+       "direct_callers": [{
+         "caller": "<helper>",
+         "source_commit": "<full Git SHA>",
+         "entrypoint": "<verified direct path>"
+       }],
        "optional_runtime_bindings": []
      },
      "installed_workspace_agents_sha256": "<SHA-256>",
@@ -144,7 +147,9 @@ snapshots for later tasks.
    injected instructions.
    Run the task-start refresh once and record its result separately,
    including fetched-main alignment and actual advancement when applicable.
-   Verify selected binding readiness and helper operation.
+   Verify one approved read through the installed default Connect entrypoint
+   and one through the installed direct entrypoint. Verify the qualified direct
+   helpers still select their intended entrypoint.
    Catalog pins are the startup floor; refresh targets fetched `main`.
 
 ## Build source authority

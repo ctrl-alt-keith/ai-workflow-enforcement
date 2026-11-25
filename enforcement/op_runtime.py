@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Select Connect or the native 1Password account before invoking the CLI."""
 
 import json
@@ -10,7 +10,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 
-CLOUD_TOOLS = Path("/workspace/.onboarding-tools")
+CLOUD_TOOLS = Path("/workspace/.onboarding-tools").resolve()
 NETWORK_POLICY = Path("/etc/codex/network-policy.json")
 TCP_PROXY = "http://proxy:8088"
 

@@ -32,6 +32,7 @@ class OpRuntimeTests(unittest.TestCase):
             "OP_ACCOUNT": "example",
             "HTTPS_PROXY": "http://proxy:8080",
             "NO_PROXY": "connect.example.invalid",
+            "no_proxy": "connect.example.invalid",
         }
         self.policy = self.root / "network.json"
         self.policy.write_text(json.dumps({
@@ -62,6 +63,7 @@ class OpRuntimeTests(unittest.TestCase):
                         self.assertEqual(native, self.tools / "sysroot/usr/bin/op")
                         self.assertEqual(env["HTTPS_PROXY"], "http://proxy:8088")
                         self.assertNotIn("NO_PROXY", env)
+                        self.assertNotIn("no_proxy", env)
                     else:
                         self.assertEqual(native, self.native)
                         self.assertEqual(env["HTTPS_PROXY"], self.env["HTTPS_PROXY"])
@@ -74,6 +76,8 @@ class OpRuntimeTests(unittest.TestCase):
             self.prepare(["read", "fixture"], env=dict(self.env, CAK_CONNECT_HOST="http://fixture.example"))
         with self.assertRaisesRegex(op_runtime.RoutingError, "differs from policy"):
             self.prepare(["read", "fixture"], entrypoint=self.cloud, env=dict(self.env, HTTPS_PROXY=""))
+        with self.assertRaisesRegex(op_runtime.RoutingError, "only accepts direct"):
+            self.prepare(["read", "fixture"], env=dict(self.env, CAK_OP_ROUTE="fallback"))
 
     def test_explicit_direct_preserves_native_account_and_drops_connect(self):
         for entrypoint, argv, route in (
@@ -121,3 +125,30 @@ class OpRuntimeTests(unittest.TestCase):
         directory.symlink_to(self.root)
         with self.assertRaises(OSError):
             self.prepare(["read", "fixture"])
+        (self.root / "1password-cli").symlink_to(self.root)
+        with self.assertRaises(OSError):
+            self.prepare(["--direct", "whoami"], entrypoint=self.cloud)
+
+    def test_cloud_direct_entrypoint_survives_filtered_child_environment(self):
+        entrypoint = self.tools / "direct/bin/op"
+        entrypoint.parent.mkdir(parents=True)
+        source = Path(op_runtime.__file__).read_text()
+        # Rebase only the installed paths so the executable never uses task state.
+        source = source.replace('Path("/workspace/.onboarding-tools")', f"Path({str(self.tools)!r})")
+        source = source.replace('Path("/tmp") if cloud', f"Path({str(self.root)!r}) if cloud")
+        entrypoint.write_text(source)
+        entrypoint.chmod(0o755)
+        native = self.tools / "sysroot/usr/bin/op"
+        native.parent.mkdir(parents=True)
+        native.write_text(
+            "#!/bin/sh\n"
+            'test "$1" = "whoami" && test -n "$OP_SERVICE_ACCOUNT_TOKEN" || exit 99\n'
+            'test -z "$OP_CONNECT_TOKEN" && test -d "$OP_CONFIG_DIR" || exit 98\n'
+            'echo direct\n')
+        native.chmod(0o755)
+        result = subprocess.run(["op", "whoami"], env={
+            "PATH": str(entrypoint.parent), "HOME": str(self.root),
+            "OP_SERVICE_ACCOUNT_TOKEN": "synthetic-direct-token",
+        }, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "direct\n")
