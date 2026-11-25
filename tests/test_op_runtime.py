@@ -98,10 +98,32 @@ class OpRuntimeTests(unittest.TestCase):
     def test_unsupported_or_account_bound_commands_are_explicit(self):
         for args in (["whoami"], ["item", "list"], ["item", "get", "fixture"],
                      ["document", "get", "fixture"], ["run", "--", "program"],
-                     ["read", "fixture", "--account=other"], ["read", "fixture", "--session", "fixture"],
+                     ["read", "fixture", "--account="], ["read", "fixture", "--session", "fixture"],
+                     ["item", "edit", "fixture", "--account=other"],
+                     ["run", "--", "program", "--account=other"],
                      ["inject", "--config", "fixture"]):
             with self.subTest(args=args), self.assertRaisesRegex(op_runtime.RoutingError, "--direct"):
                 self.prepare(args)
+
+    def test_explicit_account_pins_use_native_with_filtered_environment(self):
+        env = {"OP_SERVICE_ACCOUNT_TOKEN": "fixture-broker", "PATH": "/usr/bin:/bin"}
+        for args in (
+            ["whoami", "--account", "fixture", "--format=json"],
+            ["item", "get", "fixture-item", "--vault", "fixture-vault",
+             "--account", "fixture", "--format=json"],
+            ["read", "--no-newline", "--account", "fixture", "op://fixture/item/field"],
+            ["--account=fixture", "read", "op://fixture/item/field"],
+        ):
+            with self.subTest(args=args):
+                _, selected_args, child = self.prepare(args, env=env, entrypoint=self.cloud)
+                self.assertEqual(selected_args, args)
+                self.assertEqual(child["OP_SERVICE_ACCOUNT_TOKEN"], "fixture-broker")
+                self.assertNotIn("OP_CONNECT_TOKEN", child)
+
+    def test_subcommand_help_does_not_require_bindings(self):
+        _, args, child = self.prepare(["read", "--help"], env={"CAK_OP_NATIVE": str(self.native)})
+        self.assertEqual(args, ["read", "--help"])
+        self.assertNotIn("OP_CONNECT_TOKEN", child)
 
     def test_local_executable_propagates_native_connection_failure_without_retry(self):
         shutil.copyfile(op_runtime.__file__, self.local)

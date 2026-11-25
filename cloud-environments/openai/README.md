@@ -19,11 +19,12 @@ helpers. The installer and task-start refresh do not require it.
 
 The saved-environment owner applies the
 [Connect-first routing contract](../../docs/op-routing.md) before publishing.
-The owner qualifies the intended direct entrypoint for each used PAT, signing,
-review, bootstrap and account-pinned recovery helper that isolates its child
-environment. Record the helper commit and selected entrypoint without
-credential values. Stop publication if a required direct caller resolves the
-default `op` entrypoint.
+The installer runs the selected `secrets-lifecycle` checkout's credential-free
+probe of its PAT, signing and review broker callers before replacing the
+default entrypoint. Select a checkout containing the compatible callers and
+probe. Record the checked commit and result. Account-pinned target readers
+keep the native route. Launch other approved bootstrap and recovery
+workflows with the explicit direct path for their bounded session.
 
 The reviewed `secrets-lifecycle` helpers can also accept
 `CAK_CLOUD_GITHUB_PAT`, `CAK_CLOUD_SIGNING_KEY`, and
@@ -123,11 +124,10 @@ snapshots for later tasks.
          "CAK_CONNECT_HOST": "<approved HTTPS origin source reference>",
          "CAK_CONNECT_TOKEN": "<reader source reference and injection type>"
        },
-       "direct_callers": [{
-         "caller": "<helper>",
-         "source_commit": "<full Git SHA>",
-         "entrypoint": "<verified direct path>"
-       }],
+       "cloud_op_compatibility": {
+         "secrets_lifecycle_commit": "<full Git SHA>",
+         "offline_probe": "<successful setup result>"
+       },
        "optional_runtime_bindings": []
      },
      "installed_workspace_agents_sha256": "<SHA-256>",
@@ -148,8 +148,7 @@ snapshots for later tasks.
    Run the task-start refresh once and record its result separately,
    including fetched-main alignment and actual advancement when applicable.
    Verify one approved read through the installed default Connect entrypoint
-   and one through the installed direct entrypoint. Verify the qualified direct
-   helpers still select their intended entrypoint.
+   and one through the installed direct entrypoint.
    Catalog pins are the startup floor; refresh targets fetched `main`.
 
 ## Build source authority

@@ -157,8 +157,15 @@ rm -r "$op_download_dir"
 python3 - <<'OP_WRAPPER_SETUP'
 from pathlib import Path
 from shutil import copyfile
+import subprocess
 tools = Path('/workspace/.onboarding-tools')
 source = Path('/workspace/ai-workflow-enforcement/enforcement/op_runtime.py')
+probe = Path('/workspace/secrets-lifecycle/scripts/check_cloud_op_compat.py')
+if not probe.is_file():
+    raise SystemExit('Cloud op startup requires the compatible secrets-lifecycle checkout')
+if subprocess.run(['/usr/bin/python3', '-I', str(probe), str(source)],
+                  env={'PATH': '/usr/bin:/bin'}, check=False).returncode:
+    raise SystemExit('Cloud op startup stopped before changing the default entrypoint')
 link = tools / 'bin/op'
 if link.is_symlink():
     if str(link.readlink()) not in ('../sysroot/usr/bin/op', '../op-runtime.py'):

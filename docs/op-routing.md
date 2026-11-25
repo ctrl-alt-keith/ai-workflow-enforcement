@@ -9,6 +9,9 @@ See [1Password's supported Connect commands](https://www.1password.dev/connect/c
 
 Select `op --direct ...` for authorized bootstrap, account selection,
 account metadata, recovery, and unsupported native commands.
+`whoami`, `read`, and `item get` with an explicit `--account` use the pinned
+native identity. Use that form only when the workflow requires the original
+account. Unpinned routine reads use Connect.
 `CAK_OP_ROUTE=direct` selects the same route for a bounded caller that
 retains it. For Cloud callers with filtered child environments, prepend
 `/workspace/.onboarding-tools/direct/bin` to the caller's `PATH` or configure
@@ -28,7 +31,12 @@ before changing `PATH`. Place the reviewed
 with executable permissions. Bind `CAK_OP_NATIVE` to the absolute native CLI
 path and put the managed directory first in the local task's login and non-login
 `PATH`. Supply the two Connect bindings through the approved local session
-channel.
+channel. If the enrolled session lacks the reader binding, use the already
+authorized native desktop session to read the existing reader once via
+`op --direct read --no-newline` into the bounded session's protected
+environment. Confirm the vault and field through the owning Connect contract.
+Keep the value out of terminal output and startup files. A missing or denied
+Connect read never starts this bootstrap.
 
 Before selecting the default for real tasks, verify executable resolution, the
 private Connect state directory and the approved Connect and explicit direct

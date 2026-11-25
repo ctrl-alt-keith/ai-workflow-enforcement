@@ -56,15 +56,29 @@ def connect_binding(env):
     return host, token
 
 
-def routine_read(args, env):
+def account_pinned_read(options):
+    for index, arg in enumerate(options):
+        flag, separator, value = arg.partition("=")
+        if flag != "--account":
+            continue
+        width = 1 if separator else 2
+        if width == 2:
+            value = options[index + 1] if index + 1 < len(options) else ""
+        if not value.strip() or value.startswith("-"):
+            return False
+        command = options[:index] + options[index + width:]
+        return command[:1] in (["read"], ["whoami"]) or command[:2] == ["item", "get"]
+    return False
+
+
+def routine_read(options, env):
     # Account and configuration flags select native identity or state.
-    options = args[:args.index("--")] if "--" in args else args
     if any(arg.split("=", 1)[0] in ("--account", "--session", "--config", "--debug")
            for arg in options):
         return False
-    if args[:1] in (["read"], ["inject"]):
+    if options[:1] in (["read"], ["inject"]):
         return True
-    if args[:2] == ["item", "get"]:
+    if options[:2] == ["item", "get"]:
         output_format = env.get("OP_FORMAT")
         for index, arg in enumerate(options):
             if arg.startswith("--format="):
@@ -96,11 +110,13 @@ def prepare(args, source_env, *, entrypoint, cloud_tools=CLOUD_TOOLS, policy_pat
     if entrypoint == cloud_tools / "direct/bin/op":
         route = "direct"
 
+    options = args[:args.index("--")] if "--" in args else args
     host, token = "", ""
     info = not args or args[0] in ("-h", "--help", "help", "-v", "--version")
-    use_connect = not info and route != "direct"
+    info = info or any(option in ("-h", "--help") for option in options)
+    use_connect = not info and route != "direct" and not account_pinned_read(options)
     if use_connect:
-        if not routine_read(args, env):
+        if not routine_read(options, env):
             raise RoutingError("use 'op --direct' for account-bound or unsupported commands")
         host, token = connect_binding(env)
     for name in ("OP_CONNECT_HOST", "OP_CONNECT_TOKEN", "CAK_CONNECT_HOST", "CAK_CONNECT_TOKEN"):
