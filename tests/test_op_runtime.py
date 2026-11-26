@@ -1,5 +1,6 @@
 """Exercise both managed CLI startup profiles without contacting 1Password."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -187,6 +188,7 @@ class OpRuntimeTests(unittest.TestCase):
         self.assertNotEqual(stale_broker.returncode, 0)
         self.assertIn("task-start repository refresh", stale_broker.stderr)
         (self.tools / "repositories.json").write_text("synthetic catalog")
+        (self.tools / "cloud-build.json").write_text('{"status":"aligned","selection_mode":"main","build_mode":"main"}')
         with patch.object(cloud_task_start.subprocess, "run", side_effect=[
             subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0),
         ]) as refresh:
@@ -198,3 +200,64 @@ class OpRuntimeTests(unittest.TestCase):
         result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "direct\n")
+
+    def test_branch_startup_checks_restored_catalog_and_refreshed_broker(self):
+        self.tools.mkdir()
+        catalog = b"fixture restoration baseline\n"
+        (self.tools / "repositories.json").write_bytes(catalog)
+        record_file = self.tools / "cloud-build.json"
+        with patch.object(cloud_task_start.subprocess, "run") as run:
+            with self.assertRaisesRegex(ValueError, "build evidence is missing or invalid"):
+                cloud_task_start.refresh(self.root, self.tools)
+            record_file.write_text("malformed")
+            with self.assertRaisesRegex(ValueError, "build evidence is missing or invalid"):
+                cloud_task_start.refresh(self.root, self.tools)
+            record_file.write_text('{"status":"aligned","selection_mode":"main","build_mode":"bad"}')
+            with self.assertRaisesRegex(ValueError, "unknown build mode"):
+                cloud_task_start.refresh(self.root, self.tools)
+            run.assert_not_called()
+        direct = self.tools / "direct/bin/op"
+        direct.parent.mkdir(parents=True)
+        router = b"fixture branch router\n"
+        launcher = b"fixture branch launcher\n"
+        self.cloud.write_bytes(router)
+        direct.write_bytes(router)
+        (self.tools / "cloud-task-start.py").write_bytes(launcher)
+        record_file.write_text(json.dumps({
+            "status": "aligned", "selection_mode": "main", "build_mode": "branch",
+            "catalog_sha256": hashlib.sha256(catalog).hexdigest(),
+            "artifact_sha256": {"op-runtime.py": hashlib.sha256(router).hexdigest(),
+                                "cloud-task-start.py": hashlib.sha256(launcher).hexdigest()},
+        }))
+        with patch.object(cloud_task_start.subprocess, "run") as run:
+            (self.tools / "repositories.json").write_bytes(b"different catalog\n")
+            with self.assertRaisesRegex(ValueError, "restored catalog differs"):
+                cloud_task_start.refresh(self.root, self.tools)
+            run.assert_not_called()
+        (self.tools / "repositories.json").write_bytes(catalog)
+
+        probe_ok = False
+        def child(argv, *, env, check):
+            if "enforcement.safe_refresh_repos" in argv:
+                return subprocess.CompletedProcess(argv, 0)
+            self.assertEqual(Path(argv[-2]), self.root / "secrets-lifecycle/scripts/check_cloud_op_compat.py")
+            self.assertEqual(Path(argv[-1]).read_bytes(), router)
+            self.assertEqual(env, {"PATH": "/usr/bin:/bin"})
+            self.assertFalse((self.tools / "task-start.ready").exists())
+            return subprocess.CompletedProcess(argv, 0 if probe_ok else 1)
+
+        with patch.object(cloud_task_start.subprocess, "run", side_effect=child):
+            direct.write_bytes(b"different router\n")
+            with self.assertRaisesRegex(ValueError, "entrypoints differ"):
+                cloud_task_start.refresh(self.root, self.tools)
+            direct.write_bytes(router)
+            (self.tools / "cloud-task-start.py").write_bytes(b"different launcher\n")
+            with self.assertRaisesRegex(ValueError, "differ from the reviewed build evidence"):
+                cloud_task_start.refresh(self.root, self.tools)
+            (self.tools / "cloud-task-start.py").write_bytes(launcher)
+            with self.assertRaisesRegex(ValueError, "incompatible with the refreshed broker"):
+                cloud_task_start.refresh(self.root, self.tools)
+            self.assertFalse((self.tools / "task-start.ready").exists())
+            probe_ok = True
+            self.assertEqual(cloud_task_start.refresh(self.root, self.tools), 0)
+        self.assertEqual((self.tools / "task-start.ready").read_bytes(), b"ready\n")

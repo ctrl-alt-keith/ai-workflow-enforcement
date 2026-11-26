@@ -5,16 +5,46 @@ if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
   exit 1
 fi
 TOOLS=/workspace/.onboarding-tools
+ENFORCEMENT=/workspace/ai-workflow-enforcement
+branch_options=()
+branch_inputs=
+if [[ $# -ne 0 ]]; then
+  if [[ $# -ne 4 || $1 != --build-branch || $3 != --reviewed-branch-tip ]]; then
+    echo "Use no arguments for main, or --build-branch NAME --reviewed-branch-tip COMMIT" >&2
+    exit 1
+  fi
+  branch_options=("$@")
+fi
 if [[ -e "$TOOLS/task-start.ready" || -L "$TOOLS/task-start.ready" ]]; then
   echo "Cloud Setup requires a workspace without a task-start receipt" >&2
   exit 1
 fi
+build_record="$TOOLS/cloud-build.json"
+if [[ -L "$build_record" || ( -e "$build_record" && ! -f "$build_record" ) ]]; then
+  echo "Refusing to replace an unrelated Cloud build record" >&2
+  exit 1
+fi
 check_build_sources() {
-  PYTHONPATH=/workspace/ai-workflow-enforcement /usr/bin/python3 -P -B -m enforcement.cloud_setup_source \
-    --selection-mode main --catalog "$TOOLS/repositories.json" --workspace-root /workspace
+  PYTHONPATH="$ENFORCEMENT" /usr/bin/python3 -P -B -m enforcement.cloud_setup_source \
+    --selection-mode main --catalog "$TOOLS/repositories.json" --workspace-root /workspace "${branch_options[@]}"
 }
 build_sources=$(check_build_sources) || { printf '%s\n' "$build_sources" >&2; exit 1; }
 printf '%s\n' "$build_sources"
+if [[ ${#branch_options[@]} -ne 0 ]]; then
+  branch_commit=$4
+  if [[ ! -f ${BASH_SOURCE[0]:-} ]] ||
+      ! git --no-replace-objects -C "$ENFORCEMENT" show "$branch_commit:cloud-environments/openai/install.sh" |
+      cmp -s -- "${BASH_SOURCE[0]}" -; then
+    echo "Executing installer differs from the reviewed hosted branch" >&2
+    exit 1
+  fi
+  branch_inputs=$(mktemp -d)
+  trap 'rm -f -- "$branch_inputs/op_runtime.py" "$branch_inputs/cloud_task_start.py"; rmdir -- "$branch_inputs"' EXIT
+  for input in op_runtime.py cloud_task_start.py; do
+    git --no-replace-objects -C "$ENFORCEMENT" show "$branch_commit:enforcement/$input" > "$branch_inputs/$input"
+  done
+fi
+rm -f -- "$build_record"
 export PIP_CACHE_DIR=/tmp/onboarding-pip-cache
 export UV_CACHE_DIR=/tmp/onboarding-uv-cache
 export npm_config_cache=/tmp/onboarding-npm-cache
@@ -166,12 +196,15 @@ if [[ "$current_sources" != "$build_sources" ]]; then
   exit 1
 fi
 # Install the same CLI router used by the local entrypoint.
-python3 - <<'OP_WRAPPER_SETUP'
+CAK_SETUP_BRANCH_INPUTS="$branch_inputs" python3 - <<'OP_WRAPPER_SETUP'
+import os
 from pathlib import Path
 from shutil import copyfile
 import subprocess
 tools = Path('/workspace/.onboarding-tools')
 source = Path('/workspace/ai-workflow-enforcement/enforcement/op_runtime.py')
+if branch_inputs := os.environ.get('CAK_SETUP_BRANCH_INPUTS'):
+    source = Path(branch_inputs) / source.name
 startup_source = source.with_name('cloud_task_start.py')
 startup_launcher = tools / 'cloud-task-start.py'
 if startup_launcher.is_symlink() or (startup_launcher.exists() and not startup_launcher.is_file()):
@@ -188,14 +221,15 @@ if link.is_symlink():
         raise SystemExit('Refusing to replace an unrelated op entrypoint')
 elif link.exists():
     raise SystemExit('Refusing to replace an unrelated op entrypoint')
-for runtime in (tools / 'op-runtime.py', tools / 'direct/bin/op'):
-    if runtime.is_symlink():
-        raise SystemExit('Refusing to replace an unrelated op runtime')
+runtimes = (tools / 'op-runtime.py', tools / 'direct/bin/op')
+if any(runtime.is_symlink() or (runtime.exists() and not runtime.is_file()) for runtime in runtimes):
+    raise SystemExit('Refusing to replace an unrelated op runtime')
+copyfile(startup_source, startup_launcher)
+startup_launcher.chmod(0o755)
+for runtime in runtimes:
     runtime.parent.mkdir(parents=True, exist_ok=True)
     copyfile(source, runtime)
     runtime.chmod(0o755)
-copyfile(startup_source, startup_launcher)
-startup_launcher.chmod(0o755)
 if link.is_symlink():
     link.unlink()
 link.symlink_to('../op-runtime.py')
@@ -253,3 +287,6 @@ updated = addition + content
 tomllib.loads(updated)
 config.write_text(updated)
 TASK_PATH_SETUP
+build_record_tmp=$(mktemp "$TOOLS/.cloud-build.XXXXXXXX")
+printf '%s\n' "$build_sources" > "$build_record_tmp"
+mv -fT -- "$build_record_tmp" "$build_record"

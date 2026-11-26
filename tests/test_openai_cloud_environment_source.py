@@ -18,7 +18,7 @@ def aws_install_block():
         "\n", 1)[1].split('if ! test -x "$TOOLS/bin/kubectl"', 1)[0]
 
 
-def op_setup_for_fixture(tools, probe_passes=True):
+def op_setup_for_fixture(tools, probe_passes=True, probe_source=None):
     installer = (ROOT / "install.sh").read_text()
     marker = "python3 - <<'OP_WRAPPER_SETUP'\n"
     setup = installer.split(marker, 1)[1].split("\nOP_WRAPPER_SETUP", 1)[0]
@@ -36,7 +36,7 @@ def op_setup_for_fixture(tools, probe_passes=True):
     stub.write_text(
         "import os, sys\n"
         "assert 'OP_SERVICE_ACCOUNT_TOKEN' not in os.environ\n"
-        f"assert sys.argv[1] == {str(runtime)!r}\n"
+        f"assert sys.argv[1] == {str(probe_source or runtime)!r}\n"
         f"sys.exit({0 if probe_passes else 1})\n")
     return setup.replace(source_root, f"Path({str(tools)!r})", 1).replace(
         source, f"Path({str(runtime)!r})", 1).replace(probe, f"Path({str(stub)!r})", 1)
@@ -45,6 +45,78 @@ def op_setup_for_fixture(tools, probe_passes=True):
 class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
     def test_installer_parses_without_running(self):
         subprocess.run(["bash", "-n", str(ROOT / "install.sh")], check=True)
+
+    def test_branch_installer_binds_executed_bytes_and_discards_stale_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = root / ".onboarding-tools"
+            tools.mkdir()
+            package = root / "ai-workflow-enforcement/enforcement"
+            package.mkdir(parents=True)
+            (package / "cloud_setup_source.py").write_text(
+                "import json, os, sys\nfrom pathlib import Path\n"
+                "data = {'build_mode': 'branch' if '--build-branch' in sys.argv else 'main'}\n"
+                "if os.environ.get('FIXTURE_DRIFT'):\n"
+                "    counter = Path(os.environ['FIXTURE_DRIFT'])\n"
+                "    data['drift'] = counter.exists()\n"
+                "    counter.touch()\n"
+                "print(json.dumps(data))\n"
+            )
+            source = (ROOT / "install.sh").read_text()
+            prefix = source.split("export PIP_CACHE_DIR", 1)[0].replace("/workspace", str(root))
+            recheck = source.split('rm -r "$op_download_dir"\n', 1)[1].split("# Install the same CLI router", 1)[0]
+            write_record = source.rsplit("\nTASK_PATH_SETUP\n", 1)[1]
+            installer = root / "installer.sh"
+            candidate = prefix + (
+                'test ! -e "$build_record"\n'
+                'if [[ -n "$branch_inputs" ]]; then\n'
+                '  test "$(cat "$branch_inputs/op_runtime.py")" = fixture-router\n'
+                '  test "$(cat "$branch_inputs/cloud_task_start.py")" = fixture-launcher\n'
+                'fi\n'
+                'if [[ ${FIXTURE_FAIL:-} ]]; then exit 27; fi\n'
+            ) + recheck + write_record
+            installer.write_text(candidate)
+            binaries = root / "bin"
+            binaries.mkdir()
+            git = binaries / "git"
+            git.write_text('#!/bin/sh\nfor arg do last=$arg; done\ncase $last in\n'
+                           '*:cloud-environments/openai/install.sh) cat "$FIXTURE_INSTALLER" ;;\n'
+                           '*:enforcement/op_runtime.py) printf %s fixture-router ;;\n'
+                           '*:enforcement/cloud_task_start.py) printf %s fixture-launcher ;;\n'
+                           '*) exit 10 ;;\nesac\n')
+            git.chmod(0o755)
+            env = {"PATH": f"{binaries}:/usr/bin:/bin", "TMPDIR": str(root),
+                   "FIXTURE_INSTALLER": str(installer)}
+            options = ["--build-branch", "fixture/router", "--reviewed-branch-tip", "a" * 40]
+
+            def execute(path, arguments, **kwargs):
+                return subprocess.run(["bash", *path, *arguments], capture_output=True, text=True,
+                                      env=kwargs.pop("env", env), **kwargs)
+
+            record = tools / "cloud-build.json"
+            self.assertEqual(execute([str(installer)], []).returncode, 0)
+            self.assertEqual(json.loads(record.read_text())["build_mode"], "main")
+            stopped = execute([str(installer)], options, env={**env, "FIXTURE_FAIL": "1"})
+            self.assertEqual(stopped.returncode, 27, stopped.stderr)
+            self.assertFalse(record.exists())
+            drift = execute([str(installer)], options, env={**env, "FIXTURE_DRIFT": str(root / "counter")})
+            self.assertNotEqual(drift.returncode, 0)
+            self.assertIn("build sources changed", drift.stderr)
+            self.assertFalse(record.exists())
+            self.assertEqual(execute([str(installer)], options).returncode, 0)
+            self.assertEqual(json.loads(record.read_text())["build_mode"], "branch")
+            self.assertFalse(list(root.glob("tmp.*")), "temporary branch inputs survived")
+
+            wrong = root / "wrong.sh"
+            wrong.write_text(candidate + "\n")
+            for execution in (execute([str(wrong)], options), execute(["-s", "--"], options, input=candidate)):
+                self.assertNotEqual(execution.returncode, 0)
+                self.assertIn("differs from the reviewed hosted branch", execution.stderr)
+            self.assertIn("Use no arguments", execute([str(installer)], options[:-1]).stderr)
+            record.unlink()
+            record.symlink_to(installer)
+            self.assertIn("unrelated Cloud build record", execute([str(installer)], []).stderr)
+            self.assertEqual(installer.read_text(), candidate)
 
     def test_published_domains_are_in_saved_network_policy(self):
         policy = json.loads((ROOT / "configuration.json").read_text())["http_network_policy"]
@@ -198,6 +270,41 @@ class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((tools / "bin/op").read_text(), "unrelated")
+
+    def test_op_setup_uses_branch_inputs_then_returns_to_main_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tools = Path(temporary)
+            (tools / "bin").mkdir()
+            branch = tools / "branch"
+            branch.mkdir()
+            runtime = branch / "op_runtime.py"
+            launcher = branch / "cloud_task_start.py"
+            runtime.write_bytes(b"branch router\n")
+            launcher.write_bytes(b"branch startup\n")
+            setup = op_setup_for_fixture(tools, probe_source=runtime)
+            (tools / "op-runtime.py").mkdir()
+            refused = subprocess.run([sys.executable, "-c", setup], env={"CAK_SETUP_BRANCH_INPUTS": str(branch)},
+                                     capture_output=True, text=True)
+            self.assertIn("unrelated op runtime", refused.stderr)
+            self.assertFalse((tools / "cloud-task-start.py").exists())
+            (tools / "op-runtime.py").rmdir()
+            traced_setup = (
+                "import shutil\nfrom pathlib import Path\n"
+                "copy = shutil.copyfile\n"
+                "def checked_copy(source, destination):\n"
+                f"    if Path(destination).name != 'cloud-task-start.py':\n"
+                f"        assert Path({str(tools / 'cloud-task-start.py')!r}).read_bytes() == b'branch startup\\n'\n"
+                "    return copy(source, destination)\n"
+                "shutil.copyfile = checked_copy\n"
+            ) + setup
+            subprocess.run([sys.executable, "-c", traced_setup],
+                           env={"CAK_SETUP_BRANCH_INPUTS": str(branch)}, check=True)
+            self.assertEqual((tools / "op-runtime.py").read_bytes(), runtime.read_bytes())
+            self.assertEqual((tools / "direct/bin/op").read_bytes(), runtime.read_bytes())
+            self.assertEqual((tools / "cloud-task-start.py").read_bytes(), launcher.read_bytes())
+            subprocess.run([sys.executable, "-c", op_setup_for_fixture(tools)], env={}, check=True)
+            main_runtime = ROOT.parents[1] / "enforcement/op_runtime.py"
+            self.assertEqual((tools / "op-runtime.py").read_bytes(), main_runtime.read_bytes())
 
     def test_op_entrypoint_replaces_legacy_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:

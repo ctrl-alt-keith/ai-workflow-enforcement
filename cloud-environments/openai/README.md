@@ -45,7 +45,9 @@ The saved-environment owner performs the following checks before
 [publishing](https://learn.chatgpt.com/docs/environments/cloud-environments#create-and-publish-an-environment).
 
 1. Run `make check` and ShellCheck. Read back the saved editor's complete
-   installer and workspace instructions and compare them to the build source.
+   installer and workspace instructions and compare them to the reviewed `main`
+   sources. Compare the separately executed installer for a branch build to
+   the [reviewed branch](#publish-a-build-from-a-hosted-branch).
    Verify the selected repositories and refs in the editor. Keep Enforcement
    and Secrets Lifecycle on `main` tracking.
    Compare network mode, preset and domains to `configuration.json`.
@@ -68,7 +70,8 @@ The saved-environment owner performs the following checks before
    `workspace-AGENTS.md`, `enforcement/cloud_task_start.py`, and
    `enforcement/op_runtime.py` at the Enforcement build commit. Stop if the
    catalog is absent, any comparison differs, or `.onboarding-tools/task-start.ready`
-   exists in the Setup workspace.
+   exists in the Setup workspace. Require `.onboarding-tools/cloud-build.json`
+   to match the final check's source evidence.
 
 Keep a private record per published version outside this source tree.
 Retain these identities and checks:
@@ -132,6 +135,40 @@ Managed `op` requests in a restored task require successful completion of the
 `task-start.ready`, blocks broker reads before refresh, and enables the managed
 paths only after refresh succeeds. This checks the managed entrypoints. The
 startup instructions also govern helpers using optional credential mirrors.
+
+### Publish a build from a hosted branch
+
+For an approved branch build, follow [Apply and verify](#apply-and-verify) and
+keep the reviewed `main` installer saved. Obtain separate approval for the
+first in-place branch publication and restore qualification. Rely on branch
+publication after the restored checks pass.
+
+Fetch `refs/heads/<branch>` from the verified Enforcement origin. Review its
+exact `FETCH_HEAD` against the last publication, including installer and
+safeguard changes, and verify both managed CLI startup-gate tests. Set
+`reviewed_branch` to the approved short name and `observed_tip` to that commit.
+Run this check from the verified Enforcement `main` checkout before executing
+branch code:
+
+```sh
+PYTHONPATH=/workspace/ai-workflow-enforcement /usr/bin/python3 -P -B -m enforcement.cloud_setup_source \
+  --selection-mode main --catalog /workspace/.onboarding-tools/repositories.json \
+  --workspace-root /workspace --build-branch "$reviewed_branch" --reviewed-branch-tip "$observed_tip"
+```
+
+Require the branch's workspace instructions and startup launcher to match
+`main` byte-for-byte. Stop if startup or the broker helpers require branch-only
+code. In a private, single-writer Setup directory outside both checkouts, write
+`cloud-environments/openai/install.sh` with `git show "$observed_tip:cloud-environments/openai/install.sh"`.
+Run that file with `bash` and the same branch and tip options. Repeat the
+source check with those options before publication.
+
+In the authorized restored task, match the branch record, installed hashes, and
+catalog to Setup. Require the refreshed Secrets Lifecycle synthetic broker
+probe to pass before using managed `op`. On a mismatch or failed probe, stop and
+preserve the refreshed checkouts for diagnosis. To return to a default build,
+run the reviewed `main` installer without branch arguments and verify its
+installed evidence.
 
 ## Audit an older pinned build
 

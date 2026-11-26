@@ -1,6 +1,7 @@
 """Synthetic Git fixtures; no cloud settings, credentials or provider calls."""
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -192,6 +193,73 @@ class CloudSetupSourceTests(unittest.TestCase):
         self.advance()
         with self.assertRaisesRegex(source.SetupSourceError, "separately reviewed comparison"):
             self.verify()
+
+    def test_named_branch_build_keeps_main_checkouts_and_refuses_drift(self):
+        lifecycle = self.workspace / "secrets-lifecycle"
+        lifecycle_remote = self.root / "lifecycle.git"
+        lifecycle_name = "ctrl-alt-keith/secrets-lifecycle"
+        self.git(self.root, "clone", "-q", "--bare", str(self.seed), str(lifecycle_remote))
+        self.git(self.root, "clone", "-q", str(lifecycle_remote), str(lifecycle))
+        self.git(lifecycle, "remote", "set-url", "origin", f"https://github.com/{lifecycle_name}.git")
+        entries = json.loads(self.catalog.read_text())
+        entries.append({"name": lifecycle_name, "host": "github.com",
+                        "mount_path": lifecycle.name, "commit": self.old})
+        catalog = json.dumps(entries)
+        self.catalog.write_text(catalog)
+
+        for name in (*source.BRANCH_STARTUP_FILES, "cloud-environments/openai/install.sh", "enforcement/op_runtime.py"):
+            path = self.seed / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("main fixture\n")
+        shared = self.commit()
+        branch = "build/router"
+        self.git(self.seed, "switch", "-qc", branch, shared)
+        (self.seed / "enforcement/op_runtime.py").write_text("branch fixture\n")
+        tip = self.commit()
+        self.git(self.seed, "push", "-q", str(self.remote), f"HEAD:refs/heads/{branch}")
+        self.git(self.repo, "fetch", "-q", str(self.remote), tip)
+        self.git(self.seed, "switch", "-q", "main")
+        main = self.advance()
+        self.git(self.repo, "merge", "-q", "--ff-only", main)
+        self.assertEqual(self.git(self.repo, "merge-base", main, tip), shared)
+        args = dict(catalog=self.catalog, workspace_root=self.workspace)
+        options = dict(build_branch=branch, reviewed_branch_tip=tip)
+
+        with patch.dict(os.environ, self.env, clear=True):
+            report = source.verify_main_build(**args, **options)
+            self.assertEqual(report["selection_mode"], "main")
+            self.assertEqual(report["build_mode"], "branch")
+            self.assertEqual(report["build_ref"], f"refs/heads/{branch}")
+            self.assertEqual(report["sources"][source.REPOSITORY]["source_commit"], tip)
+            self.assertEqual(report["artifact_sha256"]["op-runtime.py"],
+                             hashlib.sha256(b"branch fixture\n").hexdigest())
+            self.assertEqual(report["sources"][lifecycle_name]["source_commit"], self.old)
+            self.assertEqual(source.verify_main_build(**args)["build_mode"], "main")
+            with self.assertRaisesRegex(source.SetupSourceError, "unavailable from origin"):
+                source.verify_main_build(**args, build_branch="build/absent", reviewed_branch_tip=tip)
+            with self.assertRaisesRegex(source.SetupSourceError, "differs from the reviewed tip"):
+                source.verify_main_build(**args, build_branch=branch, reviewed_branch_tip=shared)
+
+            actual_tip = source._branch_tip
+            observations = iter((tip, shared))
+            with patch.object(source, "_branch_tip", side_effect=lambda repo, name:
+                              next(observations) if name == branch else actual_tip(repo, name)):
+                with self.assertRaisesRegex(source.SetupSourceError, "moved during source verification"):
+                    source.verify_main_build(**args, **options)
+
+        self.git(self.seed, "switch", "-q", branch)
+        (self.seed / source.BRANCH_STARTUP_FILES[1]).write_text("incompatible startup\n")
+        incompatible = self.commit()
+        self.git(self.seed, "push", "-q", str(self.remote), f"HEAD:refs/heads/{branch}")
+        self.git(self.repo, "fetch", "-q", str(self.remote), incompatible)
+        with patch.dict(os.environ, self.env, clear=True), self.assertRaisesRegex(
+            source.SetupSourceError, "changes the main-tracking startup contract"
+        ):
+            source.verify_main_build(**args, build_branch=branch, reviewed_branch_tip=incompatible)
+
+        self.assertEqual(self.catalog.read_text(), catalog)
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), main)
+        self.assertEqual(self.git(lifecycle, "rev-parse", "HEAD"), self.old)
 
     def test_movement_during_checks_and_catalog_drift_block(self):
         with patch.object(source, "_main", side_effect=[self.old, "a" * 40]):
