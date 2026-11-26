@@ -188,7 +188,7 @@ class OpRuntimeTests(unittest.TestCase):
         self.assertNotEqual(stale_broker.returncode, 0)
         self.assertIn("task-start repository refresh", stale_broker.stderr)
         (self.tools / "repositories.json").write_text("synthetic catalog")
-        (self.tools / "cloud-build.json").write_text('{"selection_mode":"main"}')
+        (self.tools / "cloud-build.json").write_text('{"status":"aligned","selection_mode":"main","build_mode":"main"}')
         with patch.object(cloud_task_start.subprocess, "run", side_effect=[
             subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0),
         ]) as refresh:
@@ -205,14 +205,30 @@ class OpRuntimeTests(unittest.TestCase):
         self.tools.mkdir()
         catalog = b"fixture restoration baseline\n"
         (self.tools / "repositories.json").write_bytes(catalog)
-        (self.tools / "cloud-build.json").write_text(json.dumps({
-            "selection_mode": "branch", "catalog_sha256": hashlib.sha256(catalog).hexdigest(),
-        }))
+        record_file = self.tools / "cloud-build.json"
+        with patch.object(cloud_task_start.subprocess, "run") as run:
+            with self.assertRaisesRegex(ValueError, "build evidence is missing or invalid"):
+                cloud_task_start.refresh(self.root, self.tools)
+            record_file.write_text("malformed")
+            with self.assertRaisesRegex(ValueError, "build evidence is missing or invalid"):
+                cloud_task_start.refresh(self.root, self.tools)
+            record_file.write_text('{"status":"aligned","selection_mode":"main","build_mode":"bad"}')
+            with self.assertRaisesRegex(ValueError, "unknown build mode"):
+                cloud_task_start.refresh(self.root, self.tools)
+            run.assert_not_called()
         direct = self.tools / "direct/bin/op"
         direct.parent.mkdir(parents=True)
         router = b"fixture branch router\n"
+        launcher = b"fixture branch launcher\n"
         self.cloud.write_bytes(router)
         direct.write_bytes(router)
+        (self.tools / "cloud-task-start.py").write_bytes(launcher)
+        record_file.write_text(json.dumps({
+            "status": "aligned", "selection_mode": "main", "build_mode": "branch",
+            "catalog_sha256": hashlib.sha256(catalog).hexdigest(),
+            "artifact_sha256": {"op-runtime.py": hashlib.sha256(router).hexdigest(),
+                                "cloud-task-start.py": hashlib.sha256(launcher).hexdigest()},
+        }))
         with patch.object(cloud_task_start.subprocess, "run") as run:
             (self.tools / "repositories.json").write_bytes(b"different catalog\n")
             with self.assertRaisesRegex(ValueError, "restored catalog differs"):
@@ -231,6 +247,14 @@ class OpRuntimeTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0 if probe_ok else 1)
 
         with patch.object(cloud_task_start.subprocess, "run", side_effect=child):
+            direct.write_bytes(b"different router\n")
+            with self.assertRaisesRegex(ValueError, "entrypoints differ"):
+                cloud_task_start.refresh(self.root, self.tools)
+            direct.write_bytes(router)
+            (self.tools / "cloud-task-start.py").write_bytes(b"different launcher\n")
+            with self.assertRaisesRegex(ValueError, "differ from the reviewed build evidence"):
+                cloud_task_start.refresh(self.root, self.tools)
+            (self.tools / "cloud-task-start.py").write_bytes(launcher)
             with self.assertRaisesRegex(ValueError, "incompatible with the refreshed broker"):
                 cloud_task_start.refresh(self.root, self.tools)
             self.assertFalse((self.tools / "task-start.ready").exists())

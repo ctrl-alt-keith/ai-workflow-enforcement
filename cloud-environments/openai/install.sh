@@ -44,6 +44,7 @@ if [[ ${#branch_options[@]} -ne 0 ]]; then
     git --no-replace-objects -C "$ENFORCEMENT" show "$branch_commit:enforcement/$input" > "$branch_inputs/$input"
   done
 fi
+rm -f -- "$build_record"
 export PIP_CACHE_DIR=/tmp/onboarding-pip-cache
 export UV_CACHE_DIR=/tmp/onboarding-uv-cache
 export npm_config_cache=/tmp/onboarding-npm-cache
@@ -220,14 +221,15 @@ if link.is_symlink():
         raise SystemExit('Refusing to replace an unrelated op entrypoint')
 elif link.exists():
     raise SystemExit('Refusing to replace an unrelated op entrypoint')
-for runtime in (tools / 'op-runtime.py', tools / 'direct/bin/op'):
-    if runtime.is_symlink():
-        raise SystemExit('Refusing to replace an unrelated op runtime')
+runtimes = (tools / 'op-runtime.py', tools / 'direct/bin/op')
+if any(runtime.is_symlink() or (runtime.exists() and not runtime.is_file()) for runtime in runtimes):
+    raise SystemExit('Refusing to replace an unrelated op runtime')
+copyfile(startup_source, startup_launcher)
+startup_launcher.chmod(0o755)
+for runtime in runtimes:
     runtime.parent.mkdir(parents=True, exist_ok=True)
     copyfile(source, runtime)
     runtime.chmod(0o755)
-copyfile(startup_source, startup_launcher)
-startup_launcher.chmod(0o755)
 if link.is_symlink():
     link.unlink()
 link.symlink_to('../op-runtime.py')

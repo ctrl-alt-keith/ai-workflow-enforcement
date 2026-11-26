@@ -1,6 +1,7 @@
 """Synthetic Git fixtures; no cloud settings, credentials or provider calls."""
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -226,11 +227,14 @@ class CloudSetupSourceTests(unittest.TestCase):
 
         with patch.dict(os.environ, self.env, clear=True):
             report = source.verify_main_build(**args, **options)
-            self.assertEqual(report["selection_mode"], "branch")
+            self.assertEqual(report["selection_mode"], "main")
+            self.assertEqual(report["build_mode"], "branch")
             self.assertEqual(report["build_ref"], f"refs/heads/{branch}")
             self.assertEqual(report["sources"][source.REPOSITORY]["source_commit"], tip)
+            self.assertEqual(report["artifact_sha256"]["op-runtime.py"],
+                             hashlib.sha256(b"branch fixture\n").hexdigest())
             self.assertEqual(report["sources"][lifecycle_name]["source_commit"], self.old)
-            self.assertEqual(source.verify_main_build(**args)["selection_mode"], "main")
+            self.assertEqual(source.verify_main_build(**args)["build_mode"], "main")
             with self.assertRaisesRegex(source.SetupSourceError, "unavailable from origin"):
                 source.verify_main_build(**args, build_branch="build/absent", reviewed_branch_tip=tip)
             with self.assertRaisesRegex(source.SetupSourceError, "differs from the reviewed tip"):

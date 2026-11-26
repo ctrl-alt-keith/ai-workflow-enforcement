@@ -29,19 +29,23 @@ class SetupSourceError(ValueError):
     """A nonsecret, fail-closed source precondition failure."""
 
 
-def _git(repo: Path, *args: str) -> str:
+def _git_bytes(repo: Path, *args: str) -> bytes:
     try:
         process = subprocess.run(
             ["git", "--no-replace-objects", "-c", "core.hooksPath=/dev/null", *args],
             cwd=repo, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         raise SetupSourceError("Git source check unavailable or timed out") from None
     if process.returncode:
         raise SetupSourceError("Git source check failed; provider output suppressed")
-    return process.stdout.strip()
+    return process.stdout
+
+
+def _git(repo: Path, *args: str) -> str:
+    return _git_bytes(repo, *args).decode(errors="replace").strip()
 
 
 def _branch_tip(repo: Path, branch: str) -> str:
@@ -146,12 +150,19 @@ def verify_main_build(*, catalog: Path, workspace_root: Path, build_branch: str 
             raise SetupSourceError("hosted build branch moved during source verification")
         sources[REPOSITORY]["main_commit"] = sources[REPOSITORY]["source_commit"]
         sources[REPOSITORY]["source_commit"] = branch_commit
-    if catalog.read_bytes() != catalog_before:
-        raise SetupSourceError("generated catalog changed during source verification")
-    result = {"status": "aligned", "selection_mode": "main", "sources": sources,
+    result = {"status": "aligned", "selection_mode": "main", "build_mode": "main", "sources": sources,
               "catalog_sha256": hashlib.sha256(catalog_before).hexdigest()}
     if branch_commit is not None:
-        result.update(selection_mode="branch", build_ref=f"refs/heads/{build_branch}")
+        result.update(build_mode="branch", build_ref=f"refs/heads/{build_branch}")
+        result["artifact_sha256"] = {
+            installed: hashlib.sha256(_git_bytes(repo, "cat-file", "blob", f"{branch_commit}:{path}")).hexdigest()
+            for installed, path in (
+                ("op-runtime.py", "enforcement/op_runtime.py"),
+                ("cloud-task-start.py", "enforcement/cloud_task_start.py"),
+            )
+        }
+    if catalog.read_bytes() != catalog_before:
+        raise SetupSourceError("generated catalog changed during source verification")
     return result
 
 

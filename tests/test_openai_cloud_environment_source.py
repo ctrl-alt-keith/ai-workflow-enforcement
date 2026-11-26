@@ -46,6 +46,68 @@ class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
     def test_installer_parses_without_running(self):
         subprocess.run(["bash", "-n", str(ROOT / "install.sh")], check=True)
 
+    def test_branch_installer_binds_executed_bytes_and_discards_stale_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = root / ".onboarding-tools"
+            tools.mkdir()
+            package = root / "ai-workflow-enforcement/enforcement"
+            package.mkdir(parents=True)
+            (package / "cloud_setup_source.py").write_text(
+                "import json, sys\n"
+                "print(json.dumps({'build_mode': 'branch' if '--build-branch' in sys.argv else 'main'}))\n"
+            )
+            source = (ROOT / "install.sh").read_text()
+            prefix = source.split("export PIP_CACHE_DIR", 1)[0].replace("/workspace", str(root))
+            write_record = source.rsplit("\nTASK_PATH_SETUP\n", 1)[1]
+            installer = root / "installer.sh"
+            candidate = prefix + (
+                'test ! -e "$build_record"\n'
+                'if [[ -n "$branch_inputs" ]]; then\n'
+                '  test "$(cat "$branch_inputs/op_runtime.py")" = fixture-router\n'
+                '  test "$(cat "$branch_inputs/cloud_task_start.py")" = fixture-launcher\n'
+                'fi\n'
+                'if [[ ${FIXTURE_FAIL:-} ]]; then exit 27; fi\n'
+            ) + write_record
+            installer.write_text(candidate)
+            binaries = root / "bin"
+            binaries.mkdir()
+            git = binaries / "git"
+            git.write_text('#!/bin/sh\nfor arg do last=$arg; done\ncase $last in\n'
+                           '*:cloud-environments/openai/install.sh) cat "$FIXTURE_INSTALLER" ;;\n'
+                           '*:enforcement/op_runtime.py) printf %s fixture-router ;;\n'
+                           '*:enforcement/cloud_task_start.py) printf %s fixture-launcher ;;\n'
+                           '*) exit 10 ;;\nesac\n')
+            git.chmod(0o755)
+            env = {"PATH": f"{binaries}:/usr/bin:/bin", "TMPDIR": str(root),
+                   "FIXTURE_INSTALLER": str(installer)}
+            options = ["--build-branch", "fixture/router", "--reviewed-branch-tip", "a" * 40]
+
+            def execute(path, arguments, **kwargs):
+                return subprocess.run(["bash", *path, *arguments], capture_output=True, text=True,
+                                      env=kwargs.pop("env", env), **kwargs)
+
+            record = tools / "cloud-build.json"
+            self.assertEqual(execute([str(installer)], []).returncode, 0)
+            self.assertEqual(json.loads(record.read_text())["build_mode"], "main")
+            stopped = execute([str(installer)], options, env={**env, "FIXTURE_FAIL": "1"})
+            self.assertEqual(stopped.returncode, 27, stopped.stderr)
+            self.assertFalse(record.exists())
+            self.assertEqual(execute([str(installer)], options).returncode, 0)
+            self.assertEqual(json.loads(record.read_text())["build_mode"], "branch")
+            self.assertFalse(list(root.glob("tmp.*")), "temporary branch inputs survived")
+
+            wrong = root / "wrong.sh"
+            wrong.write_text(candidate + "\n")
+            for execution in (execute([str(wrong)], options), execute(["-s", "--"], options, input=candidate)):
+                self.assertNotEqual(execution.returncode, 0)
+                self.assertIn("differs from the reviewed hosted branch", execution.stderr)
+            self.assertIn("Use no arguments", execute([str(installer)], options[:-1]).stderr)
+            record.unlink()
+            record.symlink_to(installer)
+            self.assertIn("unrelated Cloud build record", execute([str(installer)], []).stderr)
+            self.assertEqual(installer.read_text(), candidate)
+
     def test_published_domains_are_in_saved_network_policy(self):
         policy = json.loads((ROOT / "configuration.json").read_text())["http_network_policy"]
         self.assertTrue({"awscli.amazonaws.com", "*.linodelke.net",

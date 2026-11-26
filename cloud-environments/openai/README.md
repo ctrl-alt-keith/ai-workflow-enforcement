@@ -142,12 +142,19 @@ For one approved build, keep both Setup checkouts on verified `main`. From the
 verified Enforcement origin, fetch `refs/heads/<branch>` and record the exact
 `FETCH_HEAD` commit. Review that tip, including the installer, safeguards, and
 changes from the previous publication. Verify the branch's tests for both
-managed CLI startup gates. Pass `--build-branch <branch>` and
-`--reviewed-branch-tip <observed-commit>` to the same source check before running
-any branch code. The check verifies the live branch tip and requires its
-workspace instructions and startup launcher to match `main` byte-for-byte.
+managed CLI startup gates. Run the source check from the verified Enforcement
+`main` checkout before running any branch code. Set `reviewed_branch` to the
+approved short name and `observed_tip` to the reviewed `FETCH_HEAD` commit.
 
-In a private Setup directory, write the reviewed commit's
+```sh
+PYTHONPATH=/workspace/ai-workflow-enforcement /usr/bin/python3 -P -B -m enforcement.cloud_setup_source \
+  --selection-mode main --catalog /workspace/.onboarding-tools/repositories.json \
+  --workspace-root /workspace --build-branch "$reviewed_branch" --reviewed-branch-tip "$observed_tip"
+```
+
+The check verifies the live branch tip and requires its workspace instructions
+and startup launcher to match `main` byte-for-byte. In a private, single-writer
+Setup directory outside both checkouts, write the reviewed commit's
 `cloud-environments/openai/install.sh` with `git show <observed-commit>:cloud-environments/openai/install.sh`.
 Run that file with `bash` and the same two arguments. The installer verifies
 its file against the hosted tip and reads the router and launcher from that
@@ -158,10 +165,12 @@ files and build evidence to the branch build.
 In the authorized restored task, verify that the recorded branch build and
 installed files survived publication, the catalog matches the Setup baseline,
 and the repository refresh still reaches `main`. The launcher releases managed
-`op` only after the refreshed Secrets Lifecycle synthetic probe passes against
-the installed branch router. If the branch changes the startup contract or
-needs branch-only helper code, stop. For a later default build, run the reviewed
-`main` installer without branch arguments and verify its installed evidence.
+`op` after the installed artifacts match the recorded branch hashes and the
+refreshed Secrets Lifecycle synthetic probe passes. On a mismatch or failed
+probe, stop and preserve the refreshed checkouts for diagnosis. If the branch
+changes the startup contract or needs branch-only helper code, stop before
+publishing. For a later default build, run the reviewed `main` installer
+without branch arguments and verify its installed evidence.
 
 ## Audit an older pinned build
 
