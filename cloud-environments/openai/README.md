@@ -41,12 +41,17 @@ Verify a rotated mirror in a fresh task before retiring its predecessor.
 
 ## Apply and verify
 
+Rehearse the reviewed installer in the existing Setup workspace using
+[build source authority](#build-source-authority). Run `make check` and
+ShellCheck. Use the supported Setup filesystem interface to install
+`workspace-AGENTS.md` from the Enforcement build commit at
+`/workspace/AGENTS.md` with readable ownership and permissions.
+
 The saved-environment owner performs the following checks before
 [publishing](https://learn.chatgpt.com/docs/environments/cloud-environments#create-and-publish-an-environment).
 
-1. Run `make check` and ShellCheck. Read back the saved editor's complete
-   installer and workspace instructions and compare them to the reviewed `main`
-   sources. Compare the separately executed installer for a branch build to
+1. Read back the saved editor's complete installer and compare it to reviewed
+   `main`. Compare the separately executed installer for a branch build to
    the [reviewed branch](#publish-a-build-from-a-hosted-branch).
    Verify the selected repositories and refs in the editor. Keep Enforcement
    and Secrets Lifecycle on `main` tracking.
@@ -57,10 +62,8 @@ The saved-environment owner performs the following checks before
    Use saved-editor readback for saved settings. Stop on mismatch or missing
    required readback. Other bindings' source references may be unknown if the
    editor omits them.
-2. Apply [build source authority](#build-source-authority) before Setup and
-   again immediately before publication. Use the supported Setup filesystem
-   interface to install `workspace-AGENTS.md` from the Enforcement build commit at
-   `/workspace/AGENTS.md` with readable ownership and permissions.
+2. Repeat the [build source check](#build-source-authority) immediately before
+   publication.
    Verify the saved `start_skill` separately against the owning
    setup task's exact instruction text. After the last Setup change and
    immediately before publication, require
@@ -80,9 +83,9 @@ Retain these identities and checks:
 - Installer source evidence for both repositories, including build commits
   and the unchanged catalog hash. Retain source review and saved readback separately.
 - Source hashes for `install.sh`, `workspace-AGENTS.md`, and
-  `configuration.json`. Separately record editor installer and instruction
-  hashes, the intended `start_skill` reference and matching readback, and the
-  installed workspace instructions hash.
+  `configuration.json`. Separately record the saved installer hash, the
+  intended `start_skill` reference and matching readback, and the installed
+  workspace instructions hash.
 - Editor repository and network readbacks, exact generated catalog pins,
   the `secrets-lifecycle` checkout commit and PAT, signing and review broker
   probe result, and resolved tool versions.
@@ -120,10 +123,10 @@ published source. Resolve any required safeguard changes before fast-forwarding
 only those two checkouts with `git merge --ff-only FETCH_HEAD`. Stop on missing
 history, local changes, divergence, or an unverified origin.
 
-Use the reviewed Enforcement `main` installer and apply step 1. The installer
-runs `enforcement.cloud_setup_source --selection-mode main` with the generated
-catalog and workspace root. It requires both clean checkouts to equal hosted
-`main`, verifies the restored baselines are ancestors, and compares source
+Run the reviewed Enforcement `main` installer for a default build. The
+installer runs `enforcement.cloud_setup_source --selection-mode main` with the
+generated catalog and workspace root. It requires both clean checkouts to equal
+hosted `main`, verifies the restored baselines are ancestors, and compares source
 evidence again before changing managed CLI entrypoints. Repeat that read-only
 check before publication and require the installer evidence to match. Treat
 the returned commit IDs as evidence. If hosted main advances or Setup replaces
