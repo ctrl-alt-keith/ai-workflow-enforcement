@@ -182,7 +182,9 @@ git --no-replace-objects -C "$setup_checkout" merge-base --is-ancestor "$setup_p
 
 For the audit, bind build/editor/installed-file comparisons to the reported
 `source_commit`. Retain the exported procedure identity separately and dispose
-of the owned private export after the audit.
+of the owned private export after the audit. Use the export only for verification.
+
+## Installer verification
 
 Exact build replay requires the prior package versions, integrity inputs and
 fresh-runtime verification.

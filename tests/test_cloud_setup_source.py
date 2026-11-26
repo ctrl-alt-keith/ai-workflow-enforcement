@@ -51,7 +51,8 @@ class CloudSetupSourceTests(unittest.TestCase):
         wrapper.write_text(
             f"#!{sys.executable}\nimport os,sys\nargs=sys.argv[1:]\n"
             "if 'ls-remote' in args or 'fetch' in args:\n"
-            f" remote={remotes!r}.get(os.path.basename(os.getcwd()), {str(self.remote)!r})\n"
+            " checkout=args[args.index('-C')+1] if '-C' in args else os.getcwd()\n"
+            f" remote={remotes!r}[os.path.basename(checkout)]\n"
             " args=[remote if x=='origin' else x for x in args]\n"
             f"os.execv({self.git_binary!r},[{self.git_binary!r},*args])\n")
         wrapper.chmod(0o755)
