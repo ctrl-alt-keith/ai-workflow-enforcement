@@ -2,9 +2,11 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -45,6 +47,81 @@ def op_setup_for_fixture(tools, probe_passes=True, probe_source=None):
 class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
     def test_installer_parses_without_running(self):
         subprocess.run(["bash", "-n", str(ROOT / "install.sh")], check=True)
+
+    def test_executor_path_write_or_verified_read_only_reuse(self):
+        installer = (ROOT / "install.sh").read_text()
+        setup = installer.split("<<'TASK_PATH_SETUP'\n", 1)[1].split("\nTASK_PATH_SETUP", 1)[0]
+        capture_path = next(line for line in installer.splitlines() if line.startswith("executor_path="))
+        setup_call = next(line for line in installer.splitlines() if line.endswith("<<'TASK_PATH_SETUP'"))
+        setup_call = setup_call.replace("python3", shlex.quote(sys.executable), 1)
+        write_record = installer.rsplit("\nTASK_PATH_SETUP\n", 1)[1]
+        cases = (
+            ("writable", None, False, True, ""),
+            ("read-only-matching", "managed", True, True, ""),
+            ("independent-matching", "independent", True, True, ""),
+            ("read-only-missing", None, True, False, "cannot write executor config"),
+            ("read-only-unverified-executor", "managed", True, False, "cannot write executor config"),
+            ("independent-conflict", "independent", False, False, "independently configured executor PATH"),
+            ("shadowed-op", "managed", True, False, "does not resolve managed op"),
+            ("alternate-config-home", "managed", True, False, "active executor configuration location"),
+        )
+        for case, policy, read_only, succeeds, error in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                home, tools = root / "agent", root / "tools"
+                local_bin = home / ".local/bin"
+                local_bin.mkdir(parents=True)
+                config = home / ".codex/config.toml"
+                config.parent.mkdir()
+                managed = ":".join((str(local_bin), str(tools / "bin"), str(tools / "go/bin"),
+                                    str(tools / "node_modules/.bin"), "/usr/bin", "/bin"))
+                content = 'approval_policy = "never"\n'
+                if policy:
+                    setting = "shell_environment_policy.set.PATH = " + json.dumps(managed) + "\n"
+                    if policy == "managed":
+                        setting = "# BEGIN managed cloud tool PATH\n" + setting + "# END managed cloud tool PATH\n"
+                    content = setting + content
+                config.write_text(content)
+                for name in ("op-runtime.py", "bin/gh", "bin/aws", "bin/kubectl", "bin/terraform",
+                             "go/bin/go", "node_modules/.bin/claude", "node_modules/.bin/markdownlint-cli2"):
+                    target = tools / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("#!/bin/sh\nexit 0\n")
+                    target.chmod(0o755)
+                (tools / "bin/op").symlink_to("../op-runtime.py")
+                if case == "shadowed-op":
+                    (local_bin / "op").symlink_to(tools / "bin/gh")
+                inherited = managed if policy and case not in (
+                    "read-only-unverified-executor", "independent-conflict",
+                ) else "/usr/bin:/bin"
+                env = {"HOME": str(home), "PATH": inherited}
+                if case == "alternate-config-home":
+                    env["CODEX_HOME"] = str(root / "other")
+                body = setup.replace("/home/agent", str(home)).replace("/workspace/.onboarding-tools", str(tools))
+                if read_only:
+                    body = ("import errno\nfrom pathlib import Path\n"
+                            "def read_only(*args, **kwargs):\n"
+                            "    raise OSError(errno.EROFS, 'fixture read-only filesystem')\n"
+                            "Path.write_text = read_only\n") + body
+                record = tools / "cloud-build.json"
+                script = (f"set -euo pipefail\nTOOLS={shlex.quote(str(tools))}\n"
+                          f"build_record={shlex.quote(str(record))}\nbuild_sources=fixture\n"
+                          f"{capture_path}\nexport PATH={shlex.quote(managed)}\n"
+                          f"{setup_call}\n{body}\nTASK_PATH_SETUP\n"
+                          + write_record)
+                result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                self.assertEqual(record.exists(), succeeds)
+                if case == "writable":
+                    parsed = tomllib.loads(config.read_text())
+                    self.assertEqual(parsed["approval_policy"], "never")
+                    self.assertEqual(parsed["shell_environment_policy"]["set"]["PATH"], managed)
+                else:
+                    self.assertEqual(config.read_text(), content)
+                if error:
+                    self.assertIn(error, result.stderr)
+                elif read_only:
+                    self.assertIn("verified the existing executor PATH policy", result.stdout)
 
     def test_branch_installer_binds_executed_bytes_and_discards_stale_record(self):
         with tempfile.TemporaryDirectory() as directory:
