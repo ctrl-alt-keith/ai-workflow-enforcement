@@ -144,7 +144,14 @@ def prepare(args, source_env, *, entrypoint, cloud_tools=CLOUD_TOOLS, policy_pat
 
 def main():
     try:
-        native, args, env = prepare(sys.argv[1:], os.environ, entrypoint=Path(__file__).resolve())
+        entrypoint = Path(__file__).resolve()
+        args = sys.argv[1:]
+        _, managed = native_path(entrypoint, os.environ, CLOUD_TOOLS)
+        if managed and args not in ([], ["-h"], ["--help"], ["help"], ["-v"], ["--version"]):
+            ready = CLOUD_TOOLS / "task-start.ready"
+            if ready.is_symlink() or not ready.is_file() or ready.read_bytes() != b"ready\n":
+                raise RoutingError("complete Cloud task-start repository refresh before using managed op")
+        native, args, env = prepare(args, os.environ, entrypoint=entrypoint)
         os.execve(native, ["op", *args], env)
     except (RoutingError, OSError, ValueError) as error:
         reason = str(error) if isinstance(error, RoutingError) else "CLI routing or private state setup failed"

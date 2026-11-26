@@ -8,8 +8,9 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from enforcement import op_runtime
+from enforcement import cloud_task_start, op_runtime
 
 
 class OpRuntimeTests(unittest.TestCase):
@@ -160,6 +161,11 @@ class OpRuntimeTests(unittest.TestCase):
         source = source.replace('Path("/tmp") if cloud', f"Path({str(self.root)!r}) if cloud")
         entrypoint.write_text(source)
         entrypoint.chmod(0o755)
+        self.cloud.write_text(source)
+        self.cloud.chmod(0o755)
+        normal_bin = self.tools / "bin"
+        normal_bin.mkdir()
+        (normal_bin / "op").symlink_to(self.cloud)
         native = self.tools / "sysroot/usr/bin/op"
         native.parent.mkdir(parents=True)
         native.write_text(
@@ -168,9 +174,27 @@ class OpRuntimeTests(unittest.TestCase):
             'test -z "$OP_CONNECT_TOKEN" && test -d "$OP_CONFIG_DIR" || exit 98\n'
             'echo direct\n')
         native.chmod(0o755)
-        result = subprocess.run(["op", "whoami"], env={
+        env = {
             "PATH": str(entrypoint.parent), "HOME": str(self.root),
             "OP_SERVICE_ACCOUNT_TOKEN": "synthetic-direct-token",
-        }, capture_output=True, text=True, check=False)
+        }
+        argv = ["op", "whoami"]
+        early = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
+        self.assertNotEqual(early.returncode, 0)
+        self.assertIn("task-start repository refresh", early.stderr)
+        stale_broker = subprocess.run([str(normal_bin / "op"), "read", "fixture"], env=env,
+                                      capture_output=True, text=True, check=False)
+        self.assertNotEqual(stale_broker.returncode, 0)
+        self.assertIn("task-start repository refresh", stale_broker.stderr)
+        (self.tools / "repositories.json").write_text("synthetic catalog")
+        with patch.object(cloud_task_start.subprocess, "run", side_effect=[
+            subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0),
+        ]) as refresh:
+            self.assertEqual(cloud_task_start.refresh(self.root, self.tools), 1)
+            self.assertFalse((self.tools / "task-start.ready").exists())
+            self.assertEqual(cloud_task_start.refresh(self.root, self.tools), 0)
+            self.assertIn("enforcement.safe_refresh_repos", refresh.call_args.args[0])
+            self.assertEqual((self.tools / "repositories.json").read_text(), "synthetic catalog")
+        result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "direct\n")

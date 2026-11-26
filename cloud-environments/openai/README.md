@@ -28,9 +28,8 @@ Keep the required `OP_SERVICE_ACCOUNT_TOKEN` runtime binding for the explicit
 broker route used by `secrets-lifecycle`'s [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
 [commit signing](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-git-signing.md),
 and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
-helpers. In Setup, select a reviewed `/workspace/secrets-lifecycle` checkout
-containing the broker compatibility probe. Require the probe to pass before
-replacing the managed entrypoint.
+helpers. Require the synthetic compatibility probe from the verified
+Secrets Lifecycle build source to pass before replacing the managed entrypoint.
 
 If authorized, bind the optional mirrors documented by those helper owners:
 `CAK_CLOUD_GITHUB_PAT`, `CAK_CLOUD_SIGNING_KEY`, and
@@ -47,8 +46,8 @@ The saved-environment owner performs the following checks before
 
 1. Run `make check` and ShellCheck. Read back the saved editor's complete
    installer and workspace instructions and compare them to the build source.
-   Verify the selected repositories, refs and selection mode in the editor.
-   Use main-tracking unless the owner approves an exact reviewed pin.
+   Verify the selected repositories and refs in the editor. Keep Enforcement
+   and Secrets Lifecycle on `main` tracking.
    Compare network mode, preset and domains to `configuration.json`.
    Verify the names, required status, and injection types of the
    [required runtime bindings](#runtime-credential-binding), the approved
@@ -57,25 +56,26 @@ The saved-environment owner performs the following checks before
    required readback. Other bindings' source references may be unknown if the
    editor omits them.
 2. Apply [build source authority](#build-source-authority) before Setup and
-   again immediately before publication. Record the exact build commit as
-   `source_commit`. Use the supported Setup filesystem interface to install
-   `workspace-AGENTS.md` from that commit at
+   again immediately before publication. Use the supported Setup filesystem
+   interface to install `workspace-AGENTS.md` from the Enforcement build commit at
    `/workspace/AGENTS.md` with readable ownership and permissions.
    Verify the saved `start_skill` separately against the owning
    setup task's exact instruction text. After the last Setup change and
    immediately before publication, require
    `/workspace/.onboarding-tools/repositories.json` to match the editor-selected
-   repositories and refs. Compare the installed `/workspace/AGENTS.md` to
-   `workspace-AGENTS.md` and both installed `op` entrypoints to
-   `enforcement/op_runtime.py` byte-for-byte at `source_commit`. Stop if the
-   catalog is absent or any comparison differs.
+   repositories and restored baseline. Compare the installed `/workspace/AGENTS.md`,
+   `cloud-task-start.py`, and both installed `op` entrypoints byte-for-byte to
+   `workspace-AGENTS.md`, `enforcement/cloud_task_start.py`, and
+   `enforcement/op_runtime.py` at the Enforcement build commit. Stop if the
+   catalog is absent, any comparison differs, or `.onboarding-tools/task-start.ready`
+   exists in the Setup workspace.
 
 Keep a private record per published version outside this source tree.
 Retain these identities and checks:
 
 - Saved configuration ID and published version ID.
-- `source_commit`, selection mode, procedure commit, and observed main with any
-  safeguard-disposition reference.
+- Installer source evidence for both repositories, including build commits
+  and the unchanged catalog hash. Retain source review and saved readback separately.
 - Source hashes for `install.sh`, `workspace-AGENTS.md`, and
   `configuration.json`. Separately record editor installer and instruction
   hashes, the intended `start_skill` reference and matching readback, and the
@@ -102,58 +102,38 @@ mirrors, using the owner guidance in [Runtime credential binding](#runtime-crede
 
 ## Build source authority
 
-These checks govern Setup builds. Ordinary new-task refresh remains owned by
-[`workspace-AGENTS.md`](workspace-AGENTS.md); active or resumed checkouts stay
-untouched. Do not invoke task-start refresh to realign a running Setup build.
+Use the existing Setup with both build repositories selected on `main`. Keep
+the platform-generated catalog unchanged as the restored checkout baseline.
+Verify the complete repository selection against saved-editor readback and
+retain the baseline before advancing the build checkouts. Setup does not use
+the [new-task refresh](workspace-AGENTS.md).
 
-- **Main-tracking:** the saved selection's resolved commit, generated catalog
-  and clean checkout `HEAD` must also equal freshly observed hosted `main`.
-  Advancement of main blocks the build until supported Setup realigns them.
-- **Deliberately pinned:** an owner-authorized, explicitly reviewed full commit
-  is authoritative even when main advances. Saved selection, generated catalog,
-  clean checkout and reviewed build commit must agree exactly. A restored pin
-  alone is not approval to use that source. The build commit must be an ancestor
-  of current main; an unmerged or divergent commit blocks the build.
+In Setup only, verify the Enforcement and Secrets Lifecycle mount roots,
+origin identities and clean checkouts. Fetch `refs/heads/main` through each
+existing authenticated Git remote. Require both the catalog commit and the
+current checkout to be in the fetched history, with the catalog commit in the
+checkout's history. Review the exact fetched build sources and fast-forward
+only those two checkouts with `git merge --ff-only FETCH_HEAD`. Stop on missing
+history, local changes, divergence, or an unverified origin.
 
-The checkout's branch name (`work` is valid) does not select the authority.
-To advance a pin, review the new commit, change only the intended saved selection
-before provisioning fresh Setup, then verify its generated catalog and clean
-checkout. Preserve other settings. A stale catalog or an unprovisionable
-selection blocks the build: report the platform limitation; do not move checkout
-refs, hand-edit the catalog or repeatedly retarget an already-running Setup.
+Use the reviewed Enforcement `main` installer and apply step 1. The installer
+runs `enforcement.cloud_setup_source --selection-mode main` with the generated
+catalog and workspace root. It requires both clean checkouts to equal hosted
+`main`, verifies the restored baselines are ancestors, and compares source
+evidence again before changing managed CLI entrypoints. Repeat that read-only
+check before publication and require the installer evidence to match. Treat
+the returned commit IDs as evidence. If hosted main advances or Setup replaces
+a build checkout, reacquire and review the build sources before continuing.
 
-Record `procedure_commit` separately: it identifies the exact reviewed procedure
-being applied, which can be newer than the pinned build inputs. Without newer
-procedure acquisition, record `procedure_commit = source_commit`. Neither
-identity changes a saved selection or authorizes publication.
-
-Read current main with `git ls-remote origin refs/heads/main` through the existing
-authorized Git route; cached `origin/main` is insufficient. Fetch that exact
-object without checking it out. Compare the build commit with this main commit,
-review all relevant build-input and safeguard changes, and retain their
-dispositions outside Git. Unresolved changes or a required safeguard that the
-pinned build would lose block the build. Main is a separate review target,
-not an automatic replacement for the pin. If main advances after review, review
-the new delta before continuing.
-For settings or installed-file differences, the owner may accept the complete
-reviewed pin as-is only if it loses no required safeguard, advance to a reviewed
-pin, or choose main-tracking. Mixed-source builds are invalid. Do not silently
-change settings to match either revision; all outcomes must pass steps 1 and 2.
-
-`python3 -m enforcement.cloud_setup_source` checks these enforcement-entry
-identities read-only. Supply `--selection-mode main` and `--selected-commit`
-from saved-editor readback, plus `--catalog` and `--workspace-root`.
-Pinned mode additionally requires `--reviewed-commit` and `--reviewed-main`.
-The latter must match fresh main at both observations. The command lists all
-changed paths for review; its `aligned` result verifies asserted identities,
-not that the operator actually reviewed them or has publication authority.
-Full saved-selection/catalog reconciliation for the other repositories remains
-required by step 1. Serialize Setup work and rerun the checks after any change;
-observations do not lock the editor, filesystem or remote.
+Managed `op` requests in a restored task require successful completion of the
+[new-task refresh](workspace-AGENTS.md). Verify a restored task starts without
+`task-start.ready`, blocks broker reads before refresh, and enables the managed
+paths only after refresh succeeds. This checks the managed entrypoints. The
+startup instructions also govern helpers using optional credential mirrors.
 
 ### Acquire a newer procedure from an older mount
 
-When the mounted pin lacks this procedure, use a reviewed, merged procedure
+For an older published build's pinned-source audit, use a reviewed, merged procedure
 commit from the same repository. Read this complete guide from that exact commit.
 Verify the selected mount's origin still identifies
 `ctrl-alt-keith/ai-workflow-enforcement` before fetching.

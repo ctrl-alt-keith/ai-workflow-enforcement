@@ -5,6 +5,16 @@ if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
   exit 1
 fi
 TOOLS=/workspace/.onboarding-tools
+if [[ -e "$TOOLS/task-start.ready" || -L "$TOOLS/task-start.ready" ]]; then
+  echo "Cloud Setup requires a workspace without a task-start receipt" >&2
+  exit 1
+fi
+check_build_sources() {
+  PYTHONPATH=/workspace/ai-workflow-enforcement /usr/bin/python3 -P -B -m enforcement.cloud_setup_source \
+    --selection-mode main --catalog "$TOOLS/repositories.json" --workspace-root /workspace
+}
+build_sources=$(check_build_sources) || { printf '%s\n' "$build_sources" >&2; exit 1; }
+printf '%s\n' "$build_sources"
 export PIP_CACHE_DIR=/tmp/onboarding-pip-cache
 export UV_CACHE_DIR=/tmp/onboarding-uv-cache
 export npm_config_cache=/tmp/onboarding-npm-cache
@@ -22,9 +32,6 @@ export npm_config_cache=/tmp/onboarding-npm-cache
 export GOCACHE=/tmp/onboarding-go-cache
 export GOPATH=/workspace/.onboarding-tools/gopath
 EOF
-
-# Build from selected OpenAI cloud catalog snapshots. Workspace AGENTS handles
-# task-start refresh; setup does not move checkout refs.
 
 # Shared npm CLI inventory: use package@version for pins or @latest for stable updates.
 # Keep tools outside repository manifests and lockfiles.
@@ -153,6 +160,11 @@ op_download_dir=$(mktemp -d "$TOOLS/downloads/1password.XXXXXXXX")
 (cd "$op_download_dir" && apt-get "${APT_ARGS[@]}" download 1password-cli)
 for package in "$op_download_dir"/1password-cli_*.deb; do dpkg-deb -x "$package" "$TOOLS/sysroot"; done
 rm -r "$op_download_dir"
+current_sources=$(check_build_sources) || { printf '%s\n' "$current_sources" >&2; exit 1; }
+if [[ "$current_sources" != "$build_sources" ]]; then
+  echo "Cloud Setup build sources changed before CLI installation" >&2
+  exit 1
+fi
 # Install the same CLI router used by the local entrypoint.
 python3 - <<'OP_WRAPPER_SETUP'
 from pathlib import Path
@@ -160,6 +172,10 @@ from shutil import copyfile
 import subprocess
 tools = Path('/workspace/.onboarding-tools')
 source = Path('/workspace/ai-workflow-enforcement/enforcement/op_runtime.py')
+startup_source = source.with_name('cloud_task_start.py')
+startup_launcher = tools / 'cloud-task-start.py'
+if startup_launcher.is_symlink() or (startup_launcher.exists() and not startup_launcher.is_file()):
+    raise SystemExit('Refusing to replace an unrelated Cloud startup launcher')
 probe = Path('/workspace/secrets-lifecycle/scripts/check_cloud_op_compat.py')
 if not probe.is_file():
     raise SystemExit('Cloud op startup requires the compatible secrets-lifecycle checkout')
@@ -178,6 +194,8 @@ for runtime in (tools / 'op-runtime.py', tools / 'direct/bin/op'):
     runtime.parent.mkdir(parents=True, exist_ok=True)
     copyfile(source, runtime)
     runtime.chmod(0o755)
+copyfile(startup_source, startup_launcher)
+startup_launcher.chmod(0o755)
 if link.is_symlink():
     link.unlink()
 link.symlink_to('../op-runtime.py')

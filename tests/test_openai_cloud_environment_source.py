@@ -183,6 +183,9 @@ class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
                 expected = (ROOT.parents[1] / "enforcement/op_runtime.py").read_bytes()
                 self.assertEqual((tools / "op-runtime.py").read_bytes(), expected)
                 self.assertEqual((tools / "direct/bin/op").read_bytes(), expected)
+                startup = ROOT.parents[1] / "enforcement/cloud_task_start.py"
+                self.assertEqual((tools / "cloud-task-start.py").read_bytes(), startup.read_bytes())
+                self.assertFalse((tools / "task-start.ready").exists())
 
     def test_op_entrypoint_refuses_unrelated_file(self):
         with tempfile.TemporaryDirectory() as temporary:

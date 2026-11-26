@@ -47,10 +47,12 @@ class CloudSetupSourceTests(unittest.TestCase):
         # Substitute transport only. Repository status, identity readback, object
         # access, archive and ref operations still use actual Git.
         wrapper = self.bin / "git"
+        remotes = {self.repo.name: str(self.remote), "secrets-lifecycle": str(self.root / "lifecycle.git")}
         wrapper.write_text(
             f"#!{sys.executable}\nimport os,sys\nargs=sys.argv[1:]\n"
             "if 'ls-remote' in args or 'fetch' in args:\n"
-            f" args=[{str(self.remote)!r} if x=='origin' else x for x in args]\n"
+            f" remote={remotes!r}[os.path.basename(os.getcwd())]\n"
+            " args=[remote if x=='origin' else x for x in args]\n"
             f"os.execv({self.git_binary!r},[{self.git_binary!r},*args])\n")
         wrapper.chmod(0o755)
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env["PATH"]
@@ -142,6 +144,48 @@ class CloudSetupSourceTests(unittest.TestCase):
         self.git(self.repo, "checkout", "-q", "--detach", current)
         self.write_catalog(current)
         self.assertEqual(self.verify(mode="main", selected=current)["source_commit"], current)
+
+    def test_main_build_checks_both_sources_without_rewriting_restored_catalog(self):
+        lifecycle_name = "ctrl-alt-keith/secrets-lifecycle"
+        lifecycle = self.workspace / "secrets-lifecycle"
+        lifecycle_remote = self.root / "lifecycle.git"
+        self.git(self.root, "clone", "-q", "--bare", str(self.seed), str(lifecycle_remote))
+        self.git(self.root, "clone", "-q", str(lifecycle_remote), str(lifecycle))
+        self.git(lifecycle, "remote", "set-url", "origin", f"https://github.com/{lifecycle_name}.git")
+
+        args = dict(catalog=self.catalog, workspace_root=self.workspace)
+        with patch.dict(os.environ, self.env, clear=True), self.assertRaisesRegex(
+            source.SetupSourceError, "required build mount missing.*secrets-lifecycle"
+        ):
+            source.verify_main_build(**args)
+
+        entries = json.loads(self.catalog.read_text())
+        entries.append({"name": lifecycle_name, "host": "github.com",
+                        "mount_path": lifecycle.name, "commit": self.old})
+        baseline = json.dumps(entries).encode()
+        self.catalog.write_bytes(baseline)
+        current_enforcement = self.advance()
+        self.git(self.repo, "merge", "-q", "--ff-only", current_enforcement)
+        (self.seed / "input").write_text("new lifecycle build\n")
+        current_lifecycle = self.commit()
+        self.git(self.seed, "push", "-q", str(lifecycle_remote), "HEAD:refs/heads/main")
+        self.git(lifecycle, "fetch", "-q", str(lifecycle_remote), current_lifecycle)
+
+        with patch.dict(os.environ, self.env, clear=True), self.assertRaisesRegex(
+            source.SetupSourceError, "does not match hosted main.*secrets-lifecycle"
+        ):
+            source.verify_main_build(**args)
+        self.git(lifecycle, "merge", "-q", "--ff-only", current_lifecycle)
+        with patch.dict(os.environ, self.env, clear=True):
+            result = source.verify_main_build(**args)
+
+        self.assertEqual(result["sources"], {
+            source.REPOSITORY: {"catalog_commit": self.old, "source_commit": current_enforcement},
+            lifecycle_name: {"catalog_commit": self.old, "source_commit": current_lifecycle},
+        })
+        self.assertEqual(self.catalog.read_bytes(), baseline)
+        self.assertEqual(self.git(self.repo, "rev-parse", "HEAD"), current_enforcement)
+        self.assertEqual(self.git(lifecycle, "rev-parse", "HEAD"), current_lifecycle)
 
     def test_main_advancement_invalidates_the_reviewed_comparison(self):
         self.advance()
