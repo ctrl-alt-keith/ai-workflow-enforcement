@@ -138,16 +138,17 @@ startup instructions also govern helpers using optional credential mirrors.
 
 ### Publish a build from a hosted branch
 
-Obtain separate approval for the first in-place branch publication and restore
-qualification. Rely on branch publication after the restored checks below pass.
+For an approved branch build, follow [Apply and verify](#apply-and-verify) and
+keep the reviewed `main` installer saved. Obtain separate approval for the
+first in-place branch publication and restore qualification. Rely on branch
+publication after the restored checks pass.
 
-For one approved build, keep both Setup checkouts on verified `main`. From the
-verified Enforcement origin, fetch `refs/heads/<branch>` and record the exact
-`FETCH_HEAD` commit. Review that tip, including the installer, safeguards, and
-changes from the previous publication. Verify the branch's tests for both
-managed CLI startup gates. Run the source check from the verified Enforcement
-`main` checkout before running any branch code. Set `reviewed_branch` to the
-approved short name and `observed_tip` to the reviewed `FETCH_HEAD` commit.
+Fetch `refs/heads/<branch>` from the verified Enforcement origin. Review its
+exact `FETCH_HEAD` against the last publication, including installer and
+safeguard changes, and verify both managed CLI startup-gate tests. Set
+`reviewed_branch` to the approved short name and `observed_tip` to that commit.
+Run this check from the verified Enforcement `main` checkout before executing
+branch code:
 
 ```sh
 PYTHONPATH=/workspace/ai-workflow-enforcement /usr/bin/python3 -P -B -m enforcement.cloud_setup_source \
@@ -155,25 +156,19 @@ PYTHONPATH=/workspace/ai-workflow-enforcement /usr/bin/python3 -P -B -m enforcem
   --workspace-root /workspace --build-branch "$reviewed_branch" --reviewed-branch-tip "$observed_tip"
 ```
 
-The check verifies the live branch tip and requires its workspace instructions
-and startup launcher to match `main` byte-for-byte. In a private, single-writer
-Setup directory outside both checkouts, write the reviewed commit's
+Require the branch's workspace instructions and startup launcher to match
+`main` byte-for-byte. Stop if startup or the broker helpers require branch-only
+code. In a private, single-writer Setup directory outside both checkouts, write
 `cloud-environments/openai/install.sh` with `git show "$observed_tip:cloud-environments/openai/install.sh"`.
-Run that file with `bash` and the same branch and tip options. The installer
-compares its file to the reviewed Git object after verifying the live tip and
-reads the router and launcher from that object. Keep the saved `main` installer
-and repository selections. Apply the normal publication checks with the branch
-arguments, comparing installed files and build evidence to the branch build.
+Run that file with `bash` and the same branch and tip options. Repeat the
+source check with those options before publication.
 
-In the authorized restored task, verify that the recorded branch build and
-installed files survived publication, the catalog matches the Setup baseline,
-and the repository refresh still reaches `main`. The launcher releases managed
-`op` after the installed artifacts match the recorded branch hashes and the
-refreshed Secrets Lifecycle synthetic probe passes. On a mismatch or failed
-probe, stop and preserve the refreshed checkouts for diagnosis. If the branch
-changes the startup contract or needs branch-only helper code, stop before
-publishing. For a later default build, run the reviewed `main` installer
-without branch arguments and verify its installed evidence.
+In the authorized restored task, match the branch record, installed hashes, and
+catalog to Setup. Require the refreshed Secrets Lifecycle synthetic broker
+probe to pass before using managed `op`. On a mismatch or failed probe, stop and
+preserve the refreshed checkouts for diagnosis. To return to a default build,
+run the reviewed `main` installer without branch arguments and verify its
+installed evidence.
 
 ## Audit an older pinned build
 
