@@ -6,6 +6,7 @@ if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
 fi
 TOOLS=/workspace/.onboarding-tools
 ENFORCEMENT=/workspace/ai-workflow-enforcement
+executor_path=$PATH
 branch_options=()
 branch_inputs=
 if [[ $# -ne 0 ]]; then
@@ -256,36 +257,62 @@ for name, target in {
 TOOL_PATH_SETUP
 
 # Configure the task executor's shell environment, not interactive shell dotfiles.
-python3 - <<'TASK_PATH_SETUP'
+CAK_SETUP_EXECUTOR_PATH="$executor_path" python3 - <<'TASK_PATH_SETUP'
+import errno
 import json
 import os
+import shutil
 import tomllib
 from pathlib import Path
 
 config = Path('/home/agent/.codex/config.toml')
+tools = Path('/workspace/.onboarding-tools')
+active_home = Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex')
+if active_home.resolve() != config.parent.resolve():
+    raise SystemExit('Cloud Setup cannot verify the active executor configuration location')
 content = config.read_text() if config.exists() else ''
+inherited = os.environ['CAK_SETUP_EXECUTOR_PATH']
+directories = ['/home/agent/.local/bin', str(tools / 'bin'),
+               str(tools / 'go/bin'), str(tools / 'node_modules/.bin')]
+for entry in inherited.split(':'):
+    if entry and not entry.startswith('/home/agent/.codex/tmp/') and entry not in directories:
+        directories.append(entry)
+value = ':'.join(directories)
+expected = {
+    'op': 'op-runtime.py', 'gh': 'bin/gh', 'aws': 'bin/aws',
+    'kubectl': 'bin/kubectl', 'terraform': 'bin/terraform', 'go': 'go/bin/go',
+    'claude': 'node_modules/.bin/claude', 'markdownlint-cli2': 'node_modules/.bin/markdownlint-cli2',
+}
+for name, target in expected.items():
+    resolved = shutil.which(name, path=value)
+    if resolved is None or Path(resolved).resolve() != (tools / target).resolve():
+        raise SystemExit(f'Cloud Setup executor PATH does not resolve managed {name}')
+
+# Accept a matching policy only with the PATH captured before this installer changed it.
+configured = tomllib.loads(content).get('shell_environment_policy', {}).get('set', {}).get('PATH')
+if configured == inherited == value:
+    print('Cloud Setup verified the existing executor PATH policy')
+    raise SystemExit(0)
+
 begin = '# BEGIN managed cloud tool PATH\n'
 end = '# END managed cloud tool PATH\n'
 if begin in content:
     before, managed = content.split(begin, 1)
     _, after = managed.split(end, 1)
     content = before + after
-parsed = tomllib.loads(content)
-policy = parsed.get('shell_environment_policy', {})
+policy = tomllib.loads(content).get('shell_environment_policy', {})
 if 'PATH' in policy.get('set', {}):
     raise SystemExit('Refusing to replace an independently configured executor PATH')
-directories = ['/home/agent/.local/bin', '/workspace/.onboarding-tools/bin',
-               '/workspace/.onboarding-tools/go/bin',
-               '/workspace/.onboarding-tools/node_modules/.bin']
-for entry in os.environ['PATH'].split(':'):
-    if entry and not entry.startswith('/home/agent/.codex/tmp/') and entry not in directories:
-        directories.append(entry)
-value = ':'.join(directories)
 # A dotted assignment at the document root preserves unrelated tables/settings.
 addition = begin + 'shell_environment_policy.set.PATH = ' + json.dumps(value) + '\n' + end
 updated = addition + content
 tomllib.loads(updated)
-config.write_text(updated)
+try:
+    config.write_text(updated)
+except OSError as error:
+    if error.errno in (errno.EROFS, errno.EACCES, errno.EPERM):
+        raise SystemExit('Cloud Setup cannot write executor config without a verified existing PATH policy') from None
+    raise
 TASK_PATH_SETUP
 build_record_tmp=$(mktemp "$TOOLS/.cloud-build.XXXXXXXX")
 printf '%s\n' "$build_sources" > "$build_record_tmp"
