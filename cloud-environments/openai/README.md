@@ -112,7 +112,8 @@ In Setup only, verify the Enforcement and Secrets Lifecycle mount roots,
 origin identities and clean checkouts. Fetch `refs/heads/main` through each
 existing authenticated Git remote. Require both the catalog commit and the
 current checkout to be in the fetched history, with the catalog commit in the
-checkout's history. Review the exact fetched build sources and fast-forward
+checkout's history. Review build-input and safeguard changes against the last
+published source. Resolve any required safeguard changes before fast-forwarding
 only those two checkouts with `git merge --ff-only FETCH_HEAD`. Stop on missing
 history, local changes, divergence, or an unverified origin.
 
@@ -124,12 +125,15 @@ evidence again before changing managed CLI entrypoints. Repeat that read-only
 check before publication and require the installer evidence to match. Treat
 the returned commit IDs as evidence. If hosted main advances or Setup replaces
 a build checkout, reacquire and review the build sources before continuing.
+Serialize Setup work and repeat the checks after changes.
 
 Managed `op` requests in a restored task require successful completion of the
 [new-task refresh](workspace-AGENTS.md). Verify a restored task starts without
 `task-start.ready`, blocks broker reads before refresh, and enables the managed
 paths only after refresh succeeds. This checks the managed entrypoints. The
 startup instructions also govern helpers using optional credential mirrors.
+
+## Audit an older pinned build
 
 ### Acquire a newer procedure from an older mount
 
@@ -176,10 +180,9 @@ git --no-replace-objects -C "$setup_checkout" merge-base --is-ancestor "$setup_p
 )
 ```
 
-Keep all build/editor/installed-file comparisons bound to `source_commit`, not
-the exported procedure's commit. Do not run the installer from the export in
-place of the pinned installer. Retain the procedure identity and source review
-with the publication record; dispose only of the owned private export afterward.
+For the audit, bind build/editor/installed-file comparisons to the reported
+`source_commit`. Retain the exported procedure identity separately and dispose
+of the owned private export after the audit.
 
 Exact build replay requires the prior package versions, integrity inputs and
 fresh-runtime verification.

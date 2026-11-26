@@ -29,6 +29,10 @@ owned by `enforcement.branch_cleanup` and do not change refresh mechanics.
 
 ## Task-start catalog mode
 
+In the managed OpenAI Cloud environment, use the
+[installed startup launcher](../cloud-environments/openai/workspace-AGENTS.md)
+to run this mode and release the managed CLI after success.
+
 After isolated checkouts are mounted, and before work begins, a task-start
 caller can run:
 

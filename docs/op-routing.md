@@ -4,6 +4,9 @@ Use managed `op` for Connect-backed `read`, `inject`, and JSON `item get`.
 Stop on a failed Connect read. Never retry it through direct credentials.
 [1Password Connect CLI reference](https://www.1password.dev/connect/cli)
 
+In the managed Cloud environment, complete [task startup](../cloud-environments/openai/workspace-AGENTS.md)
+before using either installed route.
+
 Select `op --direct ...` for authorized bootstrap, account selection,
 account metadata, recovery, and unsupported native commands.
 Use `--account` on `whoami`, `read`, or `item get` only to pin the
