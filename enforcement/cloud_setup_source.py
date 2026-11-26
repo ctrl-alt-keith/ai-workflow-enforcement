@@ -1,4 +1,4 @@
-"""Read-only alignment checks for main-tracking and deliberately pinned Setup builds."""
+"""Read-only alignment checks for Cloud Setup build and restoration sources."""
 
 from __future__ import annotations
 
@@ -19,6 +19,10 @@ MAIN_BUILD_MOUNTS = {
     "ctrl-alt-keith/secrets-lifecycle": "secrets-lifecycle",
 }
 SHA = re.compile(r"[0-9a-f]{40}")
+BRANCH_STARTUP_FILES = (
+    "cloud-environments/openai/workspace-AGENTS.md",
+    "enforcement/cloud_task_start.py",
+)
 
 
 class SetupSourceError(ValueError):
@@ -40,11 +44,19 @@ def _git(repo: Path, *args: str) -> str:
     return process.stdout.strip()
 
 
-def _main(repo: Path) -> str:
-    fields = _git(repo, "ls-remote", "--exit-code", "origin", "refs/heads/main").split()
-    if len(fields) != 2 or not SHA.fullmatch(fields[0]) or fields[1] != "refs/heads/main":
-        raise SetupSourceError("hosted main did not resolve to one exact commit")
+def _branch_tip(repo: Path, branch: str) -> str:
+    ref = f"refs/heads/{branch}"
+    try:
+        fields = _git(repo, "ls-remote", "--exit-code", "origin", ref).split()
+    except SetupSourceError:
+        raise SetupSourceError("hosted build branch unavailable from origin") from None
+    if len(fields) != 2 or not SHA.fullmatch(fields[0]) or fields[1] != ref:
+        raise SetupSourceError("hosted branch did not resolve to one exact commit")
     return fields[0]
+
+
+def _main(repo: Path) -> str:
+    return _branch_tip(repo, "main")
 
 
 def _catalog(catalog: Path, workspace_root: Path) -> tuple[bytes, dict[str, RepoTarget]]:
@@ -73,7 +85,8 @@ def _clean_head(repo: Path) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
-def verify_main_build(*, catalog: Path, workspace_root: Path) -> dict[str, object]:
+def verify_main_build(*, catalog: Path, workspace_root: Path, build_branch: str | None = None,
+                      reviewed_branch_tip: str | None = None) -> dict[str, object]:
     """Qualify the two build sources separately from the restored catalog commits."""
     catalog_before, targets = _catalog(catalog, workspace_root)
     sources: dict[str, dict[str, str]] = {}
@@ -94,14 +107,52 @@ def verify_main_build(*, catalog: Path, workspace_root: Path) -> dict[str, objec
             raise SetupSourceError(f"restored catalog commit is not an ancestor of build main: {name}") from None
         sources[name] = {"catalog_commit": baseline, "source_commit": source_commit}
 
+    branch_commit = None
+    if build_branch is not None:
+        if (build_branch == "main" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", build_branch)
+                or not reviewed_branch_tip or not SHA.fullmatch(reviewed_branch_tip)):
+            raise SetupSourceError("branch builds require a non-main branch name and its reviewed full tip")
+        repo = _checked_mount(targets[REPOSITORY])
+        try:
+            _git(repo, "check-ref-format", f"refs/heads/{build_branch}")
+        except SetupSourceError:
+            raise SetupSourceError("invalid hosted build branch name") from None
+        branch_commit = _branch_tip(repo, build_branch)
+        if branch_commit != reviewed_branch_tip:
+            raise SetupSourceError("hosted build branch differs from the reviewed tip")
+        try:
+            _git(repo, "cat-file", "-e", f"{branch_commit}^{{commit}}")
+        except SetupSourceError:
+            raise SetupSourceError("reviewed branch tip must be fetched before building") from None
+        main = sources[REPOSITORY]["source_commit"]
+        for path in BRANCH_STARTUP_FILES:
+            main_entry = _git(repo, "ls-tree", main, "--", path)
+            branch_entry = _git(repo, "ls-tree", branch_commit, "--", path)
+            if not main_entry or not main_entry.startswith(("100644 blob ", "100755 blob ")) or branch_entry != main_entry:
+                raise SetupSourceError(f"branch changes the main-tracking startup contract: {path}")
+        for path in ("cloud-environments/openai/install.sh", "enforcement/op_runtime.py"):
+            if not _git(repo, "ls-tree", branch_commit, "--", path).startswith(("100644 blob ", "100755 blob ")):
+                raise SetupSourceError(f"branch build input is missing or not a regular file: {path}")
+    elif reviewed_branch_tip is not None:
+        raise SetupSourceError("reviewed branch tip requires a named branch build")
+
     for name, evidence in sources.items():
         repo = _checked_mount(targets[name])
         if _main(repo) != evidence["source_commit"] or _clean_head(repo) != evidence["source_commit"]:
             raise SetupSourceError(f"build source changed during verification: {name}")
+    if branch_commit is not None:
+        repo = _checked_mount(targets[REPOSITORY])
+        if _branch_tip(repo, build_branch) != branch_commit:
+            raise SetupSourceError("hosted build branch moved during source verification")
+        sources[REPOSITORY]["main_commit"] = sources[REPOSITORY]["source_commit"]
+        sources[REPOSITORY]["source_commit"] = branch_commit
     if catalog.read_bytes() != catalog_before:
         raise SetupSourceError("generated catalog changed during source verification")
-    return {"status": "aligned", "selection_mode": "main", "sources": sources,
-            "catalog_sha256": hashlib.sha256(catalog_before).hexdigest()}
+    result = {"status": "aligned", "selection_mode": "main", "sources": sources,
+              "catalog_sha256": hashlib.sha256(catalog_before).hexdigest()}
+    if branch_commit is not None:
+        result.update(selection_mode="branch", build_ref=f"refs/heads/{build_branch}")
+    return result
 
 
 def verify_source(
@@ -170,14 +221,21 @@ def main(argv: list[str] | None = None) -> int:
                         help="use the single-source check with an exact saved selection")
     parser.add_argument("--reviewed-commit", help="explicitly reviewed pinned build commit")
     parser.add_argument("--reviewed-main", help="separately reviewed current-main comparison target")
+    parser.add_argument("--build-branch", help="per-build Enforcement branch with main-tracking checkouts")
+    parser.add_argument("--reviewed-branch-tip", help="reviewed exact tip for this branch build")
     args = parser.parse_args(argv)
     try:
         if args.selected_commit is None:
             if args.selection_mode != "main" or args.reviewed_commit is not None or args.reviewed_main is not None:
                 raise SetupSourceError("only main builds may omit the exact saved selection")
-            result = verify_main_build(catalog=args.catalog, workspace_root=args.workspace_root)
+            result = verify_main_build(catalog=args.catalog, workspace_root=args.workspace_root,
+                                       build_branch=args.build_branch, reviewed_branch_tip=args.reviewed_branch_tip)
         else:
-            result = verify_source(**vars(args))
+            if args.build_branch is not None or args.reviewed_branch_tip is not None:
+                raise SetupSourceError("branch builds use a main-tracking saved selection")
+            result = verify_source(catalog=args.catalog, workspace_root=args.workspace_root,
+                                   selection_mode=args.selection_mode, selected_commit=args.selected_commit,
+                                   reviewed_commit=args.reviewed_commit, reviewed_main=args.reviewed_main)
     except (SetupSourceError, OSError) as error:
         # SetupSourceError contains controlled messages only; OS/provider data
         # is deliberately excluded from the JSON error surface.

@@ -45,7 +45,9 @@ The saved-environment owner performs the following checks before
 [publishing](https://learn.chatgpt.com/docs/environments/cloud-environments#create-and-publish-an-environment).
 
 1. Run `make check` and ShellCheck. Read back the saved editor's complete
-   installer and workspace instructions and compare them to the build source.
+   installer and workspace instructions and compare them to the reviewed `main`
+   sources. Compare the separately executed installer for a branch build to
+   the [reviewed branch](#publish-a-build-from-a-hosted-branch).
    Verify the selected repositories and refs in the editor. Keep Enforcement
    and Secrets Lifecycle on `main` tracking.
    Compare network mode, preset and domains to `configuration.json`.
@@ -68,7 +70,8 @@ The saved-environment owner performs the following checks before
    `workspace-AGENTS.md`, `enforcement/cloud_task_start.py`, and
    `enforcement/op_runtime.py` at the Enforcement build commit. Stop if the
    catalog is absent, any comparison differs, or `.onboarding-tools/task-start.ready`
-   exists in the Setup workspace.
+   exists in the Setup workspace. Require `.onboarding-tools/cloud-build.json`
+   to match the final check's source evidence.
 
 Keep a private record per published version outside this source tree.
 Retain these identities and checks:
@@ -132,6 +135,33 @@ Managed `op` requests in a restored task require successful completion of the
 `task-start.ready`, blocks broker reads before refresh, and enables the managed
 paths only after refresh succeeds. This checks the managed entrypoints. The
 startup instructions also govern helpers using optional credential mirrors.
+
+### Publish a build from a hosted branch
+
+For one approved build, keep both Setup checkouts on verified `main`. From the
+verified Enforcement origin, fetch `refs/heads/<branch>` and record the exact
+`FETCH_HEAD` commit. Review that tip, including the installer, safeguards, and
+changes from the previous publication. Verify the branch's tests for both
+managed CLI startup gates. Pass `--build-branch <branch>` and
+`--reviewed-branch-tip <observed-commit>` to the same source check before running
+any branch code. The check verifies the live branch tip and requires its
+workspace instructions and startup launcher to match `main` byte-for-byte.
+
+In a private Setup directory, write the reviewed commit's
+`cloud-environments/openai/install.sh` with `git show <observed-commit>:cloud-environments/openai/install.sh`.
+Run that file with `bash` and the same two arguments. The installer verifies
+its file against the hosted tip and reads the router and launcher from that
+Git object. Keep the saved `main` installer and repository selections. Apply
+the normal publication checks with the branch arguments, comparing installed
+files and build evidence to the branch build.
+
+In the authorized restored task, verify that the recorded branch build and
+installed files survived publication, the catalog matches the Setup baseline,
+and the repository refresh still reaches `main`. The launcher releases managed
+`op` only after the refreshed Secrets Lifecycle synthetic probe passes against
+the installed branch router. If the branch changes the startup contract or
+needs branch-only helper code, stop. For a later default build, run the reviewed
+`main` installer without branch arguments and verify its installed evidence.
 
 ## Audit an older pinned build
 

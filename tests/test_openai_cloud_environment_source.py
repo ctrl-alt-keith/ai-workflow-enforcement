@@ -18,7 +18,7 @@ def aws_install_block():
         "\n", 1)[1].split('if ! test -x "$TOOLS/bin/kubectl"', 1)[0]
 
 
-def op_setup_for_fixture(tools, probe_passes=True):
+def op_setup_for_fixture(tools, probe_passes=True, probe_source=None):
     installer = (ROOT / "install.sh").read_text()
     marker = "python3 - <<'OP_WRAPPER_SETUP'\n"
     setup = installer.split(marker, 1)[1].split("\nOP_WRAPPER_SETUP", 1)[0]
@@ -36,7 +36,7 @@ def op_setup_for_fixture(tools, probe_passes=True):
     stub.write_text(
         "import os, sys\n"
         "assert 'OP_SERVICE_ACCOUNT_TOKEN' not in os.environ\n"
-        f"assert sys.argv[1] == {str(runtime)!r}\n"
+        f"assert sys.argv[1] == {str(probe_source or runtime)!r}\n"
         f"sys.exit({0 if probe_passes else 1})\n")
     return setup.replace(source_root, f"Path({str(tools)!r})", 1).replace(
         source, f"Path({str(runtime)!r})", 1).replace(probe, f"Path({str(stub)!r})", 1)
@@ -198,6 +198,25 @@ class OpenAICloudEnvironmentSourceTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((tools / "bin/op").read_text(), "unrelated")
+
+    def test_op_setup_uses_branch_inputs_then_returns_to_main_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tools = Path(temporary)
+            (tools / "bin").mkdir()
+            branch = tools / "branch"
+            branch.mkdir()
+            runtime = branch / "op_runtime.py"
+            launcher = branch / "cloud_task_start.py"
+            runtime.write_bytes(b"branch router\n")
+            launcher.write_bytes(b"branch startup\n")
+            subprocess.run([sys.executable, "-c", op_setup_for_fixture(tools, probe_source=runtime)],
+                           env={"CAK_SETUP_BRANCH_INPUTS": str(branch)}, check=True)
+            self.assertEqual((tools / "op-runtime.py").read_bytes(), runtime.read_bytes())
+            self.assertEqual((tools / "direct/bin/op").read_bytes(), runtime.read_bytes())
+            self.assertEqual((tools / "cloud-task-start.py").read_bytes(), launcher.read_bytes())
+            subprocess.run([sys.executable, "-c", op_setup_for_fixture(tools)], env={}, check=True)
+            main_runtime = ROOT.parents[1] / "enforcement/op_runtime.py"
+            self.assertEqual((tools / "op-runtime.py").read_bytes(), main_runtime.read_bytes())
 
     def test_op_entrypoint_replaces_legacy_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:
