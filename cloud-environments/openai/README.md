@@ -138,6 +138,9 @@ startup instructions also govern helpers using optional credential mirrors.
 
 ### Publish a build from a hosted branch
 
+Obtain separate approval for the first in-place branch publication and restore
+qualification. Rely on branch publication after the restored checks below pass.
+
 For one approved build, keep both Setup checkouts on verified `main`. From the
 verified Enforcement origin, fetch `refs/heads/<branch>` and record the exact
 `FETCH_HEAD` commit. Review that tip, including the installer, safeguards, and
@@ -155,12 +158,12 @@ PYTHONPATH=/workspace/ai-workflow-enforcement /usr/bin/python3 -P -B -m enforcem
 The check verifies the live branch tip and requires its workspace instructions
 and startup launcher to match `main` byte-for-byte. In a private, single-writer
 Setup directory outside both checkouts, write the reviewed commit's
-`cloud-environments/openai/install.sh` with `git show <observed-commit>:cloud-environments/openai/install.sh`.
-Run that file with `bash` and the same two arguments. The installer verifies
-its file against the hosted tip and reads the router and launcher from that
-Git object. Keep the saved `main` installer and repository selections. Apply
-the normal publication checks with the branch arguments, comparing installed
-files and build evidence to the branch build.
+`cloud-environments/openai/install.sh` with `git show "$observed_tip:cloud-environments/openai/install.sh"`.
+Run that file with `bash` and the same branch and tip options. The installer
+compares its file to the reviewed Git object after verifying the live tip and
+reads the router and launcher from that object. Keep the saved `main` installer
+and repository selections. Apply the normal publication checks with the branch
+arguments, comparing installed files and build evidence to the branch build.
 
 In the authorized restored task, verify that the recorded branch build and
 installed files survived publication, the catalog matches the Setup baseline,
