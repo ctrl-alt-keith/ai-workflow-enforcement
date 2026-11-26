@@ -19,11 +19,10 @@ Configure both required Connect bindings under the saved editor's
 - `CAK_CONNECT_HOST` is a required direct environment variable for the approved
   HTTPS origin.
 - `CAK_CONNECT_TOKEN` is a required vault-backed direct environment variable for
-  the existing approved reader. Verify the binding's source against the
-  [Connect reader custody contract](https://github.com/ctrl-alt-keith/lke-image-lab/blob/main/docs/connect.md#reusable-vault-and-reader)
-  and reuse the existing binding when it matches. If the editor omits the
-  reader source, verify it through the custody owner before reuse. Stop if the
-  source differs or cannot be verified.
+  the existing approved reader. Match the binding's source to the separately
+  approved vault item and field. If the editor omits the source, confirm it
+  with the credential owner. Reuse a matching binding. Stop if the source
+  differs or cannot be confirmed.
 
 Keep the required `OP_SERVICE_ACCOUNT_TOKEN` runtime binding for the explicit
 broker route used by `secrets-lifecycle`'s [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
