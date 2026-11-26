@@ -12,10 +12,20 @@ The source commit does not identify a saved or published environment version.
 ## Runtime credential binding
 
 Use the [managed CLI routing and enrollment contract](../../docs/op-routing.md)
-for agent commands and Connect bindings.
+for agent commands and origin requirements.
+Configure both required Connect bindings under the saved editor's
+[Environment variables](https://learn.chatgpt.com/docs/environments/cloud-environments#configure-environment-variables-and-network-secrets).
 
-Keep the required `OP_SERVICE_ACCOUNT_TOKEN` runtime binding for
-`secrets-lifecycle`'s [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
+- `CAK_CONNECT_HOST` is a required direct environment variable for the approved
+  HTTPS origin.
+- `CAK_CONNECT_TOKEN` is a required vault-backed direct environment variable for
+  the existing approved reader. Match the binding's source to the separately
+  approved vault item and field. If the editor omits the source, confirm it
+  with the credential owner. Reuse a matching binding. Stop if the source
+  differs or cannot be confirmed.
+
+Keep the required `OP_SERVICE_ACCOUNT_TOKEN` runtime binding for the explicit
+broker route used by `secrets-lifecycle`'s [GitHub PAT](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/gh-pat-cli.md),
 [commit signing](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-git-signing.md),
 and [Claude review](https://github.com/ctrl-alt-keith/secrets-lifecycle/blob/main/docs/cloud-claude-review.md)
 helpers. In Setup, select a reviewed `/workspace/secrets-lifecycle` checkout
@@ -40,12 +50,12 @@ The saved-environment owner performs the following checks before
    Verify the selected repositories, refs and selection mode in the editor.
    Use main-tracking unless the owner approves an exact reviewed pin.
    Compare network mode, preset and domains to `configuration.json`.
-   Verify the required `OP_SERVICE_ACCOUNT_TOKEN` binding's name, status and
-   injection type, the approved Connect origin and reader, and any selected
-   mirror bindings.
+   Verify the names, required status, and injection types of the
+   [required runtime bindings](#runtime-credential-binding), the approved
+   Connect origin and reader source, and any selected mirror bindings.
    Use saved-editor readback for saved settings. Stop on mismatch or missing
-   required readback. A binding's source reference may be unknown if the
-   editor omits it.
+   required readback. Other bindings' source references may be unknown if the
+   editor omits them.
 2. Apply [build source authority](#build-source-authority) before Setup and
    again immediately before publication. Record the exact build commit as
    `source_commit`. Use the supported Setup filesystem interface to install
